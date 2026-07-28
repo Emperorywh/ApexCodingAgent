@@ -1321,7 +1321,7 @@ Plan Revision 的提交顺序必须为：
 6. `run.json.tasksSha256` 必须等于当前 `tasks.json` 原始字节 SHA-256。
 7. 不一致时最多立即重试三次；仍不一致时以 `STATE_SNAPSHOT_BUSY` 结束当前只读命令，不修改 Run。
 
-当 `run.json.planRevision == 0` 且 `tasksSha256 == null` 时，`tasks.json` 必须尚不存在；一致性读取只执行两次 `run.json` 的 `stateRevision` 比较。
+当 `run.json.planRevision == 0` 且 `tasksSha256 == null` 时，`tasks.json` 必须尚不存在。一致性读取此时比较两次 `run.json` 读取的 `stateRevision` 与 `planRevision`，并确认 `tasks.json` 确实不存在；任一条件不满足都按第 7 步的有限重试处理。计划提交在 `run.json` 提交点前失败会遗留已替换的 `tasks.json`，该窗口必须按不一致处理并最终报告 `STATE_SNAPSHOT_BUSY`，不得当作 Revision 0 快照返回。
 
 该协议只保证正常并发读写时不会展示跨 Revision 拼接的快照，不构成 CAS、多写者协调、崩溃恢复或跨文件事务。
 

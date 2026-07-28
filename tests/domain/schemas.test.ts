@@ -280,10 +280,45 @@ describe('custom formats and enums', () => {
     expectInvalid('ActiveSession', { ...session, specSha256: 'A'.repeat(64) });
   });
 
-  it('git-oid format requires 40 lowercase hex', () => {
+  it('git-oid format accepts full SHA-1/SHA-256 OIDs and rejects other shapes', () => {
     const checkpoint = VALID.IntermediateCheckpoint() as Record<string, unknown>;
+    expectValid('IntermediateCheckpoint', { ...checkpoint, oid: 'b'.repeat(64) });
     expectInvalid('IntermediateCheckpoint', { ...checkpoint, oid: 'b'.repeat(39) });
+    expectInvalid('IntermediateCheckpoint', { ...checkpoint, oid: 'b'.repeat(63) });
     expectInvalid('IntermediateCheckpoint', { ...checkpoint, oid: 'B'.repeat(40) });
+  });
+
+  it('git-relative-path format rejects paths outside the repository namespace', () => {
+    /**
+     * 所有持久化的项目文件引用共享同一 Git 相对路径契约。
+     * 分别覆盖计划、Run、Session、归档清单和任务路径提示的 Schema 边界。
+     */
+    expectInvalid('TasksJson', {
+      ...(VALID.TasksJson() as object),
+      specPath: '../SPEC.md',
+    });
+    expectInvalid('PlanRevisionSnapshot', {
+      ...(VALID.PlanRevisionSnapshot() as object),
+      specPath: '/repo/SPEC.md',
+    });
+    const run = VALID.RunJson() as Record<string, unknown>;
+    expectInvalid('RunJson', {
+      ...run,
+      spec: { ...(run.spec as object), path: 'docs\\SPEC.md' },
+    });
+    expectInvalid('RunJson', { ...run, reportPath: '../report.md' });
+    expectInvalid('SessionRecord', {
+      ...(VALID.SessionRecord() as object),
+      logPath: 'C:/logs/session.log',
+    });
+    expectInvalid('RunArchiveManifest', {
+      ...(VALID.RunArchiveManifest() as object),
+      files: [{ path: '../run.json', byteLength: 123, sha256: SHA256_A }],
+    });
+    expectInvalid(
+      'TaskPlanDraft',
+      mkDraft([mkTask('TASK-001', [], { likelyPaths: ['./src/index.ts'] })]),
+    );
   });
 
   it('rfc3339 format requires UTC with Z', () => {

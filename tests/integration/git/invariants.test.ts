@@ -215,6 +215,27 @@ describe('session start/end invariants', () => {
     );
   });
 
+  it('fails with GIT_HISTORY_DIVERGED when HEAD rewinds during a session', async () => {
+    const initialFacts = await seedWithRunBranch();
+    await repo.writeFile('src/session-base.ts', 'export const sessionBase = true;\n');
+    const sessionHead = await repo.commitAll('session start checkpoint');
+    const facts = mkFacts({
+      baseCommit: initialFacts.baseCommit,
+      expectedHead: sessionHead,
+    });
+    const start = await port.assertSessionStart(repo.root, facts);
+
+    /**
+     * HEAD 回退后 `start..HEAD` 会是空集合，但这不是“会话没有新增提交”。
+     * 会话结束检查必须先证明 start 仍为 HEAD 的祖先。
+     */
+    await repo.git('reset', '--hard', `${sessionHead}^`);
+    await expectApexErrorAsync(
+      () => port.assertSessionEnd(repo.root, facts, start),
+      'GIT_HISTORY_DIVERGED',
+    );
+  });
+
   it('fails with PROTECTED_PATH_CHANGED when SPEC becomes staged mid-run', async () => {
     const facts = await seedWithRunBranch();
     const start = await port.assertSessionStart(repo.root, facts);

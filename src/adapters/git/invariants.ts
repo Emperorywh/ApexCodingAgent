@@ -225,6 +225,29 @@ export async function listSessionCommits(
 ): Promise<string[]> {
   const head = (await git.run(['rev-parse', 'HEAD'], root)).stdout.trim();
   if (head === sessionStartHead) return [];
+  /**
+   * `start..HEAD` 在 HEAD 被 reset 到会话起点之前时会返回空集合，
+   * 因而不能单独证明会话历史只向前增长。先验证起点仍是 HEAD 的祖先，
+   * 再枚举新增提交，才能把 rewind 与正常的无提交会话区分开。
+   */
+  const ancestry = await git.runAllowFailure(
+    ['merge-base', '--is-ancestor', sessionStartHead, 'HEAD'],
+    root,
+  );
+  if (ancestry.code === 1) {
+    throw gitHistoryDiverged(
+      `session start HEAD ${sessionStartHead} is no longer an ancestor of HEAD ${head}`,
+    );
+  }
+  if (ancestry.code !== 0) {
+    throw gitCommandFailed(
+      `git merge-base --is-ancestor ${sessionStartHead} HEAD failed`,
+      {
+        stderr: ancestry.stderr,
+        redact: git.redact,
+      },
+    );
+  }
   const { stdout } = await git.run(['rev-list', '--reverse', `${sessionStartHead}..HEAD`], root);
   return stdout
     .split('\n')

@@ -45,7 +45,7 @@ export const tasksJsonSchema = {
     schemaVersion: { type: 'integer', const: 1 },
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
     planRevision: { type: 'integer', minimum: 1 },
-    specPath: { type: 'string', minLength: 1 },
+    specPath: { type: 'string', format: 'git-relative-path' },
     specSha256: { type: 'string', format: 'sha256' },
     generatedAt: { type: 'string', format: 'rfc3339' },
     plannerSessionId: { type: 'string', pattern: UUID_PATTERN.source },

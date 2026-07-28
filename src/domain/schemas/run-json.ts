@@ -113,7 +113,7 @@ export const runJsonSchema = {
       additionalProperties: false,
       required: ['path', 'sha256'],
       properties: {
-        path: { type: 'string', minLength: 1 },
+        path: { type: 'string', format: 'git-relative-path' },
         sha256: { type: 'string', format: 'sha256' },
       },
     },
@@ -155,7 +155,9 @@ export const runJsonSchema = {
     finalReviewEpisodes: { type: 'array', items: finalReviewEpisodeSchema },
     lastError: { anyOf: [{ type: 'null' }, errorRecordSchema] },
     finalCommit: nullableGitOid,
-    reportPath: { type: ['string', 'null'], minLength: 1 },
+    reportPath: {
+      anyOf: [{ type: 'null' }, { type: 'string', format: 'git-relative-path' }],
+    },
     createdAt: { type: 'string', format: 'rfc3339' },
     updatedAt: { type: 'string', format: 'rfc3339' },
     terminalAt: { anyOf: [{ type: 'null' }, { type: 'string', format: 'rfc3339' }] },

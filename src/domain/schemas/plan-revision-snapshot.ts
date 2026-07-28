@@ -80,7 +80,7 @@ export const planRevisionSnapshotSchema = {
         },
       },
     },
-    specPath: { type: 'string', minLength: 1 },
+    specPath: { type: 'string', format: 'git-relative-path' },
     specSha256: { type: 'string', format: 'sha256' },
     generatedAt: { type: 'string', format: 'rfc3339' },
     plannerSessionId: { type: 'string', pattern: UUID_PATTERN.source },

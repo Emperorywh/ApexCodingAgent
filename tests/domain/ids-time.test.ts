@@ -11,6 +11,7 @@ import {
   isUuid,
   taskIdNumber,
 } from '../../src/domain/ids.js';
+import { isGitRelativePath } from '../../src/domain/paths.js';
 import { formatRfc3339Utc, isRfc3339Utc } from '../../src/domain/time.js';
 import { RUN_ID, UUID_1 } from './fixtures.js';
 
@@ -54,17 +55,49 @@ describe('ids', () => {
     expect(isSha256('g'.repeat(64))).toBe(false);
   });
 
-  it('validates Git OIDs as 40 lowercase hex chars', () => {
+  it('validates full lowercase Git OIDs for SHA-1 and SHA-256 repositories', () => {
     expect(isGitOid('b'.repeat(40))).toBe(true);
+    expect(isGitOid('b'.repeat(64))).toBe(true);
     expect(isGitOid('b'.repeat(39))).toBe(false);
     expect(isGitOid('b'.repeat(41))).toBe(false);
+    expect(isGitOid('b'.repeat(63))).toBe(false);
+    expect(isGitOid('b'.repeat(65))).toBe(false);
     expect(isGitOid('B'.repeat(40))).toBe(false);
+    expect(isGitOid('B'.repeat(64))).toBe(false);
   });
 
   it('validates Run Branch names', () => {
     expect(isRunBranch(`apex-coding-agent/${RUN_ID}`)).toBe(true);
     expect(isRunBranch(`feature/${RUN_ID}`)).toBe(false);
     expect(isRunBranch(RUN_ID)).toBe(false);
+  });
+});
+
+describe('Git relative paths', () => {
+  it('accepts normalized repository-relative paths', () => {
+    expect(isGitRelativePath('SPEC.md')).toBe(true);
+    expect(isGitRelativePath('docs/sessions/G1.md')).toBe(true);
+    expect(isGitRelativePath('.apex/report.json')).toBe(true);
+  });
+
+  it('rejects absolute, escaping, ambiguous and backslash paths', () => {
+    /**
+     * 持久化路径只允许 Git 风格正斜杠表示法。
+     * 任何盘符、绝对路径、空段或点段都必须在进入 Adapter 前被拒绝。
+     */
+    for (const path of [
+      '',
+      '/docs/SPEC.md',
+      'C:/repo/SPEC.md',
+      'C:\\repo\\SPEC.md',
+      '../SPEC.md',
+      'docs/../SPEC.md',
+      './SPEC.md',
+      'docs//SPEC.md',
+      'docs\\SPEC.md',
+    ]) {
+      expect(isGitRelativePath(path)).toBe(false);
+    }
   });
 });
 

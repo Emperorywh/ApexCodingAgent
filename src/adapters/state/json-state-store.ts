@@ -27,6 +27,10 @@ import {
   assertRunJsonRules,
   assertSessionRecordRules,
 } from '../../domain/invariants.js';
+import {
+  assertPlanRevisionCommitCoherent,
+  assertPlanRevisionSnapshotRules,
+} from '../../domain/plan-documents.js';
 import { assertSchemaValid } from '../../domain/schemas/index.js';
 import type { PlanRevisionSnapshot } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
@@ -141,6 +145,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
             `snapshot file ${snapshotPath(planRevision)} carries planRevision ${value.planRevision}`,
           );
         }
+        assertPlanRevisionSnapshotRules(value);
       },
     );
     return read === null ? null : read.value;
@@ -148,6 +153,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
 
   async function writePlanSnapshot(snapshot: PlanRevisionSnapshot): Promise<void> {
     assertSchemaValid('PlanRevisionSnapshot', snapshot, STATE_VALIDATION);
+    assertPlanRevisionSnapshotRules(snapshot);
     const path = snapshotPath(snapshot.planRevision);
     if ((await fs.stat(path)) !== null) {
       throw stateWriteFailed(`immutable plan snapshot ${path} already exists`);
@@ -200,30 +206,29 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   async function commitPlanRevision(commit: PlanRevisionCommit): Promise<void> {
     const { snapshot, tasks, run } = commit;
 
-    // Everything is validated before the first write, so a failure here
-    // leaves zero files touched (no observable half revision).
+    /**
+     * 在首次写盘前校验三份文档的完整聚合一致性。
+     *
+     * 任何字段漂移、Revision 跳号或父版本错误都会以零写入失败，
+     * 不会制造一个表面可读、语义上却互相矛盾的半提交 Revision。
+     */
     assertSchemaValid('PlanRevisionSnapshot', snapshot, STATE_VALIDATION);
     assertSchemaValid('TasksJson', tasks, STATE_VALIDATION);
-    // Serialization is deterministic: this is the SHA-256 the tasks.json raw
-    // bytes will have after replacement, verified again after the write.
+    /**
+     * 序列化是确定性的，因此这里可预先得到 tasks.json 写盘后的原始字节哈希；
+     * 完成替换后仍会复算一次，保护 FileSystemPort 的实现边界。
+     */
     const expectedTasksSha256 = sha256Hex(serializeJson(tasks));
     const candidateRun: RunJson = { ...run, tasksSha256: expectedTasksSha256 };
     assertSchemaValid('RunJson', candidateRun, STATE_VALIDATION);
-    assertRunInvariants(candidateRun, { tasks: tasks.tasks });
 
-    if (
-      snapshot.planRevision !== tasks.planRevision ||
-      tasks.planRevision !== candidateRun.planRevision
-    ) {
-      throw stateValidationFailed(
-        `plan revision mismatch: snapshot ${snapshot.planRevision}, tasks.json ${tasks.planRevision}, run.json ${candidateRun.planRevision}`,
-      );
-    }
-    if (snapshot.runId !== tasks.runId || tasks.runId !== candidateRun.runId) {
-      throw stateValidationFailed('run id mismatch across snapshot, tasks.json and run.json');
-    }
     const existing = await readRun();
-    if (existing !== null && candidateRun.stateRevision <= existing.stateRevision) {
+    if (existing === null) {
+      throw stateValidationFailed('plan revision commit requires an existing run.json');
+    }
+    assertPlanRevisionCommitCoherent(existing, snapshot, tasks, candidateRun);
+    assertRunInvariants(candidateRun, { tasks: tasks.tasks });
+    if (candidateRun.stateRevision <= existing.stateRevision) {
       throw stateValidationFailed(
         `run.json stateRevision must strictly increase: ${existing.stateRevision} -> ${candidateRun.stateRevision}`,
       );
@@ -233,7 +238,10 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
       throw stateWriteFailed(`immutable plan snapshot ${snapshotTarget} already exists`);
     }
 
-    // SPEC §11.2 commit order: snapshot -> tasks.json -> SHA-256 -> run.json.
+    /**
+     * 提交顺序固定为 Snapshot → tasks.json → 哈希复核 → run.json。
+     * 最后的 run.json 替换是新 Revision 对读者可见的提交点。
+     */
     await writePlanSnapshot(snapshot);
     const tasksSha256 = await writeTasks(tasks);
     if (tasksSha256 !== expectedTasksSha256) {
@@ -248,10 +256,19 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
       if (run1 === null) return null;
 
       if (run1.planRevision === 0) {
-        // Read-time Domain rules guarantee tasksSha256 is null here, so
-        // tasks.json must not exist: compare two run.json reads (SPEC §11.2).
+        /**
+         * Revision 0 的一致快照不仅要求两次 run.json 相同，还要求 tasks.json
+         * 确实不存在。计划提交在 run.json 提交点前失败时会遗留较新的
+         * tasks.json，此时必须重试并最终报告忙，不能静默返回旧计划视图。
+         */
         const run2 = await readRun();
-        if (run2 !== null && run1.stateRevision === run2.stateRevision) {
+        const tasksStat = await fs.stat(tasksPath);
+        if (
+          run2 !== null &&
+          run1.stateRevision === run2.stateRevision &&
+          run2.planRevision === 0 &&
+          tasksStat === null
+        ) {
           return { run: run2, tasks: null };
         }
         continue;
@@ -267,9 +284,23 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
       if (
         run2 !== null &&
         run1.stateRevision === run2.stateRevision &&
-        run1.planRevision === tasksRead.value.planRevision &&
-        run1.tasksSha256 === sha256Hex(tasksRead.bytes)
+        run1.planRevision === run2.planRevision &&
+        run1.tasksSha256 === run2.tasksSha256 &&
+        run2.planRevision === tasksRead.value.planRevision &&
+        run2.tasksSha256 === sha256Hex(tasksRead.bytes)
       ) {
+        /**
+         * 双读稳定后再验证跨文档事实和完整运行态不变量。
+         * 不稳定读只重试；稳定但语义损坏的数据必须明确报验证失败。
+         */
+        if (
+          run2.runId !== tasksRead.value.runId ||
+          run2.spec.path !== tasksRead.value.specPath ||
+          run2.spec.sha256 !== tasksRead.value.specSha256
+        ) {
+          throw stateValidationFailed('stable run.json and tasks.json facts do not match');
+        }
+        assertRunInvariants(run2, { tasks: tasksRead.value.tasks });
         return { run: run2, tasks: tasksRead.value };
       }
     }

@@ -36,7 +36,7 @@ export const runArchiveManifestSchema = {
         additionalProperties: false,
         required: ['path', 'byteLength', 'sha256'],
         properties: {
-          path: { type: 'string', minLength: 1 },
+          path: { type: 'string', format: 'git-relative-path' },
           byteLength: { type: 'integer', minimum: 0 },
           sha256: { type: 'string', pattern: SHA256_PATTERN.source },
         },

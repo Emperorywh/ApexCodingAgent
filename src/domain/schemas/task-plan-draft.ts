@@ -63,7 +63,10 @@ export const plannedTaskSchema = {
       minItems: 1,
     },
     verificationHints: { type: 'array', items: { type: 'string', minLength: 1 } },
-    likelyPaths: { type: 'array', items: { type: 'string', minLength: 1 } },
+    likelyPaths: {
+      type: 'array',
+      items: { type: 'string', format: 'git-relative-path' },
+    },
     estimatedSize: { enum: ['small', 'medium', 'large'] },
     context: { type: 'string', minLength: 1 },
   },

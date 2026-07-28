@@ -94,7 +94,7 @@ export const sessionRecordSchema = {
         finalReviewResultSchema,
       ],
     },
-    logPath: { type: 'string', minLength: 1 },
+    logPath: { type: 'string', format: 'git-relative-path' },
     error: { anyOf: [{ type: 'null' }, errorRecordSchema] },
   },
 } as const;

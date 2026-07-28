@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { realpath, stat, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ApexError } from '../../domain/errors.js';
+import { isGitRelativePath } from '../../domain/paths.js';
 import type { SpecFact } from '../../application/ports/GitPort.js';
 import type { GitRunner } from './cli.js';
 
@@ -227,13 +228,25 @@ export async function resolveSpecFact(
   return { gitPath, absolutePath, sha256 };
 }
 
-/** SPEC §3.2 recompute boundary: re-read the authoritative path and re-hash. */
+/**
+ * 在每个 SPEC 重算边界重新验证权威路径。
+ *
+ * 持久化 Schema 会先拒绝绝对路径和 `..`，这里仍按真实路径再次校验，
+ * 以防 Run 期间符号链接或 Junction 的目标发生变化并逃逸仓库。
+ */
 export async function readSpecFact(
   git: GitRunner,
   root: string,
   gitPath: string,
 ): Promise<SpecFact> {
-  const absolutePath = resolve(root, gitPath);
+  if (!isGitRelativePath(gitPath)) {
+    throw specError(
+      'SPEC_OUTSIDE_REPOSITORY',
+      `stored SPEC path is not a valid Git-relative path: ${gitPath}`,
+    );
+  }
+  // 权威身份仍是持久化的 gitPath；realpath 重算结果只用于包含关系校验。
+  const { absolutePath } = await resolveExplicitSpecPath(root, root, gitPath);
   const { sha256 } = await readSpecFile(absolutePath);
   return { gitPath, absolutePath, sha256 };
 }

@@ -62,15 +62,30 @@ describe('consistent read', () => {
     expect(await store.readConsistentSnapshot()).toBeNull();
   });
 
-  it('compares two run.json reads only while planRevision is 0', async () => {
+  it('double-reads run.json and verifies tasks.json is absent while planRevision is 0', async () => {
     const run = mkRun();
     await store.writeRun(run);
     fs.ops.length = 0;
 
     expect(await store.readConsistentSnapshot()).toEqual({ run, tasks: null });
     expect(runReads()).toBe(2);
-    // tasks.json is never touched in the planRevision-0 special case.
-    expect(fs.ops.filter((op) => op.path.includes('tasks.json'))).toEqual([]);
+    expect(fs.ops.filter((op) => op.path === TASKS_PATH)).toEqual([
+      { op: 'stat', path: TASKS_PATH },
+    ]);
+  });
+
+  it('never returns revision 0 when an uncommitted tasks.json is present', async () => {
+    /**
+     * 模拟首次计划提交已替换 tasks.json、但尚未替换 run.json 的窗口。
+     * 稳定的旧 run.json 也不能掩盖这个半提交状态。
+     */
+    await store.writeRun(mkRun({ stateRevision: 1 }));
+    await store.writeTasks(mkTasks(1));
+    fs.ops.length = 0;
+
+    await expectApexErrorAsync(() => store.readConsistentSnapshot(), 'STATE_SNAPSHOT_BUSY');
+    expect(runReads()).toBe(8);
+    expect(writeOps()).toEqual([]);
   });
 
   it('returns a consistent run+tasks snapshot for a committed revision', async () => {

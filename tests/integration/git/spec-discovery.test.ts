@@ -286,6 +286,21 @@ describe('SPEC tracked / modified / staged states', () => {
 });
 
 describe('readSpecFact recompute boundary', () => {
+  it('rejects a persisted path that is no longer a valid Git-relative path', async () => {
+    /**
+     * readSpecFact 接收的是持久化事实，但仍是文件访问边界。
+     * 即使调用方绕过 Schema，也不能用 `..` 或绝对路径读取仓库外文件。
+     */
+    await expectApexErrorAsync(
+      () => port.readSpecFact(repo.root, '../SPEC.md'),
+      'SPEC_OUTSIDE_REPOSITORY',
+    );
+    await expectApexErrorAsync(
+      () => port.readSpecFact(repo.root, 'C:/outside/SPEC.md'),
+      'SPEC_OUTSIDE_REPOSITORY',
+    );
+  });
+
   it('re-hashes the authoritative path after a worktree change', async () => {
     await seedRepo(repo);
     const before = await port.readSpecFact(repo.root, 'SPEC.md');

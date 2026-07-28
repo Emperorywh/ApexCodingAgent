@@ -14,6 +14,7 @@ import {
   assertTaskRuntimeStateRules,
 } from '../../src/domain/invariants.js';
 import type { ActiveSession } from '../../src/domain/schemas/active-session.js';
+import type { FinalReviewEpisode } from '../../src/domain/schemas/final-review-episode.js';
 import type { IntermediateCheckpoint } from '../../src/domain/schemas/intermediate-checkpoint.js';
 import type { RunJson } from '../../src/domain/schemas/run-json.js';
 import type { SessionRecord } from '../../src/domain/schemas/session-record.js';
@@ -43,13 +44,42 @@ function runningRun(overrides: Partial<RunJson> = {}): RunJson {
   });
 }
 
+/**
+ * 构造一次已经完成并产出最终 Checkpoint 的 Final Review Episode。
+ * reviewedTaskIds 由各用例显式传入，便于验证最终覆盖集合。
+ */
+function completedFinalReview(reviewedTaskIds: string[]): FinalReviewEpisode {
+  return {
+    sessionId: UUID_2,
+    planRevision: 1,
+    specSha256Before: SHA256_A,
+    specSha256After: SHA256_A,
+    startedAt: T0,
+    endedAt: T1,
+    decision: 'completed',
+    summary: 'Final review completed',
+    reviewedTaskIds,
+    changedAreas: [],
+    checkpointRole: 'final-review-final',
+    checkpoint: OID_B,
+    checkpointReason: 'Final Review Checkpoint 已确认',
+    error: null,
+  };
+}
+
 describe('run.json conditional rules (§11.3)', () => {
   it('accepts the initial planning shape (planRevision 0, no tasks)', () => {
     expect(() => assertRunJsonRules(mkRun())).not.toThrow();
     expect(() => assertRunInvariants(mkRun(), null)).not.toThrow();
   });
 
-  it('couples planRevision 0 with tasksSha256 null and planning status', () => {
+  it('couples planRevision 0 with no committed tasks and only initialization terminal states', () => {
+    expect(() =>
+      assertRunJsonRules(mkRun({ status: 'failed', terminalAt: T1 })),
+    ).not.toThrow();
+    expect(() =>
+      assertRunJsonRules(mkRun({ status: 'abandoned', terminalAt: T1 })),
+    ).not.toThrow();
     expectApexError(
       () => assertRunJsonRules(mkRun({ tasksSha256: SHA256_A })),
       'STATE_VALIDATION_FAILED',
@@ -215,6 +245,15 @@ describe('Task Runtime State rules (§11.3)', () => {
       'STATE_VALIDATION_FAILED',
     );
     expectApexError(
+      () =>
+        assertTaskRuntimeStateRules(
+          mkTaskState('TASK-001', 'completed', {
+            completedResult: mkResult({ decision: 'failed' }),
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
       () => assertTaskRuntimeStateRules(mkTaskState('TASK-001', 'failed', { failure: null })),
       'STATE_VALIDATION_FAILED',
     );
@@ -247,6 +286,62 @@ describe('Task Runtime State rules (§11.3)', () => {
 });
 
 describe('cross-state invariants (§6.6)', () => {
+  it('keeps current plan definitions and runtime states in exact scheduling sync', () => {
+    const planned = [mkTask('TASK-001')];
+    expectApexError(
+      () =>
+        assertRunInvariants(
+          runningRun({ tasks: {} }),
+          { tasks: planned },
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunInvariants(
+          runningRun({
+            tasks: {
+              'TASK-001': mkTaskState('TASK-001', 'pending'),
+              'TASK-002': mkTaskState('TASK-002', 'pending'),
+            },
+          }),
+          { tasks: planned },
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expect(() =>
+      assertRunInvariants(
+        runningRun({
+          tasks: {
+            'TASK-001': mkTaskState('TASK-001', 'pending'),
+            'TASK-002': mkTaskState('TASK-002', 'skipped'),
+          },
+        }),
+        { tasks: planned },
+      ),
+    ).not.toThrow();
+  });
+
+  it('validates completed task evidence against its planned acceptance criteria', () => {
+    const task = mkTask('TASK-001');
+    const incompleteResult = mkResult({
+      acceptanceEvidence: [
+        { criterionIndex: 0, status: 'satisfied', evidence: 'only first criterion' },
+      ],
+    });
+    const run = runningRun({
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'completed', {
+          completedResult: incompleteResult,
+        }),
+      },
+    });
+    expectApexError(
+      () => assertRunInvariants(run, { tasks: [task] }),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
   it('planning must not have a running task', () => {
     const run = mkRun({
       planRevision: 1,
@@ -359,6 +454,61 @@ describe('cross-state invariants (§6.6)', () => {
       );
     }
   });
+
+  it('completed requires all current tasks and an exact completed Final Review', () => {
+    const plan = { tasks: [mkTask('TASK-001'), mkTask('TASK-002')] };
+    const completedBase: Partial<RunJson> = {
+      status: 'completed',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      terminalAt: T1,
+      finalCommit: OID_B,
+      reportPath: 'reports/run.md',
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'completed'),
+        'TASK-002': mkTaskState('TASK-002', 'completed'),
+      },
+      finalReviewEpisodes: [completedFinalReview(['TASK-001', 'TASK-002'])],
+    };
+    expect(() => assertRunInvariants(mkRun(completedBase), plan)).not.toThrow();
+
+    expectApexError(
+      () =>
+        assertRunInvariants(
+          mkRun({
+            ...completedBase,
+            tasks: {
+              'TASK-001': mkTaskState('TASK-001', 'completed'),
+              'TASK-002': mkTaskState('TASK-002', 'pending'),
+            },
+          }),
+          plan,
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunInvariants(
+          mkRun({
+            ...completedBase,
+            finalReviewEpisodes: [completedFinalReview(['TASK-001'])],
+          }),
+          plan,
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunInvariants(
+          mkRun({
+            ...completedBase,
+            finalReviewEpisodes: [],
+          }),
+          plan,
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
 });
 
 describe('Intermediate Checkpoint rules (§11.3)', () => {
@@ -451,6 +601,66 @@ describe('Session Record rules (§11.4)', () => {
       () =>
         assertSessionRecordRules(
           mkSessionRecord({ status: 'failed', structuredResult: null, error: null }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertSessionRecordRules(
+          mkSessionRecord({
+            status: 'failed',
+            exitCode: null,
+            structuredResult: null,
+            error: mkErrorRecord(),
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertSessionRecordRules(
+          mkSessionRecord({
+            status: 'failed',
+            exitCode: 1,
+            structuredResult: null,
+            error: mkErrorRecord({
+              errorCode: 'CLAUDE_START_FAILED',
+              errorClass: 'claude_error',
+            }),
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('allows exitCode null when the coordinator abandons the session relay', () => {
+    /**
+     * SPEC abandon 流程要求写入 exitCode 为 null、错误码为
+     * RUN_ABANDONED_BY_USER 的失败 Session Record：不声称旧进程已经
+     * 退出，也不得伪造退出码。
+     */
+    const abandoned = mkSessionRecord({
+      status: 'failed',
+      exitCode: null,
+      structuredResult: null,
+      error: mkErrorRecord({
+        errorCode: 'RUN_ABANDONED_BY_USER',
+        errorClass: 'run_control',
+      }),
+    });
+    expect(() => assertSessionRecordRules(abandoned)).not.toThrow();
+    expectApexError(
+      () =>
+        assertSessionRecordRules(
+          mkSessionRecord({
+            status: 'failed',
+            exitCode: 1,
+            structuredResult: null,
+            error: mkErrorRecord({
+              errorCode: 'RUN_ABANDONED_BY_USER',
+              errorClass: 'run_control',
+            }),
+          }),
         ),
       'STATE_VALIDATION_FAILED',
     );

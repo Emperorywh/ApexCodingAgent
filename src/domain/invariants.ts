@@ -6,7 +6,8 @@
  * conditions the schema language is not used for. Violations throw
  * STATE_VALIDATION_FAILED.
  */
-import { ApexError, errorClassForCode } from './errors.js';
+import { ApexError, errorClassForCode, type ErrorCode } from './errors.js';
+import { validateExecutionResultSemantics } from './results.js';
 import { isTerminalRunStatus } from './run-state.js';
 import { validate } from './schemas/index.js';
 import type { ActiveSession } from './schemas/active-session.js';
@@ -170,6 +171,10 @@ export function assertTaskRuntimeStateRules(state: TaskRuntimeState): void {
         `completed task ${state.taskId} requires completedResult and finalCheckpoint`,
       );
       assertCondition(
+        state.completedResult?.decision === 'completed',
+        `completed task ${state.taskId} requires completedResult decision completed`,
+      );
+      assertCondition(
         state.skipReason === null && state.failure === null,
         `completed task ${state.taskId} must keep skipReason and failure null`,
       );
@@ -236,6 +241,15 @@ export function assertIntermediateCheckpointRules(checkpoint: IntermediateCheckp
   }
 }
 
+/**
+ * 没有可信进程退出码的失败错误码（SPEC §11.4 与 abandon 流程）：
+ * Claude 进程未能启动，或 Coordinator 放弃接力而旧进程退出状态未知。
+ */
+const ERROR_CODES_WITHOUT_EXIT_CODE: readonly ErrorCode[] = [
+  'CLAUDE_START_FAILED',
+  'RUN_ABANDONED_BY_USER',
+];
+
 /** Session Record rules (§11.4). */
 export function assertSessionRecordRules(record: SessionRecord): void {
   if (record.type === 'execution') {
@@ -272,6 +286,19 @@ export function assertSessionRecordRules(record: SessionRecord): void {
       `failed session record ${record.sessionId} must have structuredResult null`,
     );
     assertErrorRecordRules(record.error!);
+    /**
+     * 只有没有可信进程退出码的失败才允许 exitCode 为 null。
+     *
+     * 进程未能启动（CLAUDE_START_FAILED）与 Coordinator 放弃接力
+     * （RUN_ABANDONED_BY_USER，不声称旧进程已退出）必须保存 null，不得
+     * 伪造退出码；其他失败都来自一个已经结束的进程，必须持久化真实
+     * 退出码，以免调用方误判进程从未运行。
+     */
+    assertCondition(
+      (record.exitCode === null) ===
+        ERROR_CODES_WITHOUT_EXIT_CODE.includes(record.error!.errorCode),
+      `failed session record ${record.sessionId} exitCode null requires errorCode CLAUDE_START_FAILED or RUN_ABANDONED_BY_USER`,
+    );
   }
   // The stored structured result must be the one matching the session type.
   if (record.structuredResult !== null) {
@@ -296,8 +323,8 @@ export function assertRunJsonRules(run: RunJson): void {
       'planRevision 0 requires tasksSha256 null (initial planning, no revision committed)',
     );
     assertCondition(
-      run.status === 'planning',
-      'planRevision 0 is only allowed while initially planning',
+      run.status === 'planning' || run.status === 'failed' || run.status === 'abandoned',
+      'planRevision 0 is only allowed while initially planning or after that phase terminates',
     );
     assertCondition(
       Object.keys(run.tasks).length === 0,
@@ -369,6 +396,38 @@ export function assertRunJsonRules(run: RunJson): void {
 }
 
 /**
+ * 校验进入 Final Review 或 completed 前的共同完成门槛。
+ *
+ * 两个状态都要求当前 Revision 的任务全部完成，且所有中间 Checkpoint
+ * 已由 completed Task 吸收；集中实现可防止两个终段状态的规则逐渐漂移。
+ */
+function assertCompletionPrerequisites(
+  run: RunJson,
+  currentPlan: { readonly tasks: readonly PlannedTask[] } | null,
+  targetStatus: 'final_review' | 'completed',
+): string[] {
+  assertCondition(
+    currentPlan !== null,
+    `${targetStatus} invariants require the current plan task list`,
+  );
+  const taskIds = currentPlan!.tasks.map((task) => task.id);
+  for (const taskId of taskIds) {
+    assertCondition(
+      run.tasks[taskId]?.status === 'completed',
+      `${targetStatus} requires plan task ${taskId} completed`,
+    );
+  }
+  for (const checkpoint of run.intermediateCheckpoints) {
+    const owner = checkpoint.ownerTaskId !== null ? run.tasks[checkpoint.ownerTaskId] : undefined;
+    assertCondition(
+      owner !== undefined && owner.status === 'completed',
+      `${targetStatus} requires intermediate checkpoint ${checkpoint.oid} owned by a completed task`,
+    );
+  }
+  return taskIds;
+}
+
+/**
  * Cross-state invariants (SPEC §6.6). `currentPlan` is the task list of the
  * committed plan revision; it must be provided whenever planRevision > 0.
  */
@@ -377,6 +436,41 @@ export function assertRunInvariants(
   currentPlan: { readonly tasks: readonly PlannedTask[] } | null,
 ): void {
   assertRunJsonRules(run);
+
+  /**
+   * 已提交计划与运行态 Map 是同一组任务事实的两个视图。
+   *
+   * 当前计划中的任务必须全部有运行态；被新 Revision 移出的历史任务只能
+   * 以 skipped 留存，避免旧任务继续参与调度或完成态判断。
+   */
+  if (run.planRevision > 0) {
+    assertCondition(currentPlan !== null, 'committed plan invariants require the current plan');
+    const currentTaskById = new Map(currentPlan!.tasks.map((task) => [task.id, task]));
+    for (const task of currentPlan!.tasks) {
+      const state = run.tasks[task.id];
+      assertCondition(state !== undefined, `current plan task ${task.id} has no runtime state`);
+      assertCondition(
+        state?.status !== 'skipped',
+        `current plan task ${task.id} must not have skipped runtime state`,
+      );
+      if (state?.status === 'completed' && state.completedResult !== null) {
+        try {
+          validateExecutionResultSemantics(state.completedResult, task);
+        } catch (error) {
+          const detail = error instanceof Error ? `: ${error.message}` : '';
+          throw violation(
+            `completed task ${task.id} result does not satisfy its planned acceptance criteria${detail}`,
+          );
+        }
+      }
+    }
+    for (const state of Object.values(run.tasks)) {
+      assertCondition(
+        currentTaskById.has(state.taskId) || state.status === 'skipped',
+        `runtime task ${state.taskId} is outside the current plan but is not skipped`,
+      );
+    }
+  }
 
   const runningTaskIds = Object.values(run.tasks)
     .filter((state) => state.status === 'running')
@@ -406,23 +500,37 @@ export function assertRunInvariants(
     }
   }
   if (run.status === 'final_review') {
+    assertCompletionPrerequisites(run, currentPlan, 'final_review');
+  }
+  if (run.status === 'completed') {
     assertCondition(
-      currentPlan !== null,
-      'final_review invariants require the current plan task list',
+      run.activeSession === null && run.currentTaskId === null,
+      'completed run must not keep an activeSession or currentTaskId',
     );
-    for (const task of currentPlan!.tasks) {
-      assertCondition(
-        run.tasks[task.id]?.status === 'completed',
-        `final_review requires plan task ${task.id} completed`,
-      );
-    }
-    for (const checkpoint of run.intermediateCheckpoints) {
-      const owner = checkpoint.ownerTaskId !== null ? run.tasks[checkpoint.ownerTaskId] : undefined;
-      assertCondition(
-        owner !== undefined && owner.status === 'completed',
-        `final_review requires intermediate checkpoint ${checkpoint.oid} owned by a completed task`,
-      );
-    }
+    const completedTaskIds = assertCompletionPrerequisites(run, currentPlan, 'completed');
+
+    /**
+     * Run 完成必须由最后一次 Final Review 的完成结论封口。
+     *
+     * reviewedTaskIds 按集合精确覆盖当前 Revision，防止缺审、重复审或把
+     * 历史任务混入最终完成证据。
+     */
+    const finalReview = run.finalReviewEpisodes.at(-1);
+    assertCondition(
+      finalReview !== undefined && finalReview.decision === 'completed',
+      'completed run requires the last final review episode to be completed',
+    );
+    const reviewedTaskIds = finalReview?.reviewedTaskIds ?? [];
+    const reviewedSet = new Set(reviewedTaskIds);
+    assertCondition(
+      reviewedSet.size === reviewedTaskIds.length,
+      'completed run final review contains duplicate reviewedTaskIds',
+    );
+    assertCondition(
+      reviewedSet.size === completedTaskIds.length &&
+        completedTaskIds.every((taskId) => reviewedSet.has(taskId)),
+      'completed run final review must cover exactly the current plan tasks',
+    );
   }
   if (run.status === 'failed' || run.status === 'abandoned') {
     assertCondition(

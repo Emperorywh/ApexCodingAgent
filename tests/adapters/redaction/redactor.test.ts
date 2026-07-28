@@ -127,21 +127,54 @@ describe('redactStructured', () => {
     expect(out.message).toBe(`call failed with Authorization: ${REDACTED_PLACEHOLDER}`);
   });
 
-  it('preserves JSON types: non-string values are left untouched', () => {
+  it('redacts sensitive primitive values while preserving their JSON types', () => {
     const input = {
       token: 42,
       secret: true,
       password: null,
       count: 7,
       list: [1, 'two', false],
+      credentials: {
+        nestedToken: 'deep-value',
+        attempts: 9,
+        enabled: true,
+      },
     };
     const out = redactor.redactStructured(input);
     expect(out).toEqual({
-      token: 42,
-      secret: true,
+      token: 0,
+      secret: false,
       password: null,
       count: 7,
       list: [1, 'two', false],
+      credentials: {
+        nestedToken: REDACTED_PLACEHOLDER,
+        attempts: 9,
+        enabled: true,
+      },
+    });
+  });
+
+  it('propagates a sensitive parent field to every nested value', () => {
+    /**
+     * 敏感父对象下即使子字段名本身不敏感，也不能恢复为普通遍历模式；
+     * 容器形状和 JSON 类型保留，但所有可携带秘密的叶子都被替换。
+     */
+    const out = redactor.redactStructured({
+      authorization: {
+        value: 'nested-secret',
+        retryCount: 3,
+        active: true,
+        nullable: null,
+        items: ['one', 7, false],
+      },
+    });
+    expect(out.authorization).toEqual({
+      value: REDACTED_PLACEHOLDER,
+      retryCount: 0,
+      active: false,
+      nullable: null,
+      items: [REDACTED_PLACEHOLDER, 0, false],
     });
   });
 

@@ -17,8 +17,13 @@ export const TASK_ID_PATTERN = /^TASK-(?!000)\d{3}$/;
 /** SHA-256 as 64 lowercase hex chars, always computed over raw bytes. */
 export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-/** Full lowercase Git object ID (SHA-1). */
-export const GIT_OID_PATTERN = /^[0-9a-f]{40}$/;
+/**
+ * 完整小写 Git 对象 ID。
+ *
+ * Git 仓库可能使用 SHA-1 或 SHA-256 对象格式，因此领域契约必须同时
+ * 接受 40 位与 64 位完整 OID，不能把仓库格式隐式固定为 SHA-1。
+ */
+export const GIT_OID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export const RUN_BRANCH_PREFIX = 'apex-coding-agent/';
 

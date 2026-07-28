@@ -44,6 +44,20 @@ describe('run.json writes', () => {
     expect(await store.readConsistentSnapshot()).toEqual({ run, tasks: null });
   });
 
+  it('persists a failed run before the first plan revision exists', async () => {
+    /**
+     * 初始化 Planning 可能在 Revision 1 提交前失败；该终态必须能够落盘，
+     * 否则 Coordinator 无法记录一次真实发生的启动或规划失败。
+     */
+    const failed = mkRun({
+      status: 'failed',
+      terminalAt: '2026-01-01T01:00:00Z',
+      lastError: mkErrorRecord(),
+    });
+    await store.writeRun(failed);
+    expect(await store.readRun()).toEqual(failed);
+  });
+
   it('enforces strictly increasing stateRevision', async () => {
     await store.writeRun(mkRun({ stateRevision: 1 }));
     // Same revision is rejected.
@@ -229,6 +243,32 @@ describe('plan revision commit (SPEC §11.2)', () => {
     expect(fs.files.has(TASKS_PATH)).toBe(false);
   });
 
+  it('rejects Snapshot and tasks.json with different task definitions before writing', async () => {
+    await store.writeRun(mkRun({ stateRevision: 1 }));
+    const changedTasks = [
+      { ...DEFAULT_PLAN_TASKS[0]!, title: 'Different task title' },
+      DEFAULT_PLAN_TASKS[1]!,
+    ];
+    fs.ops.length = 0;
+
+    /**
+     * Revision、runId 和任务 ID 都相同，但任务内容不同。
+     * 聚合提交必须比较完整计划事实，而不是只比较几个外层标识。
+     */
+    await expectApexErrorAsync(
+      () =>
+        store.commitPlanRevision({
+          snapshot: mkSnapshot(1),
+          tasks: mkTasks(1, changedTasks),
+          run: mkCommittedRun(1, 2),
+        }),
+      'STATE_VALIDATION_FAILED',
+    );
+    expect(fs.ops.filter((op) => op.op === 'writeFile' || op.op === 'rename')).toEqual([]);
+    expect(fs.files.has(SNAPSHOT_PATH(1))).toBe(false);
+    expect(fs.files.has(TASKS_PATH)).toBe(false);
+  });
+
   it('keeps the old revision observable when the tasks.json replacement fails', async () => {
     await store.writeRun(mkRun({ stateRevision: 1 }));
     fs.injectFailure({ op: 'rename', pathIncludes: 'tasks.json', error: new Error('i/o error') });
@@ -274,6 +314,30 @@ describe('plan revision commit (SPEC §11.2)', () => {
 
     // tasks.json moved to revision 2 but run.json still says revision 1:
     // the consistent read must refuse the splice instead of showing it.
+    await expectApexErrorAsync(() => store.readConsistentSnapshot(), 'STATE_SNAPSHOT_BUSY');
+  });
+
+  it('never exposes revision 0 when the first run.json commit point fails', async () => {
+    await store.writeRun(mkRun({ stateRevision: 1 }));
+    fs.injectFailure({ op: 'writeFile', pathIncludes: 'run.json', error: new Error('disk full') });
+
+    await expectApexErrorAsync(
+      () =>
+        store.commitPlanRevision({
+          snapshot: mkSnapshot(1),
+          tasks: mkTasks(1),
+          run: mkCommittedRun(1, 2),
+        }),
+      'STATE_WRITE_FAILED',
+    );
+
+    /**
+     * Snapshot 与 tasks.json 已经落盘，但旧 run.json 仍停在 Revision 0。
+     * 一致读必须把这个提交窗口视为 busy，不能返回 tasks: null 的伪快照。
+     */
+    expect(fs.files.has(SNAPSHOT_PATH(1))).toBe(true);
+    expect(fs.files.has(TASKS_PATH)).toBe(true);
+    expect((await store.readRun())!.planRevision).toBe(0);
     await expectApexErrorAsync(() => store.readConsistentSnapshot(), 'STATE_SNAPSHOT_BUSY');
   });
 });

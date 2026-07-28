@@ -91,19 +91,30 @@ function redactStructuredValue(value: unknown, keyIsSensitive: boolean): unknown
   if (typeof value === 'string') {
     return keyIsSensitive ? REDACTED_PLACEHOLDER : applyRules(value);
   }
+  if (keyIsSensitive && typeof value === 'number') {
+    return 0;
+  }
+  if (keyIsSensitive && typeof value === 'boolean') {
+    return false;
+  }
   if (Array.isArray(value)) {
     return value.map((element) => redactStructuredValue(element, keyIsSensitive));
   }
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(value)) {
-      out[key] = redactStructuredValue(nested, SENSITIVE_FIELD_NAME.test(key));
+      out[key] = redactStructuredValue(
+        nested,
+        keyIsSensitive || SENSITIVE_FIELD_NAME.test(key),
+      );
     }
     return out;
   }
-  // Numbers, booleans and null are returned unchanged: only strings are
-  // replaced (with a string placeholder), so JSON types and schema validity
-  // survive redaction (SPEC §18.4).
+  /**
+   * 敏感字段按 JSON 类型使用不可逆占位值：字符串、数字和布尔值分别替换为
+   * 固定字符串、0 与 false；null 保持 null。敏感父对象的标记会向全部后代
+   * 传播，从而既不泄露嵌套值，也不破坏持久化 Schema 所要求的类型。
+   */
   return value;
 }
 

@@ -70,12 +70,20 @@ export function mkSnapshot(
   planRevision = 1,
   tasks: PlannedTask[] = DEFAULT_PLAN_TASKS,
 ): PlanRevisionSnapshot {
+  /**
+   * 首版计划由 initial 触发且没有来源 Session；后续通用夹具使用
+   * spec_changed，避免测试数据绕过 Revision 与触发来源的领域约束。
+   */
+  const trigger: PlanRevisionSnapshot['trigger'] =
+    planRevision === 1
+      ? { type: 'initial', reason: 'initial planning', sourceSessionId: null }
+      : { type: 'spec_changed', reason: 'spec changed', sourceSessionId: null };
   return {
     schemaVersion: 1,
     runId: RUN_ID,
     planRevision,
     parentPlanRevision: planRevision === 1 ? null : planRevision - 1,
-    trigger: { type: 'initial', reason: 'initial planning', sourceSessionId: UUID_1 },
+    trigger,
     specPath: 'docs/SPEC.md',
     specSha256: SHA256_A,
     generatedAt: T0,

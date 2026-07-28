@@ -16,6 +16,7 @@ export type CliCommand =
       readonly fullAccess: boolean;
       readonly claudeCliPath: string | null;
       readonly gitCliPath: string | null;
+      readonly verbose: boolean;
     }
   | { readonly kind: 'status' }
   | { readonly kind: 'report' }
@@ -69,6 +70,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
           'full-access': { type: 'boolean', default: false },
           'claude-cli-path': { type: 'string' },
           'git-cli-path': { type: 'string' },
+          verbose: { type: 'boolean', short: 'v', default: false },
           help: HELP_OPTION,
         },
         true,
@@ -83,6 +85,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         fullAccess: values['full-access'] === true,
         claudeCliPath: typeof values['claude-cli-path'] === 'string' ? values['claude-cli-path'] : null,
         gitCliPath: typeof values['git-cli-path'] === 'string' ? values['git-cli-path'] : null,
+        verbose: values['verbose'] === true,
       };
     }
     case 'status':

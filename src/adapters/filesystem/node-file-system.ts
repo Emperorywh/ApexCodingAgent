@@ -4,7 +4,7 @@
  * unchanged (they carry `code`); only `stat` swallows ENOENT into `null`,
  * per the port contract.
  */
-import { mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import type {
   DirectoryEntry,
   FileStat,
@@ -29,6 +29,10 @@ export function createNodeFileSystem(): FileSystemPort {
 
     async writeFile(path: string, data: Uint8Array): Promise<void> {
       await writeFile(path, data);
+    },
+
+    async appendFile(path: string, data: Uint8Array): Promise<void> {
+      await appendFile(path, data);
     },
 
     async rename(from: string, to: string): Promise<void> {

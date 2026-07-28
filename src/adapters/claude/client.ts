@@ -17,6 +17,7 @@ import type {
   ClaudeInvocationFact,
   ClaudeInvocationRequest,
   ClaudeRuntimePort,
+  ClaudeStreamActivity,
 } from '../../application/ports/ClaudeRuntimePort.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
 import { getSchemaJson } from '../../domain/schemas/index.js';
@@ -69,6 +70,8 @@ interface SpawnCollectOptions {
   readonly cwd?: string;
   readonly timeoutMs?: number;
   readonly onChild?: (child: ChildProcess) => void;
+  /** stdout 每个 chunk 的同步回调（心跳数据来源）；probe 不使用。 */
+  readonly onStdoutChunk?: (chunk: Buffer) => void;
 }
 
 /** 脚本形式入口转换为 `node <script>`，原生可执行路径保持不变。 */
@@ -129,7 +132,10 @@ function spawnCollect(
             finish({ kind: 'timeout' });
           }, options.timeoutMs);
 
-    child.stdout?.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+      options.onStdoutChunk?.(chunk);
+    });
     child.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
     child.stdout?.on('error', () => {
       pipeFailed = true;
@@ -153,6 +159,45 @@ function spawnCollect(
 /** Session Record 保存的 Git 相对日志路径。 */
 export function sessionLogPath(sessionId: string): string {
   return `logs/${sessionId}.log`;
+}
+
+/**
+ * 逐 chunk 累计 stdout 字节数，并按行缓冲尽力提取最近一个 stream-json
+ * 事件的 `type`（JSON.parse 失败的行保持上一已知值）。只用于心跳行
+ * 展示，不参与 §7.2 的结果判定。
+ */
+function createStreamActivityTracker(
+  report: (activity: ClaudeStreamActivity) => void,
+): (chunk: Buffer) => void {
+  const decoder = new TextDecoder();
+  let receivedStdoutBytes = 0;
+  let lastEventType: string | null = null;
+  let lineBuffer = '';
+  return (chunk: Buffer): void => {
+    receivedStdoutBytes += chunk.length;
+    lineBuffer += decoder.decode(chunk, { stream: true });
+    let newlineIndex = lineBuffer.indexOf('\n');
+    while (newlineIndex !== -1) {
+      const line = lineBuffer.slice(0, newlineIndex).trim();
+      lineBuffer = lineBuffer.slice(newlineIndex + 1);
+      if (line !== '') {
+        try {
+          const parsed: unknown = JSON.parse(line);
+          if (
+            typeof parsed === 'object' &&
+            parsed !== null &&
+            typeof (parsed as { type?: unknown }).type === 'string'
+          ) {
+            lastEventType = (parsed as { type: string }).type;
+          }
+        } catch {
+          // 非 JSON 事件行：忽略，保持上一已知事件类型。
+        }
+      }
+      newlineIndex = lineBuffer.indexOf('\n');
+    }
+    report({ receivedStdoutBytes, lastEventType });
+  };
 }
 
 /** 从进程环境读取 Windows 命令解析事实；PATH/PATHEXT 键名大小写不敏感。 */
@@ -272,6 +317,9 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         onChild: (child) => {
           activeChild = child;
         },
+        ...(request.onStreamActivity === undefined
+          ? {}
+          : { onStdoutChunk: createStreamActivityTracker(request.onStreamActivity) }),
       });
       if (outcome.kind === 'spawn-failed') {
         const redactedMessage = redaction.redactText(outcome.error.message);

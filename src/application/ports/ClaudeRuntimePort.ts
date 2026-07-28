@@ -34,6 +34,20 @@ interface ClaudeInvocationRequestBase {
    * 从而保证一次调用只对应一个 Session 子进程，并保持数据流可推导。
    */
   readonly capabilityReport: ClaudeCapabilityReport;
+  /**
+   * 可选的流活跃回调：stdout 每产生一个 chunk 同步回调一次，供调用方
+   * 驱动用户心跳行。事件类型是对 stream-json 逐行 JSON.parse 的尽力
+   * 提取（可能为 null），绝不改变 §7.2 的进程与结果语义。
+   */
+  readonly onStreamActivity?: (activity: ClaudeStreamActivity) => void;
+}
+
+/** 一次 invoke 期间的流活跃事实（心跳行的数据来源）。 */
+export interface ClaudeStreamActivity {
+  /** 已累计接收的 stdout 字节数（UTF-8 解码前）。 */
+  readonly receivedStdoutBytes: number;
+  /** 最近一个完整 stream-json 事件行的 `type`；未解析到时为 null。 */
+  readonly lastEventType: string | null;
 }
 
 /**

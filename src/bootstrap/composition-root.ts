@@ -16,6 +16,7 @@ import { createClaudeRuntime } from '../adapters/claude/client.js';
 import { createJsonStateStore } from '../adapters/state/json-state-store.js';
 import { createMarkdownReporter } from '../adapters/reporter/markdown-reporter.js';
 import { createRunArchiver } from '../adapters/state/run-archiver.js';
+import { createDebugLogger } from '../adapters/logging/debug-file-logger.js';
 import { createInterruptController } from '../application/interrupt.js';
 import type { ClockPort } from '../application/ports/clock.js';
 import type { GitPort } from '../application/ports/GitPort.js';
@@ -37,6 +38,8 @@ import { installInterruptSignals } from './signals.js';
 const STATE_DIR_NAME = '.apex-coding-agent';
 /** §16 内置默认：前台中断有界等待 10 秒。 */
 const INTERRUPT_WAIT_MS = 10_000;
+/** 内置默认：Claude Session 运行期间的用户心跳行间隔 15 秒。 */
+const SESSION_HEARTBEAT_MS = 15_000;
 
 export interface CliRuntimeOptions {
   readonly cwd: string;
@@ -70,7 +73,8 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
   const output = { writeLine: (line: string) => options.stdout(line) };
   const wait = (ms: number): Promise<void> =>
     new Promise((resolve) => {
-      setTimeout(resolve, ms);
+      // unref：会话结束后遗留的心跳定时器不得拖延进程退出。
+      setTimeout(resolve, ms).unref();
     });
 
   const makeGitPort: StartRunDeps['makeGitPort'] = (gitCliPath) =>
@@ -86,6 +90,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     git,
     claude,
     capabilityReport,
+    logger,
   }): UseCaseDeps => ({
     stateDir,
     stateStore: createJsonStateStore({ stateDir, fs: fileSystem }),
@@ -97,11 +102,22 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     reporter: createMarkdownReporter({ stateDir, fileSystem, redaction }),
     archiver: createRunArchiver({ stateDir, fs: fileSystem, clock }),
     output,
+    logger,
     interrupt,
     wait,
     interruptWaitMs: INTERRUPT_WAIT_MS,
+    sessionHeartbeatMs: SESSION_HEARTBEAT_MS,
     capabilityReport,
   });
+  const makeLogger: StartRunDeps['makeLogger'] = ({ stateDir, verbose }) =>
+    createDebugLogger({
+      fileSystem,
+      clock,
+      redaction,
+      logPath: `${stateDir}/logs/apex-debug.log`,
+      mirror: verbose ? (line) => options.stderr(line) : null,
+      onWriteFailure: (detail) => options.stderr(`[apex] ${detail}`),
+    });
 
   const startRun = createStartRun({
     fileSystem,
@@ -114,6 +130,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     makeGitPort,
     makeClaudePort,
     makeBoundDeps,
+    makeLogger,
   });
 
   /**

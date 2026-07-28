@@ -21,12 +21,14 @@ import type { ClaudeCapabilityReport, ClaudeRuntimePort } from '../ports/ClaudeR
 import type { ClockPort } from '../ports/clock.js';
 import type { FileSystemPort } from '../ports/file-system.js';
 import type { GitPort } from '../ports/GitPort.js';
+import type { LoggerPort } from '../ports/logger.js';
 import type { OutputPort } from '../ports/output.js';
 import type { RedactionPort } from '../ports/redaction.js';
 import { createRunDriver } from '../run-driver.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import { loadSettings } from './settings.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
+import { createNullLogger } from '../ports/logger.js';
 
 /** 启动环境事实，由 Composition Root 从进程采集（便于测试替换）。 */
 export interface EnvironmentFacts {
@@ -49,6 +51,8 @@ export interface StartRunInput {
   readonly claudeCliPath: string | null;
   /** 显式 --git-cli-path；null 表示未提供。 */
   readonly gitCliPath: string | null;
+  /** 显式 --verbose：调试日志（恒写 logs/apex-debug.log）同时镜像到 stderr。 */
+  readonly verbose: boolean;
   readonly environment: EnvironmentFacts;
 }
 
@@ -71,12 +75,18 @@ export interface StartRunDeps {
   readonly makeGitPort: (gitCliPath: string | null) => GitPort;
   /** 按最终生效路径构造 Claude 适配器。 */
   readonly makeClaudePort: (claudeCliPath: string | null) => ClaudeRuntimePort;
+  /**
+   * 构造调试日志口（stateDir 确定后调用）。实现须保证写失败不影响 Run；
+   * 注意上一终态 Run 的归档会清空 logs/，归档前写入的行随旧 Run 归档。
+   */
+  readonly makeLogger: (input: { readonly stateDir: string; readonly verbose: boolean }) => LoggerPort;
   /** 绑定最终端口与状态目录组装 UseCaseDeps。 */
   readonly makeBoundDeps: (input: {
     readonly stateDir: string;
     readonly git: GitPort;
     readonly claude: ClaudeRuntimePort;
     readonly capabilityReport: ClaudeCapabilityReport;
+    readonly logger: LoggerPort;
   }) => UseCaseDeps;
 }
 
@@ -114,7 +124,13 @@ export function createStartRun(deps: StartRunDeps): {
 } {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
 
-  async function execute(input: StartRunInput): Promise<StartRunResult> {
+  /**
+   * 调试日志在 stateDir 确定后由 makeLogger 装配；此前的失败由 CLI 错误面
+   * 输出。注意上一终态 Run 归档会清空 logs/，归档前写入的行随旧 Run 归档。
+   */
+  let logger: LoggerPort = createNullLogger();
+
+  async function executeInner(input: StartRunInput): Promise<StartRunResult> {
     // ---- §8.1 启动检查 + §8.2 步骤 1–4：任何失败都不创建新 Run ----
     let prepared: {
       readonly root: string;
@@ -155,6 +171,14 @@ export function createStartRun(deps: StartRunDeps): {
         : 'auto';
       const claudeCliPath = input.claudeCliPath ?? settings?.claudeCliPath ?? null;
       const gitCliPath = input.gitCliPath ?? settings?.gitCliPath ?? null;
+      logger = deps.makeLogger({ stateDir, verbose: input.verbose });
+      logger.log('debug', 'startup.settings_resolved', {
+        settingsFound: settings !== null,
+        executionPermissionMode,
+        claudeCliPath,
+        gitCliPath,
+        verbose: input.verbose,
+      });
       if (executionPermissionMode === 'bypassPermissions') {
         // §16：bypassPermissions 只能显式启用且必须显示风险提示。
         deps.output.writeLine(
@@ -169,16 +193,23 @@ export function createStartRun(deps: StartRunDeps): {
       const claude = deps.makeClaudePort(claudeCliPath);
 
       // §8.1 第 4–5 项：版本与能力探测，缺失即停止，不走降级路径。
+      deps.output.writeLine('[apex] probing claude CLI capabilities (bounded 30s x2)...');
+      logger.log('debug', 'startup.probe.begin', { claudePath: claudeCliPath ?? 'claude' });
       const capabilityReport = await claude.probeCapabilities();
+      logger.log('debug', 'startup.probe.end', {
+        version: capabilityReport.version,
+        capabilities: capabilityReport.capabilities.join(','),
+      });
 
       // §8.1 第 2、9–11 项：SPEC 唯一可读非空、状态目录未跟踪、SPEC 未
       // staged、工作区干净（仅 SPEC 例外）。
       const spec = await git.resolveSpec(root, input.cwd, input.specPath);
+      logger.log('debug', 'startup.spec_resolved', { path: spec.gitPath, sha256: spec.sha256 });
       await git.assertStateDirectoryUntracked(root);
       await git.assertSpecNotStaged(root, spec.gitPath);
       await git.assertWorkingTreeClean(root, spec.gitPath);
 
-      const bound = deps.makeBoundDeps({ stateDir, git, claude, capabilityReport });
+      const bound = deps.makeBoundDeps({ stateDir, git, claude, capabilityReport, logger });
 
       // §8.1 第 12 项 + §4.4：不存在非终态 Run；状态文件非法拒绝启动。
       let existing: RunJson | null;
@@ -226,6 +257,10 @@ export function createStartRun(deps: StartRunDeps): {
       // §8.2 步骤 3：最近 Run 已终态时先归档（失败即停止，不暴露半个新 Run）。
       if (existing !== null) {
         await bound.archiver.archiveTerminalRun(existing);
+        logger.log('debug', 'startup.previous_run_archived', {
+          runId: existing.runId,
+          status: existing.status,
+        });
       }
 
       // §8.2 步骤 4：创建 planning 状态的 run.json。
@@ -273,18 +308,30 @@ export function createStartRun(deps: StartRunDeps): {
               cause: error,
             });
       }
+      logger.log('debug', 'run.created', {
+        runId,
+        specPath: initialRun.spec.path,
+        baseBranch: initialRun.repository.baseBranch,
+        runBranch: initialRun.repository.runBranch,
+      });
       prepared = { root, stateDir, git, claude, bound, runId, run: initialRun };
     } catch (error) {
+      const startupError = isApexError(error)
+        ? (error as ApexError)
+        : new ApexError({
+            code: 'STATE_WRITE_FAILED',
+            stage: 'startup',
+            message: error instanceof Error ? error.message : String(error),
+            cause: error,
+          });
+      logger.log('error', 'startup.failed', {
+        errorCode: startupError.errorCode,
+        stage: startupError.stage,
+        message: startupError.message,
+      });
       return {
         kind: 'startup-failed',
-        error: isApexError(error)
-          ? (error as ApexError)
-          : new ApexError({
-              code: 'STATE_WRITE_FAILED',
-              stage: 'startup',
-              message: error instanceof Error ? error.message : String(error),
-              cause: error,
-            }),
+        error: startupError,
       };
     }
 
@@ -300,6 +347,7 @@ export function createStartRun(deps: StartRunDeps): {
         updatedAt: now(),
       };
       await bound.stateStore.writeRun(run);
+      logger.log('debug', 'run.branch_created', { runId, runBranch });
     } catch (error) {
       const apex = isApexError(error)
         ? (error as ApexError)
@@ -309,6 +357,11 @@ export function createStartRun(deps: StartRunDeps): {
             message: error instanceof Error ? error.message : String(error),
             cause: error,
           });
+      logger.log('error', 'run.branch_failed', {
+        runId,
+        errorCode: apex.errorCode,
+        message: apex.message,
+      });
       const terminal = toTerminalFailedRun(run, apex, now(), deps.redaction);
       await persistRunBestEffort(bound, terminal);
       return { kind: 'failed', run: terminal };
@@ -331,6 +384,12 @@ export function createStartRun(deps: StartRunDeps): {
             message: error instanceof Error ? error.message : String(error),
             cause: error,
           });
+      logger.log('error', 'run.driver_error', {
+        runId,
+        errorCode: apex.errorCode,
+        message: apex.message,
+        stack: apex.stack ?? null,
+      });
       const latest = await bound.stateStore.readRun().catch(() => null);
       if (latest !== null && (latest.status === 'planning' || latest.status === 'running' || latest.status === 'final_review')) {
         const terminal = toTerminalFailedRun(latest, apex, now(), deps.redaction);
@@ -343,5 +402,14 @@ export function createStartRun(deps: StartRunDeps): {
     }
   }
 
-  return { execute };
+  return {
+    async execute(input: StartRunInput): Promise<StartRunResult> {
+      try {
+        return await executeInner(input);
+      } finally {
+        // 进程收尾与下次归档前确保尾部调试事件落盘，不丢失诊断。
+        await logger.flush();
+      }
+    },
+  };
 }

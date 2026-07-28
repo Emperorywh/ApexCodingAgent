@@ -38,6 +38,8 @@ export interface FileSystemPort {
   readFile(path: string): Promise<Uint8Array>;
   /** Creates or truncates the file at `path` with exactly `data`. */
   writeFile(path: string, data: Uint8Array): Promise<void>;
+  /** Appends `data` to the file at `path`, creating it when absent (no truncate). */
+  appendFile(path: string, data: Uint8Array): Promise<void>;
   /** Atomically replaces `to` with `from` (same-directory temp-file protocol). */
   rename(from: string, to: string): Promise<void>;
   mkdir(path: string, options?: MkdirOptions): Promise<void>;

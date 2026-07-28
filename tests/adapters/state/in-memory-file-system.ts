@@ -15,6 +15,7 @@ import type {
 export type FsOp =
   | 'readFile'
   | 'writeFile'
+  | 'appendFile'
   | 'rename'
   | 'mkdir'
   | 'readdir'
@@ -99,6 +100,17 @@ export class InMemoryFileSystem implements FileSystemPort {
     this.maybeFail('writeFile', path);
     this.dirs.add(parentOf(path));
     this.files.set(path, data);
+  }
+
+  async appendFile(path: string, data: Uint8Array): Promise<void> {
+    this.record('appendFile', path);
+    this.maybeFail('appendFile', path);
+    this.dirs.add(parentOf(path));
+    const existing = this.files.get(path);
+    const combined = new Uint8Array((existing?.length ?? 0) + data.length);
+    if (existing !== undefined) combined.set(existing, 0);
+    combined.set(data, existing?.length ?? 0);
+    this.files.set(path, combined);
   }
 
   async rename(from: string, to: string): Promise<void> {

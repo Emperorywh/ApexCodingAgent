@@ -7,7 +7,7 @@
 export const HELP_TEXT = `ApexCodingAgent — 围绕 Claude Code 的前台长时运行编码协调器
 
 用法:
-  ApexCodingAgent start [spec-path] [--full-access]
+  ApexCodingAgent start [spec-path] [--full-access] [--verbose]
       [--claude-cli-path <path>] [--git-cli-path <path>]
   ApexCodingAgent status
   ApexCodingAgent report
@@ -26,6 +26,8 @@ start 参数与选项:
                             （默认 auto；启用时显示风险提示；Planning 恒为 plan）
   --claude-cli-path <path>  Claude CLI 入口（默认: PATH 中的 claude）
   --git-cli-path <path>     Git CLI 入口（默认: PATH 中的 git）
+  -v, --verbose             把调试日志镜像到 stderr（调试日志始终写入
+                            .apex-coding-agent/logs/apex-debug.log 并随 Run 归档）
   -h, --help                显示本帮助
 
 配置优先级（§16）: 显式 CLI 参数 > .apex-coding-agent/settings.json > 内置默认值

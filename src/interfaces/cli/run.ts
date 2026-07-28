@@ -66,6 +66,7 @@ async function runStart(
       fullAccess: command.fullAccess,
       claudeCliPath: command.claudeCliPath,
       gitCliPath: command.gitCliPath,
+      verbose: command.verbose,
       environment: runtime.environment,
     });
     if (result.kind === 'completed') {

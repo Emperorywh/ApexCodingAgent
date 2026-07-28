@@ -5,5 +5,10 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     environment: 'node',
     globals: false,
+    /**
+     * Windows 上 git 子进程创建开销大，全量并行跑时集成测试（真实临时
+     * 仓库，十余次 git 调用）可能超过 5s 默认值，给足余量避免性能型 flake。
+     */
+    testTimeout: 15_000,
   },
 });

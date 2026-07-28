@@ -260,7 +260,8 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       if (savedRecord === undefined) delete process.env['APEX_FAKE_CLAUDE_RECORD'];
       else process.env['APEX_FAKE_CLAUDE_RECORD'] = savedRecord;
       await repo.cleanup();
-      await rm(fakeRoot, { recursive: true, force: true });
+      // Windows 上子进程退出滞后时 rmdir 会报 EBUSY，重试吸收
+      await rm(fakeRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },
   };
 }

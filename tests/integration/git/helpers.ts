@@ -42,7 +42,12 @@ export async function createTempRepo(): Promise<TempRepo> {
   const root = await mkdtemp(join(tmpdir(), 'apex-g3-'));
   const gitRaw = async (...args: string[]): Promise<GitCallResult> => {
     try {
-      const { stdout, stderr } = await execFileAsync('git', args, { cwd: root });
+      const { stdout, stderr } = await execFileAsync('git', args, {
+        cwd: root,
+        // 防止 git 子进程悬挂：超时会 kill 进程并使 promise 拒绝，
+        // 避免测试被中止后仍有进程占用临时目录（Windows EBUSY）。
+        timeout: 30_000,
+      });
       return { code: 0, stdout, stderr };
     } catch (error) {
       const failed = error as {
@@ -84,7 +89,11 @@ export async function createTempRepo(): Promise<TempRepo> {
       return git('rev-parse', 'HEAD');
     },
     head: () => git('rev-parse', 'HEAD'),
-    cleanup: () => rm(root, { recursive: true, force: true }),
+    /**
+     * Windows 不允许删除仍作为子进程 cwd 的目录；git 进程退出略滞后于
+     * 测试结束时 rmdir 会报 EBUSY，用重试吸收这个竞争窗口。
+     */
+    cleanup: () => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
   };
 }
 

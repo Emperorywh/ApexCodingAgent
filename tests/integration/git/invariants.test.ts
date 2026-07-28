@@ -64,7 +64,7 @@ describe('startup repository checks', () => {
         'GIT_WORKTREE_REQUIRED',
       );
     } finally {
-      await rm(plain, { recursive: true, force: true });
+      await rm(plain, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   });
 
@@ -78,7 +78,7 @@ describe('startup repository checks', () => {
         'GIT_WORKTREE_REQUIRED',
       );
     } finally {
-      await rm(bare, { recursive: true, force: true });
+      await rm(bare, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   });
 

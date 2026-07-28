@@ -118,7 +118,8 @@ describe('publish skeleton (G6)', () => {
       expect(outcome.stderr).toContain('Stop 状态/协议');
       expect(outcome.stderr).toContain('Cancel 状态/协议');
     } finally {
-      await rm(root, { recursive: true, force: true });
+      // Windows 上子进程退出滞后时 rmdir 会报 EBUSY，重试吸收
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   });
 
@@ -160,7 +161,8 @@ describe('publish skeleton (G6)', () => {
       expect(outcome.stderr).toContain('native-leaf');
       expect(outcome.stderr).toContain('addon.node');
     } finally {
-      await rm(root, { recursive: true, force: true });
+      // Windows 上子进程退出滞后时 rmdir 会报 EBUSY，重试吸收
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   });
 });

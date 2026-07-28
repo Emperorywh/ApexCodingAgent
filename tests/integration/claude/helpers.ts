@@ -97,7 +97,8 @@ export async function createFakeClaudeHarness(): Promise<FakeClaudeHarness> {
       return readFile(join(root, '.apex-coding-agent', 'logs', `${sessionId}.log`), 'utf8');
     },
     async cleanup() {
-      await rm(root, { recursive: true, force: true });
+      // Windows 上子进程退出滞后时 rmdir 会报 EBUSY，重试吸收
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },
   };
 }

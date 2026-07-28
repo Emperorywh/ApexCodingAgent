@@ -1,0 +1,26 @@
+{
+  "description": "decision == \"replan_required\" is a legal structured result and passes the adapter unchanged",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "replan_required",
+        "summary": "Need a different approach",
+        "tests": [],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "not_satisfied", "evidence": "blocked by a design flaw" }
+        ],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": "The current approach cannot satisfy the criterion"
+      }
+    }
+  ],
+  "expect": { "kind": "success", "decision": "replan_required", "model": null, "provider": null }
+}

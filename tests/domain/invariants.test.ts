@@ -585,7 +585,7 @@ describe('Session Record rules (§11.4)', () => {
     );
   });
 
-  it('failed requires an Error Record and null structuredResult; exitCode may be null on start failure', () => {
+  it('failed requires an Error Record and null structuredResult; missing numeric exits are explicit', () => {
     const failed = mkSessionRecord({
       status: 'failed',
       exitCode: null,
@@ -593,6 +593,23 @@ describe('Session Record rules (§11.4)', () => {
       error: mkErrorRecord({ errorCode: 'CLAUDE_START_FAILED', errorClass: 'claude_error' }),
     });
     expect(() => assertSessionRecordRules(failed)).not.toThrow();
+    const signalTerminated = mkSessionRecord({
+      status: 'failed',
+      exitCode: null,
+      structuredResult: null,
+      error: mkErrorRecord({ errorCode: 'CLAUDE_EXIT_NONZERO' }),
+    });
+    expect(() => assertSessionRecordRules(signalTerminated)).not.toThrow();
+    const interrupted = mkSessionRecord({
+      status: 'failed',
+      exitCode: null,
+      structuredResult: null,
+      error: mkErrorRecord({
+        errorCode: 'RUN_INTERRUPTED',
+        errorClass: 'run_error',
+      }),
+    });
+    expect(() => assertSessionRecordRules(interrupted)).not.toThrow();
     expectApexError(
       () => assertSessionRecordRules(mkSessionRecord({ status: 'failed', error: mkErrorRecord() })),
       'STATE_VALIDATION_FAILED',
@@ -611,7 +628,7 @@ describe('Session Record rules (§11.4)', () => {
             status: 'failed',
             exitCode: null,
             structuredResult: null,
-            error: mkErrorRecord(),
+            error: mkErrorRecord({ errorCode: 'CLAUDE_RESULT_INVALID' }),
           }),
         ),
       'STATE_VALIDATION_FAILED',

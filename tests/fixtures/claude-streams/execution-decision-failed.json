@@ -1,0 +1,26 @@
+{
+  "description": "decision == \"failed\" is a legal structured result, not an adapter error (G5 maps CLAUDE_REPORTED_FAILURE)",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "failed",
+        "summary": "Could not implement the task",
+        "tests": [{ "command": "npm test", "result": "failed" }],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "not_satisfied", "evidence": "test still red" }
+        ],
+        "changedAreas": [],
+        "remainingRisks": ["unresolved failure"],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": { "kind": "success", "decision": "failed", "model": null, "provider": null }
+}

@@ -1,0 +1,27 @@
+{
+  "description": "A non-empty stdout line that is not JSON fails the stream contract even on exit code 0",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    "FATAL: provider returned an HTML error page",
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "Implemented the task",
+        "tests": [],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "satisfied", "evidence": "observed" }
+        ],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": { "kind": "error", "errorCode": "CLAUDE_STREAM_FAILED" }
+}

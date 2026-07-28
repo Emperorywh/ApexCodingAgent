@@ -1,0 +1,8 @@
+{
+  "description": "Stream integrity beats exit-code mapping: a non-JSON line means the stream contract failed before any exit outcome can be trusted",
+  "sessionType": "execution",
+  "exitCode": 1,
+  "stderr": "process died",
+  "stdout": ["garbage line that is not JSON"],
+  "expect": { "kind": "error", "errorCode": "CLAUDE_STREAM_FAILED" }
+}

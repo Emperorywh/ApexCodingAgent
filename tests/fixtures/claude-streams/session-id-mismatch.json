@@ -1,0 +1,30 @@
+{
+  "description": "An event Session ID that differs from the requested --session-id is a conflict",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "ffffffff-1234-5678-9abc-def012345678"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "Implemented the task",
+        "tests": [],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "satisfied", "evidence": "observed" }
+        ],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": { "kind": "error", "errorCode": "CLAUDE_RESULT_INVALID" }
+}

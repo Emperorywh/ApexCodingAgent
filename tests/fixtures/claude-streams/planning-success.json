@@ -1,0 +1,43 @@
+{
+  "description": "Planning session succeeds with a valid TaskPlanDraft; provider absent from the allowlist fields stays null",
+  "sessionType": "planning",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "claude-fake-model-1"
+    },
+    {
+      "type": "assistant",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "message": { "role": "assistant", "content": [{ "type": "text", "text": "planning" }] }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "summary": "Plan the feature",
+        "assumptions": ["The repository builds with npm"],
+        "retainedCheckpointDispositions": [],
+        "tasks": [
+          {
+            "id": "TASK-001",
+            "title": "Bootstrap module",
+            "objective": "Create the module skeleton",
+            "dependsOn": [],
+            "acceptanceCriteria": ["npm test passes"],
+            "verificationHints": ["npm test"],
+            "likelyPaths": ["src/index.ts"],
+            "estimatedSize": "small",
+            "context": "Greenfield module with no dependencies"
+          }
+        ]
+      }
+    }
+  ],
+  "expect": { "kind": "success", "model": "claude-fake-model-1", "provider": null }
+}

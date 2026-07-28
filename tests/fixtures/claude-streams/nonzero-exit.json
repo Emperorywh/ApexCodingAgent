@@ -1,0 +1,30 @@
+{
+  "description": "A clean stream with a non-zero exit (provider/quota style failure) maps to CLAUDE_EXIT_NONZERO and keeps the stderr diagnosis",
+  "sessionType": "execution",
+  "exitCode": 1,
+  "stderr": "API Error: rate limit reached",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    {
+      "type": "result",
+      "subtype": "error",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "Implemented the task",
+        "tests": [],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "satisfied", "evidence": "observed" }
+        ],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": {
+    "kind": "error",
+    "errorCode": "CLAUDE_EXIT_NONZERO",
+    "toolSummaryIncludes": "rate limit reached"
+  }
+}

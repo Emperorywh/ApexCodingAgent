@@ -1,0 +1,11 @@
+{
+  "description": "A stdout line that parses as JSON but is not an object violates the line-wise JSON-object contract",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    "42"
+  ],
+  "expect": { "kind": "error", "errorCode": "CLAUDE_STREAM_FAILED" }
+}

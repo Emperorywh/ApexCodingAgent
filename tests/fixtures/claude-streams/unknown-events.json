@@ -1,0 +1,38 @@
+{
+  "description": "Unknown but legal non-terminal events (including ones without a Session ID) only reach the log; the session still succeeds",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "claude-fake-model-2"
+    },
+    { "type": "progress", "percent": 50 },
+    { "type": "rate_limit", "retryAfterMs": 100 },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "Implemented the task",
+        "tests": [],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "satisfied", "evidence": "observed" }
+        ],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": {
+    "kind": "success",
+    "decision": "completed",
+    "model": "claude-fake-model-2",
+    "provider": null
+  }
+}

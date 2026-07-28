@@ -1,0 +1,24 @@
+{
+  "description": "Final Review session succeeds with a valid completed FinalReviewResult; no metadata fields in the stream means null facts",
+  "sessionType": "final_review",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "All tasks reviewed",
+        "reviewedTaskIds": ["TASK-001"],
+        "tests": [{ "command": "npm test", "result": "passed" }],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": { "kind": "success", "decision": "completed", "model": null, "provider": null }
+}

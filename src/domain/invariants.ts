@@ -242,12 +242,23 @@ export function assertIntermediateCheckpointRules(checkpoint: IntermediateCheckp
 }
 
 /**
- * 没有可信进程退出码的失败错误码（SPEC §11.4 与 abandon 流程）：
- * Claude 进程未能启动，或 Coordinator 放弃接力而旧进程退出状态未知。
+ * 必须保存 null 退出码的错误：进程未启动，或 Coordinator 放弃接力而
+ * 旧进程退出状态未知。这两类情况不得伪造数字退出码。
  */
-const ERROR_CODES_WITHOUT_EXIT_CODE: readonly ErrorCode[] = [
+const ERROR_CODES_REQUIRING_NULL_EXIT_CODE: readonly ErrorCode[] = [
   'CLAUDE_START_FAILED',
   'RUN_ABANDONED_BY_USER',
+];
+
+/**
+ * 允许没有数字退出码的错误。除上述两类外，ChildProcess 由信号结束时
+ * Node.js 也会返回 null；此时 CLAUDE_EXIT_NONZERO 或 RUN_INTERRUPTED
+ * 仍然是已知失败事实，不能伪造整数退出码。
+ */
+const ERROR_CODES_ALLOWING_NULL_EXIT_CODE: readonly ErrorCode[] = [
+  ...ERROR_CODES_REQUIRING_NULL_EXIT_CODE,
+  'CLAUDE_EXIT_NONZERO',
+  'RUN_INTERRUPTED',
 ];
 
 /** Session Record rules (§11.4). */
@@ -287,17 +298,19 @@ export function assertSessionRecordRules(record: SessionRecord): void {
     );
     assertErrorRecordRules(record.error!);
     /**
-     * 只有没有可信进程退出码的失败才允许 exitCode 为 null。
-     *
-     * 进程未能启动（CLAUDE_START_FAILED）与 Coordinator 放弃接力
-     * （RUN_ABANDONED_BY_USER，不声称旧进程已退出）必须保存 null，不得
-     * 伪造退出码；其他失败都来自一个已经结束的进程，必须持久化真实
-     * 退出码，以免调用方误判进程从未运行。
+     * 进程未启动或放弃接力时强制为 null；其他失败优先保存真实整数，
+     * 但由信号结束时允许 null。该约束忠实表达 Node.js 可观察事实，
+     * 不把约定值伪装成工具退出码。
      */
     assertCondition(
-      (record.exitCode === null) ===
-        ERROR_CODES_WITHOUT_EXIT_CODE.includes(record.error!.errorCode),
-      `failed session record ${record.sessionId} exitCode null requires errorCode CLAUDE_START_FAILED or RUN_ABANDONED_BY_USER`,
+      !ERROR_CODES_REQUIRING_NULL_EXIT_CODE.includes(record.error!.errorCode) ||
+        record.exitCode === null,
+      `failed session record ${record.sessionId} requires exitCode null for ${record.error!.errorCode}`,
+    );
+    assertCondition(
+      record.exitCode !== null ||
+        ERROR_CODES_ALLOWING_NULL_EXIT_CODE.includes(record.error!.errorCode),
+      `failed session record ${record.sessionId} errorCode ${record.error!.errorCode} does not allow a null exitCode`,
     );
   }
   // The stored structured result must be the one matching the session type.

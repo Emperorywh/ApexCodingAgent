@@ -1,0 +1,3 @@
+This is not a recognizable claude help output.
+The binary answered with a banner page that mentions printing plans automatically,
+but never documents a single option explicitly.

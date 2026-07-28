@@ -1,0 +1,23 @@
+{
+  "description": "A schema-invalid Final Review structured_output maps to FINAL_REVIEW_RESULT_INVALID instead of CLAUDE_RESULT_INVALID",
+  "sessionType": "final_review",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "Reviewed without the required reviewedTaskIds field",
+        "tests": [],
+        "changedAreas": [],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": { "kind": "error", "errorCode": "FINAL_REVIEW_RESULT_INVALID" }
+}

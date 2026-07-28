@@ -1,0 +1,15 @@
+{
+  "description": "The stderr diagnosis of a non-zero exit passes the redaction boundary before entering the error summary",
+  "sessionType": "execution",
+  "exitCode": 1,
+  "stderr": "request rejected: Authorization: Bearer abcdefgh-12345678",
+  "stdout": [
+    { "type": "system", "subtype": "init", "session_id": "123e4567-e89b-42d3-a456-426614174000" }
+  ],
+  "expect": {
+    "kind": "error",
+    "errorCode": "CLAUDE_EXIT_NONZERO",
+    "toolSummaryIncludes": "[REDACTED]",
+    "toolSummaryExcludes": "abcdefgh-12345678"
+  }
+}

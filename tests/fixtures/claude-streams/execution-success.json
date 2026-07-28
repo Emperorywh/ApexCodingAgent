@@ -1,0 +1,42 @@
+{
+  "description": "Execution session succeeds with a valid completed TaskExecutionResult; model and provider come from the allowlist fields",
+  "sessionType": "execution",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "claude-fake-model-1",
+      "provider": "fake-provider"
+    },
+    {
+      "type": "assistant",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "message": { "role": "assistant", "content": [{ "type": "text", "text": "working" }] }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "completed",
+        "summary": "Implemented the task",
+        "tests": [{ "command": "npm test", "result": "passed" }],
+        "acceptanceEvidence": [
+          { "criterionIndex": 0, "status": "satisfied", "evidence": "npm test output green" }
+        ],
+        "changedAreas": ["src"],
+        "remainingRisks": [],
+        "replanReason": null
+      }
+    }
+  ],
+  "expect": {
+    "kind": "success",
+    "decision": "completed",
+    "model": "claude-fake-model-1",
+    "provider": "fake-provider"
+  }
+}

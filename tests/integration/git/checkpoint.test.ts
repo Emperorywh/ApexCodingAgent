@@ -56,6 +56,12 @@ const taskInput = () => ({
 });
 
 describe('task checkpoint (§12.2)', () => {
+  /**
+   * 该用例连续执行真实 Git 提交、祖先校验和 Trailer 读取。
+   *
+   * Windows 全量并发套件会与其他临时仓库测试竞争进程和文件系统资源，
+   * 因此使用集成测试级预算，避免 Vitest 默认 5 秒制造假失败。
+   */
   it('preserves Claude commits and commits only the remaining changes', async () => {
     // Claude's own commit during the session.
     await repo.writeFile('src/feature.ts', 'export const feature = 1;\n');
@@ -88,7 +94,7 @@ describe('task checkpoint (§12.2)', () => {
     expect(message).toContain('ApexCodingAgent-Task: TASK-001');
     expect(message).toContain('ApexCodingAgent-Plan-Revision: 1');
     expect(message).toContain(`ApexCodingAgent-Session: ${SESSION_ID}`);
-  });
+  }, 30_000);
 
   it('succeeds despite failing repository hooks and enforced GPG signing', async () => {
     const hooksDir = join(repo.root, 'hooks');

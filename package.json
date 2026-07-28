@@ -4,13 +4,20 @@
   "private": true,
   "description": "Long-running coding agent orchestrator around Claude Code (SPEC v4.1.1)",
   "type": "module",
+  "bin": {
+    "ApexCodingAgent": "dist/interfaces/cli/main.js"
+  },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=22 <23 || >=24 <25"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "npm run typecheck && vitest run && node scripts/check-architecture.mjs"
+    "test": "npm run build && npm run typecheck && vitest run && node scripts/check-architecture.mjs && node scripts/scan-forbidden.mjs",
+    "scan-forbidden": "node scripts/scan-forbidden.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1"

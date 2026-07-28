@@ -161,10 +161,112 @@ export function sessionLogPath(sessionId: string): string {
   return `logs/${sessionId}.log`;
 }
 
+/** 事件摘要的单行长度上限（超出截断并加省略号）。 */
+const EVENT_SUMMARY_LIMIT = 200;
+
+/** 折叠为单行并截断到上限，只用于进度展示。 */
+function toSummaryLine(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length <= EVENT_SUMMARY_LIMIT
+    ? oneLine
+    : `${oneLine.slice(0, EVENT_SUMMARY_LIMIT)}…`;
+}
+
+/** assistant/user 事件的 message.content 块（尽力读取，字段缺失则跳过）。 */
+type StreamContentBlock = Record<string, unknown>;
+
+function readContentBlocks(event: Record<string, unknown>): StreamContentBlock[] {
+  const message = event['message'];
+  if (typeof message !== 'object' || message === null) return [];
+  const content = (message as Record<string, unknown>)['content'];
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (block): block is StreamContentBlock => typeof block === 'object' && block !== null,
+  );
+}
+
+/** 工具调用的一行摘要：工具名 + 最具辨识度的输入字段。 */
+function summarizeToolUse(block: StreamContentBlock): string {
+  const name = typeof block['name'] === 'string' ? block['name'] : 'unknown';
+  const input = block['input'];
+  if (typeof input !== 'object' || input === null) return `tool: ${name}`;
+  const record = input as Record<string, unknown>;
+  for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'description']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim() !== '') {
+      return `tool: ${name} — ${toSummaryLine(value)}`;
+    }
+  }
+  return `tool: ${name}`;
+}
+
+/** 工具结果的一行摘要；错误结果显式标注。 */
+function summarizeToolResult(block: StreamContentBlock): string {
+  const prefix = block['is_error'] === true ? 'tool result (error)' : 'tool result';
+  const content = block['content'];
+  if (typeof content === 'string') return `${prefix}: ${toSummaryLine(content)}`;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part: unknown) => {
+        if (typeof part !== 'object' || part === null) return '';
+        const record = part as Record<string, unknown>;
+        return typeof record['text'] === 'string' ? record['text'] : '';
+      })
+      .filter((part: string) => part !== '')
+      .join(' ');
+    if (text !== '') return `${prefix}: ${toSummaryLine(text)}`;
+  }
+  return `${prefix} received`;
+}
+
+/**
+ * 从单个 stream-json 事件提取单行人类可读摘要（思考、文本、工具调用、
+ * 工具结果、系统事件、终止结果）。只用于前台进度展示：无法摘要的事件
+ * 返回 null，且任何字段缺失都不会抛错。
+ */
+export function summarizeStreamEvent(event: Record<string, unknown>): string | null {
+  const type = event['type'];
+  if (type === 'assistant' || type === 'user') {
+    const parts: string[] = [];
+    for (const block of readContentBlocks(event)) {
+      switch (block['type']) {
+        case 'thinking':
+          if (typeof block['thinking'] === 'string' && block['thinking'].trim() !== '') {
+            parts.push(`thinking: ${toSummaryLine(block['thinking'])}`);
+          }
+          break;
+        case 'text':
+          if (typeof block['text'] === 'string' && block['text'].trim() !== '') {
+            parts.push(toSummaryLine(block['text']));
+          }
+          break;
+        case 'tool_use':
+          parts.push(summarizeToolUse(block));
+          break;
+        case 'tool_result':
+          parts.push(summarizeToolResult(block));
+          break;
+        default:
+          break;
+      }
+    }
+    return parts.length === 0 ? null : toSummaryLine(parts.join(' | '));
+  }
+  if (type === 'system') {
+    const subtype = typeof event['subtype'] === 'string' ? event['subtype'] : 'unknown';
+    return `system: ${subtype}`;
+  }
+  if (type === 'result') {
+    return 'result event received';
+  }
+  return null;
+}
+
 /**
  * 逐 chunk 累计 stdout 字节数，并按行缓冲尽力提取最近一个 stream-json
- * 事件的 `type`（JSON.parse 失败的行保持上一已知值）。只用于心跳行
- * 展示，不参与 §7.2 的结果判定。
+ * 事件的 `type` 与单行摘要（JSON.parse 失败的行保持上一已知值）。
+ * 只用于心跳行与事件行展示，不参与 §7.2 的结果判定。
  */
 function createStreamActivityTracker(
   report: (activity: ClaudeStreamActivity) => void,
@@ -172,6 +274,7 @@ function createStreamActivityTracker(
   const decoder = new TextDecoder();
   let receivedStdoutBytes = 0;
   let lastEventType: string | null = null;
+  let lastEventSummary: string | null = null;
   let lineBuffer = '';
   return (chunk: Buffer): void => {
     receivedStdoutBytes += chunk.length;
@@ -189,14 +292,16 @@ function createStreamActivityTracker(
             typeof (parsed as { type?: unknown }).type === 'string'
           ) {
             lastEventType = (parsed as { type: string }).type;
+            const summary = summarizeStreamEvent(parsed as Record<string, unknown>);
+            if (summary !== null) lastEventSummary = summary;
           }
         } catch {
-          // 非 JSON 事件行：忽略，保持上一已知事件类型。
+          // 非 JSON 事件行：忽略，保持上一已知事件类型与摘要。
         }
       }
       newlineIndex = lineBuffer.indexOf('\n');
     }
-    report({ receivedStdoutBytes, lastEventType });
+    report({ receivedStdoutBytes, lastEventType, lastEventSummary });
   };
 }
 

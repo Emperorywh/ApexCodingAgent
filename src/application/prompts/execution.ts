@@ -123,3 +123,48 @@ function buildContextSection(input: ExecutionPromptInput): string {
 export function buildExecutionPrompt(input: ExecutionPromptInput): string {
   return [EXECUTION_BASELINE, buildContextSection(input)].join('\n\n');
 }
+
+export interface ExecutionResultRepairPromptInput {
+  /** 仓库根目录绝对路径。 */
+  readonly repositoryRoot: string;
+  /** 当前 Run Branch。 */
+  readonly runBranch: string;
+  /** 当前 Task 的完整定义（acceptanceEvidence 索引依据）。 */
+  readonly task: PlannedTask;
+  /** 上一次结果的契约校验错误（原样给出）。 */
+  readonly validationError: string;
+  /** 上一次非法结果的 JSON 文本；结果不可解析时为 null。 */
+  readonly invalidResultJson: string | null;
+}
+
+/**
+ * 结果修复 Session 的提示词。上一个 Execution Session 已完成进程生命周期，
+ * 但其结构化结果未通过契约校验（Schema 或 §9.4 字段规则）；本 Session 唯一
+ * 职责是按校验错误重新返回合法的 TaskExecutionResult，不再触碰仓库。
+ */
+export function buildExecutionResultRepairPrompt(
+  input: ExecutionResultRepairPromptInput,
+): string {
+  return `你是 ApexCodingAgent 当前 Task 的结果修复 Agent。上一个 Execution Session 已结束，但它返回的 TaskExecutionResult 未通过契约校验，系统尚未提交任何业务结论，当前 Task 仍处于 running。
+
+项目根目录是 ${input.repositoryRoot}，当前分支必须是 ${input.runBranch}。
+
+校验错误：
+${input.validationError}
+
+上一次返回的结构化结果（JSON；不可得时为"（无）"）：
+${input.invalidResultJson ?? '（无）'}
+
+CURRENT_TASK（当前 Task 完整定义，JSON）：
+${toJson(input.task)}
+
+修复要求：
+1. 不修改、暂存、提交或删除任何文件，不执行 remote push 或任何有副作用的操作；本 Session 唯一职责是重新返回合法的结构化结果。
+2. 严格返回 TaskExecutionResult：decision、summary、tests、acceptanceEvidence、changedAreas、remainingRisks、replanReason。
+3. 字段耦合规则：decision 为 completed 或 failed 时 replanReason 必须为 null；decision 为 replan_required 时 replanReason 必须为非空字符串。
+4. acceptanceEvidence 必须按 CURRENT_TASK.acceptanceCriteria 的原索引逐条覆盖：不多、不少、不重复、不越界。
+5. decision 为 completed 时，所有 acceptanceEvidence 必须为 satisfied，且 tests 中不得存在 failed。
+6. 只修正导致校验失败的字段，其余字段保持对已完成工作的真实陈述；如果工作实际未全部完成，据实返回 failed 或 replan_required，不要伪造 completed。
+
+不要返回 Markdown，不要在结构化结果之外输出解释。`;
+}

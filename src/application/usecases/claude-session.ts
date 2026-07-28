@@ -64,6 +64,14 @@ export function sessionGitFacts(run: RunJson): SessionGitFacts {
   };
 }
 
+export interface BeginSessionOptions {
+  /**
+   * 结果修复接力：Task 已因上一个会话处于 running，不再执行
+   * pending->running 迁移，只追加新的未结束 Episode 并接管 activeSession。
+   */
+  readonly keepTaskRunning?: boolean;
+}
+
 /**
  * §6.3 第 1–4 步：分配 Session ID、写入 activeSession（及 Episode /
  * Task 运行态）、持久化成功后返回句柄。进程只能在之后启动。
@@ -72,6 +80,7 @@ export async function beginSession<T extends SessionType>(
   deps: UseCaseDeps,
   run: RunJson,
   input: BeginSessionInput<T>,
+  options?: BeginSessionOptions,
 ): Promise<ActiveSessionHandle<T>> {
   const startedAt = formatRfc3339Utc(deps.clock.now());
   const sessionId = globalThis.crypto.randomUUID();
@@ -100,7 +109,20 @@ export async function beginSession<T extends SessionType>(
         message: `execution session requires an existing task, got ${taskId ?? 'null'}`,
       });
     }
-    assertTaskTransition(task.status, 'running', 'orchestrator_selected');
+    if (options?.keepTaskRunning === true) {
+      // 结果修复接力：Task 必须正是当前 running Task，状态保持 running。
+      if (task.status !== 'running' || run.currentTaskId !== taskId) {
+        throw new ApexError({
+          code: 'STATE_VALIDATION_FAILED',
+          stage: 'execution',
+          message:
+            `result-repair session requires task ${taskId} to be the running task, ` +
+            `got status ${task.status} and currentTaskId ${run.currentTaskId ?? 'null'}`,
+        });
+      }
+    } else {
+      assertTaskTransition(task.status, 'running', 'orchestrator_selected');
+    }
     const episode = createExecutionEpisode({
       sessionId,
       taskId,
@@ -216,13 +238,20 @@ export async function invokeSession<T extends SessionType>(
   );
   const startedMs = deps.clock.now().getTime();
   const elapsedMs = (): number => deps.clock.now().getTime() - startedMs;
-  let activity: ClaudeStreamActivity = { receivedStdoutBytes: 0, lastEventType: null };
+  let activity: ClaudeStreamActivity = {
+    receivedStdoutBytes: 0,
+    lastEventType: null,
+    lastEventSummary: null,
+  };
   deps.logger.log('debug', 'session.invoke.start', {
     sessionId: handle.sessionId,
     type: handle.type,
     taskId: handle.taskId,
     planRevision: handle.planRevision,
   });
+
+  /** 已输出的事件摘要（按字符串去重，同一事件不因分块重复打印）。 */
+  let printedSummary: string | null = null;
 
   const invokePromise = deps.claude.invoke<T>({
     prompt: input.prompt,
@@ -233,6 +262,14 @@ export async function invokeSession<T extends SessionType>(
     permissionMode: input.permissionMode,
     onStreamActivity: (next) => {
       activity = next;
+      // §17 进度语义：每个可摘要的 stream-json 事件输出一行（思考、
+      // 工具调用、工具结果等），让前台能看到 Session 的每一步。
+      if (next.lastEventSummary !== null && next.lastEventSummary !== printedSummary) {
+        printedSummary = next.lastEventSummary;
+        deps.output.writeLine(
+          deps.redaction.redactText(`[apex] ${label} › ${next.lastEventSummary}`),
+        );
+      }
     },
   });
   const settled: Promise<InvokeRaceOutcome<T>> = invokePromise.then(

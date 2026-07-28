@@ -3,6 +3,8 @@
  * - Session 开始/结束各一行阶段行（类型、Revision、Task、耗时、结果）；
  * - Session 运行期间按 sessionHeartbeatMs 产出心跳行（已耗时、最近事件、
  *   已接收字节），settle 后不再产出；
+ * - 每个可摘要的 stream-json 事件即时产出一行事件行（思考、工具调用等），
+ *   相同摘要不重复输出；
  * - 失败行携带稳定 errorCode。
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -112,7 +114,11 @@ describe('invokeSession 用户反馈', () => {
 
   it('会话运行期间输出心跳行（已耗时 + 流活跃事实），settle 后不再输出', async () => {
     let capturedRequest: {
-      onStreamActivity?: (activity: { receivedStdoutBytes: number; lastEventType: string | null }) => void;
+      onStreamActivity?: (activity: {
+        receivedStdoutBytes: number;
+        lastEventType: string | null;
+        lastEventSummary: string | null;
+      }) => void;
     } | null = null;
     let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
     const { deps, lines, waitResolvers, clock } = createDeps(
@@ -127,7 +133,11 @@ describe('invokeSession 用户反馈', () => {
     // 心跳循环已挂起在第一次 wait 上
     expect(waitResolvers).toHaveLength(1);
 
-    capturedRequest!.onStreamActivity?.({ receivedStdoutBytes: 512, lastEventType: 'assistant' });
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 512,
+      lastEventType: 'assistant',
+      lastEventSummary: null,
+    });
     clock.nowMs += 15_000;
     waitResolvers[0]!();
     await settleMicrotasks();
@@ -167,5 +177,56 @@ describe('invokeSession 用户反馈', () => {
 
     expect(lines[0]).toContain('started');
     expect(lines[1]).toContain('[apex] session 123e4567 planning failed after 0s (CLAUDE_EXIT_NONZERO)');
+  });
+
+  it('每个新的事件摘要即时输出一行事件行（按内容去重）', async () => {
+    let capturedRequest: {
+      onStreamActivity?: (activity: {
+        receivedStdoutBytes: number;
+        lastEventType: string | null;
+        lastEventSummary: string | null;
+      }) => void;
+    } | null = null;
+    let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
+    const { deps, lines } = createDeps(
+      (request) =>
+        new Promise((resolve) => {
+          capturedRequest = request as typeof capturedRequest;
+          resolveInvoke = resolve;
+        }),
+    );
+
+    const pending = invokeSession(deps, handle, input);
+
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 100,
+      lastEventType: 'assistant',
+      lastEventSummary: 'thinking: 先读 SPEC',
+    });
+    // 同一摘要因 stdout 分块重复上报：不得重复输出。
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 100,
+      lastEventType: 'assistant',
+      lastEventSummary: 'thinking: 先读 SPEC',
+    });
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 260,
+      lastEventType: 'assistant',
+      lastEventSummary: 'tool: Read — docs/SPEC.md',
+    });
+    // 无可摘要事件：不输出事件行。
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 300,
+      lastEventType: 'assistant',
+      lastEventSummary: null,
+    });
+
+    resolveInvoke!(makeFact());
+    await pending;
+
+    const eventLines = lines.filter((line) => line.includes(' › '));
+    expect(eventLines).toHaveLength(2);
+    expect(eventLines[0]).toBe('[apex] session 123e4567 planning › thinking: 先读 SPEC');
+    expect(eventLines[1]).toBe('[apex] session 123e4567 planning › tool: Read — docs/SPEC.md');
   });
 });

@@ -5,13 +5,21 @@
  * These run after the structural schema validation inside the Claude Runtime
  * adapter; failures map to CLAUDE_RESULT_INVALID / FINAL_REVIEW_RESULT_INVALID.
  */
-import { ApexError } from './errors.js';
+import { ApexError, isApexError } from './errors.js';
 import type { FinalReviewResult } from './schemas/final-review-result.js';
 import type { TaskExecutionResult } from './schemas/task-execution-result.js';
 import type { PlannedTask } from './schemas/task-plan-draft.js';
 
 function resultInvalid(message: string): ApexError {
   return new ApexError({ code: 'CLAUDE_RESULT_INVALID', stage: 'execution', message });
+}
+
+/**
+ * 判断错误是否为结果契约校验失败（适配器 Schema 校验或 §9.4 字段规则）。
+ * Application 层据此决定结果修复接力，不直接引用稳定错误码字面量。
+ */
+export function isClaudeResultInvalid(error: unknown): boolean {
+  return isApexError(error) && error.errorCode === 'CLAUDE_RESULT_INVALID';
 }
 
 function finalReviewInvalid(message: string): ApexError {

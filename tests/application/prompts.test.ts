@@ -10,7 +10,9 @@ import {
 } from '../../src/application/prompts/planning.js';
 import {
   buildExecutionPrompt,
+  buildExecutionResultRepairPrompt,
   type ExecutionPromptInput,
+  type ExecutionResultRepairPromptInput,
 } from '../../src/application/prompts/execution.js';
 import {
   buildFinalReviewPrompt,
@@ -243,6 +245,45 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
     const prompt = buildExecutionPrompt({ ...input, completedTasks: [], adoptedCheckpoints: [] });
     expect(prompt).toContain('COMPLETED_TASKS（简洁摘要与最终 Checkpoint）：\n（无）');
     expect(prompt).toContain('ADOPTED_INTERMEDIATE_CHECKPOINTS（当前 Task 接管的中间 Checkpoint）：\n（无）');
+  });
+});
+
+describe('buildExecutionResultRepairPrompt（结果修复接力）', () => {
+  const invalidResultJson = JSON.stringify(
+    { decision: 'completed', replanReason: '遗留说明' },
+    null,
+    2,
+  );
+  const input: ExecutionResultRepairPromptInput = {
+    repositoryRoot: REPOSITORY_ROOT,
+    runBranch: RUN_BRANCH,
+    task: pendingDefinition,
+    validationError: 'decision completed requires replanReason to be null',
+    invalidResultJson,
+  };
+
+  it('附校验错误、非法结果原文与 CURRENT_TASK 定义', () => {
+    const prompt = buildExecutionResultRepairPrompt(input);
+    expect(prompt).toContain('decision completed requires replanReason to be null');
+    expect(prompt).toContain('遗留说明');
+    expect(prompt).toContain('"id": "TASK-002"');
+    expect(prompt).toContain(REPOSITORY_ROOT);
+    expect(prompt).toContain(RUN_BRANCH);
+  });
+
+  it('重申字段耦合规则并禁止任何副作用操作', () => {
+    const prompt = buildExecutionResultRepairPrompt(input);
+    expect(prompt).toContain('decision 为 completed 或 failed 时 replanReason 必须为 null');
+    expect(prompt).toContain('decision 为 replan_required 时 replanReason 必须为非空字符串');
+    expect(prompt).toContain('不修改、暂存、提交或删除任何文件');
+    expect(prompt).toContain('不要伪造 completed');
+    expect(prompt).toContain('不要返回 Markdown');
+  });
+
+  it('非法结果不可解析时给出占位', () => {
+    const prompt = buildExecutionResultRepairPrompt({ ...input, invalidResultJson: null });
+    expect(prompt).toContain('（无）');
+    expect(prompt).not.toContain('遗留说明');
   });
 });
 

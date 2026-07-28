@@ -1,10 +1,12 @@
 /**
  * E2E：失败语义（G5 测试清单 + §9.6/§14/§8/§12.5）。
  *
- * Fake Claude 非零退出 / 非法结果 / decision=failed → Run failed 且错误码
- * 正确、不自动重试；acceptanceEvidence 门禁；Final Review 失败测试门禁；
- * Planning 副作用与受保护路径 Commit → Run failed（与 G3 不变量联动）；
- * 启动检查（工作区不干净、能力缺失、非终态旧 Run）拒绝启动。
+ * Fake Claude 非零退出 / decision=failed → Run failed 且错误码正确、进程级
+ * 失败不自动重试；结构化结果未过契约校验时先接力一次结果修复会话，仍非法
+ * 才转 failed（进程级失败不参与修复接力）；acceptanceEvidence 门禁；
+ * Final Review 失败测试门禁；Planning 副作用与受保护路径 Commit → Run
+ * failed（与 G3 不变量联动）；启动检查（工作区不干净、能力缺失、非终态
+ * 旧 Run）拒绝启动。
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -79,21 +81,26 @@ describe('e2e claude failure mapping (§9.6)', () => {
   );
 
   it(
-    'structurally invalid result fails with CLAUDE_RESULT_INVALID',
+    'structurally invalid result fails with CLAUDE_RESULT_INVALID after the repair session also fails',
     async () => {
       const harness = await createE2EHarness();
       try {
         await seedRepo(harness.repo);
         await harness.writeScenario(
-          scenarioAfterPlan({
-            stdoutLines: streamOf({ ...executionCompleted(), decision: 'sometimes' }),
-          }),
+          scenarioAfterPlan(
+            { stdoutLines: streamOf({ ...executionCompleted(), decision: 'sometimes' }) },
+            // 结果修复会话同样返回结构非法结果：耗尽接力次数后转 failed。
+            { stdoutLines: streamOf({ ...executionCompleted(), decision: 'sometimes' }) },
+          ),
         );
 
         const result = await harness.start();
         expect(result.kind).toBe('failed');
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('CLAUDE_RESULT_INVALID');
+        // planning + 执行 + 结果修复：共 3 个 Session。
+        const invocations = await harness.readRecords();
+        expect(invocations.filter((record) => record.argv.includes('--session-id'))).toHaveLength(3);
       } finally {
         await harness.cleanup();
       }
@@ -149,10 +156,14 @@ describe('e2e claude failure mapping (§9.6)', () => {
       try {
         await seedRepo(harness.repo);
         await harness.writeScenario(
-          scenarioAfterPlan({
-            writeFiles: [{ path: 'src/feature-a.ts', content: 'export const a = 1;\n' }],
-            stdoutLines: streamOf(executionCompleted(1, { acceptanceEvidence: [] })),
-          }),
+          scenarioAfterPlan(
+            {
+              writeFiles: [{ path: 'src/feature-a.ts', content: 'export const a = 1;\n' }],
+              stdoutLines: streamOf(executionCompleted(1, { acceptanceEvidence: [] })),
+            },
+            // 结果修复会话仍然缺验收证据：耗尽接力次数后转 failed。
+            { stdoutLines: streamOf(executionCompleted(1, { acceptanceEvidence: [] })) },
+          ),
         );
 
         const result = await harness.start();
@@ -160,6 +171,11 @@ describe('e2e claude failure mapping (§9.6)', () => {
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('CLAUDE_RESULT_INVALID');
         expect(result.run.tasks['TASK-001']!.status).toBe('failed');
+        // 两个 Episode 都以 session_error 关闭（首次 + 修复接力）。
+        const episodes = result.run.tasks['TASK-001']!.executionEpisodes;
+        expect(episodes).toHaveLength(2);
+        expect(episodes[0]!.outcome).toBe('session_error');
+        expect(episodes[1]!.outcome).toBe('session_error');
       } finally {
         await harness.cleanup();
       }
@@ -174,19 +190,90 @@ describe('e2e claude failure mapping (§9.6)', () => {
       try {
         await seedRepo(harness.repo);
         await harness.writeScenario(
-          scenarioAfterPlan({
-            stdoutLines: streamOf(
-              executionCompleted(1, {
-                acceptanceEvidence: [{ criterionIndex: 0, status: 'not_satisfied', evidence: '未满足' }],
-              }),
-            ),
-          }),
+          scenarioAfterPlan(
+            {
+              stdoutLines: streamOf(
+                executionCompleted(1, {
+                  acceptanceEvidence: [{ criterionIndex: 0, status: 'not_satisfied', evidence: '未满足' }],
+                }),
+              ),
+            },
+            // 结果修复会话仍返回 not_satisfied：耗尽接力次数后转 failed。
+            {
+              stdoutLines: streamOf(
+                executionCompleted(1, {
+                  acceptanceEvidence: [{ criterionIndex: 0, status: 'not_satisfied', evidence: '未满足' }],
+                }),
+              ),
+            },
+          ),
         );
 
         const result = await harness.start();
         expect(result.kind).toBe('failed');
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('CLAUDE_RESULT_INVALID');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'completed with non-null replanReason triggers a result-repair session and the run completes',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario(
+          scenarioAfterPlan(
+            {
+              writeFiles: [{ path: 'src/feature-a.ts', content: 'export const a = 1;\n' }],
+              // 与现网故障同形：decision=completed 但 replanReason 非 null。
+              stdoutLines: streamOf(executionCompleted(1, { replanReason: '误填的原因' })),
+            },
+            // 结果修复会话：返回耦合合法的 completed 结果。
+            { stdoutLines: streamOf(executionCompleted()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ),
+        );
+
+        const result = await harness.start();
+        expect(result.kind).toBe('completed');
+        if (result.kind !== 'completed') return;
+        const run = result.run;
+        expect(run.status).toBe('completed');
+        expect(run.tasks['TASK-001']!.status).toBe('completed');
+
+        // 首次 Episode 以 session_error 关闭，修复接力 Episode 以 completed 关闭。
+        const episodes = run.tasks['TASK-001']!.executionEpisodes;
+        expect(episodes).toHaveLength(2);
+        expect(episodes[0]!.outcome).toBe('session_error');
+        expect(episodes[0]!.error?.errorCode).toBe('CLAUDE_RESULT_INVALID');
+        expect(episodes[1]!.outcome).toBe('completed');
+
+        // planning + 执行 + 结果修复 + final review：共 4 个 Session。
+        const invocations = await harness.readRecords();
+        const sessions = invocations.filter((record) => record.argv.includes('--session-id'));
+        expect(sessions).toHaveLength(4);
+        // 修复会话的提示词携带校验错误与非法结果原文。
+        const repairPrompt = sessions[2]!.argv[sessions[2]!.argv.length - 1]!;
+        expect(repairPrompt).toContain('结果修复');
+        expect(repairPrompt).toContain('decision completed requires replanReason to be null');
+        expect(repairPrompt).toContain('误填的原因');
+
+        // 前台能看到结果被拒与修复接力的事实。
+        expect(
+          harness.outputLines.some((line) => line.includes('starting result-repair session')),
+        ).toBe(true);
+
+        // 首次会话的 completed Record 与修复会话的 completed Record 都保留。
+        const records = await harness.listSessionRecords();
+        expect(records).toHaveLength(4);
+        expect(records[1]!.status).toBe('completed');
+        expect(records[2]!.status).toBe('completed');
+        expect(records[2]!.structuredResult).toMatchObject({ decision: 'completed' });
       } finally {
         await harness.cleanup();
       }

@@ -4,7 +4,10 @@
  *
  * 单趟执行：选择 Ready Task → §6.3 会话生命周期 → 按 decision 提交业务结果。
  * 所有失败路径都先把可获得的事实（Session Record、Episode、Git 事实）落盘，
- * 再把 Task 与 Run 转 failed；不自动重试、不恢复旧 Session。
+ * 再把 Task 与 Run 转 failed；进程级失败不自动重试、不恢复旧 Session。
+ * 唯一例外：进程正常结束但结构化结果未过契约校验（Schema 或 §9.4 字段
+ * 规则）时，以一次有界的结果修复会话接力——修复会话只重新返回合法结果，
+ * 仍不合法才按原路径转 failed，避免已完成的工作因格式瑕疵整体报废。
  *
  * SPEC SHA-256 边界（§3.2）：Task 启动前（变化则转 planning 触发新 Revision）、
  * Session 正常结束后提交结果前（变化走六步变化流程）。
@@ -14,7 +17,7 @@ import {
   closeExecutionEpisode,
   type ExecutionEpisodeEnding,
 } from '../../domain/episodes.js';
-import { validateExecutionResultSemantics } from '../../domain/results.js';
+import { isClaudeResultInvalid, validateExecutionResultSemantics } from '../../domain/results.js';
 import { applyRunEvent } from '../../domain/run-state.js';
 import {
   assertTaskTransition,
@@ -26,7 +29,8 @@ import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-sna
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
-import { buildExecutionPrompt } from '../prompts/execution.js';
+import { buildExecutionPrompt, buildExecutionResultRepairPrompt } from '../prompts/execution.js';
+import type { SessionStartFact, SpecFact } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import {
   beginSession,
@@ -52,6 +56,22 @@ export type ExecuteNextTaskResult =
   | { readonly kind: 'final-review'; readonly run: RunJson }
   /** Run 已持久化为 failed。 */
   | { readonly kind: 'failed'; readonly run: RunJson };
+
+/**
+ * 结果修复会话的有界次数：进程正常结束但结构化结果未过契约校验时接力
+ * 一次；连续两次不合法说明结果通道系统性失配，按原路径转 failed。
+ */
+const MAX_RESULT_REPAIR_ATTEMPTS = 1;
+
+/** invokeUntilValidResult 的产出：合法结果三元组，或已收尾的终态结果。 */
+type SessionLoopOutcome =
+  | {
+      readonly kind: 'valid';
+      readonly handle: ActiveSessionHandle<'execution'>;
+      readonly result: TaskExecutionResult;
+      readonly specAfter: SpecFact;
+    }
+  | { readonly kind: 'settled'; readonly settled: ExecuteNextTaskResult };
 
 export function createExecuteNextTask(deps: UseCaseDeps): {
   execute(): Promise<ExecuteNextTaskResult>;
@@ -219,7 +239,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     }
 
     // §8.3：会话前 Git 不变量。
-    let startFact;
+    let startFact: SessionStartFact;
     try {
       startFact = await deps.git.assertSessionStart(root, sessionGitFacts(run));
     } catch (error) {
@@ -249,126 +269,231 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       ),
     });
 
-    // §6.3 第 1–4 步：写 activeSession + Task running + 未结束 Episode，保存后启动。
-    const sessionInput = {
-      type: 'execution' as const,
-      taskId: readyTaskId,
-      planRevision: run.planRevision,
-      specSha256: specBefore.sha256,
-      prompt,
-      permissionMode: run.runSettings.executionPermissionMode,
-      repositoryRoot: root,
-    };
-    const handle = await beginSession(deps, run, sessionInput);
-
-    let fact;
-    try {
-      fact = await invokeSession(deps, handle, sessionInput);
-    } catch (error) {
-      const apex = error as ApexError;
-      return failWithSession(
-        handle,
-        apex,
-        apex.errorCode === 'RUN_INTERRUPTED' ? 'run_interrupted' : 'claude_call_failed',
-      );
-    }
-
     /**
-     * §6.3 第 5 步与 §3.2 结束边界属于同一个 Session 收尾阶段。
-     * 任一持久化或重读错误都必须进入 failWithSession，确保 Episode 关闭、
-     * running Task 转 failed，并清除接力槽。
+     * 结果未过契约校验时的接力收尾：关闭当前 Episode 为 session_error
+     * （Task 保持 running，由修复会话接管 activeSession 后追加新 Episode）。
      */
-    let specAfter;
-    try {
-      await writeCompletedSessionRecord(deps, handle, fact);
-      specAfter = await deps.git.readSpecFact(root, run.spec.path);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError, 'claude_call_failed');
-    }
-    const result: TaskExecutionResult = fact.structuredResult;
-
-    if (specAfter.sha256 !== specBefore.sha256) {
-      // §3.2 Execution 期间 SPEC 变化六步：保存会话事实、不提交基于旧 SPEC
-      // 的结论、§12.3 中间 Checkpoint 或无变更事实、Task 回 pending、Run 转
-      // planning、由新 Revision 接管中间 Checkpoint。
-      let checkpoint;
-      try {
-        checkpoint = await deps.git.createIntermediateCheckpoint(root, {
-          facts: sessionGitFacts(run),
-          sessionStartHead: startFact.head,
-          runId: run.runId,
-          planRevision: run.planRevision,
-          sessionId: handle.sessionId,
-          source: { kind: 'task', taskId: readyTaskId },
-        });
-      } catch (error) {
-        return failWithSession(handle, error as ApexError, 'checkpoint_failed');
-      }
-      deps.logger.log('debug', 'execution.spec_changed', {
-        boundary: 'after_session',
-        taskId: readyTaskId,
-        checkpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
-      });
-      let next = closeEpisode(
+    const closeEpisodeForRepair = (
+      handle: ActiveSessionHandle<'execution'>,
+      error: ApexError,
+    ): RunJson =>
+      closeEpisode(
         handle.run,
         readyTaskId,
         handle.sessionId,
         {
-          outcome: 'spec_changed',
-          summary: deps.redaction.redactText(result.summary) || 'spec changed during session',
-          acceptanceEvidence: deps.redaction.redactStructured(result.acceptanceEvidence),
+          outcome: 'session_error',
+          summary: deps.redaction.redactText(error.message) || error.errorCode,
+          acceptanceEvidence: [],
           finalCheckpoint: null,
-          intermediateCheckpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
-          checkpointReason: checkpoint.reason,
-          error: null,
+          intermediateCheckpoint: null,
+          checkpointReason: `error: result failed contract validation (${error.errorCode})`,
+          error: toErrorRecord(error, now(), deps.redaction),
         },
-        specAfter.sha256,
+        handle.specSha256,
       );
-      const task = next.tasks[readyTaskId]!;
-      assertTaskTransition(task.status, 'pending', 'spec_changed');
-      next = {
-        ...next,
-        status: applyRunEvent(next.status, 'SPEC_CHANGED'),
-        currentTaskId: null,
-        activeSession: null,
-        tasks: { ...next.tasks, [readyTaskId]: { ...task, status: 'pending' } },
-        // §12.3 第 5 步：中间 Checkpoint 追加到 run.json（无变更则不追加）。
-        intermediateCheckpoints: checkpoint.noChanges
-          ? next.intermediateCheckpoints
-          : [
-              ...next.intermediateCheckpoints,
-              {
-                oid: checkpoint.finalOid,
-                role: 'task-intermediate' as const,
-                sourceSessionId: handle.sessionId,
-                taskId: readyTaskId,
-                planRevision: run.planRevision,
-                summary: `SPEC changed during execution of ${readyTaskId}`,
-                ownerTaskId: null,
-              },
-            ],
-        repository: { ...next.repository, expectedHead: checkpoint.finalOid },
-        stateRevision: next.stateRevision + 1,
-        updatedAt: now(),
-      };
-      await deps.stateStore.writeRun(next);
-      return {
-        kind: 'replan-needed',
-        run: next,
-        trigger: {
-          type: 'spec_changed',
-          reason: `SPEC changed during execution of ${readyTaskId}`,
-          sourceSessionId: handle.sessionId,
-        },
-      };
-    }
 
-    // §9.4 字段规则语义校验（结构 Schema 已由适配器校验）。
-    try {
-      validateExecutionResultSemantics(result, taskDef);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError, 'result_invalid');
-    }
+    /** 修复接力行：让前台看到结果为何被拒以及修复会话的启动。 */
+    const progressResultRepair = (
+      handle: ActiveSessionHandle<'execution'>,
+      error: ApexError,
+      attempt: number,
+    ): void => {
+      deps.output.writeLine(
+        deps.redaction.redactText(
+          `[apex] session ${handle.sessionId.slice(0, 8)} execution result invalid ` +
+            `(${error.message}); starting result-repair session ` +
+            `(${attempt}/${MAX_RESULT_REPAIR_ATTEMPTS})`,
+        ),
+      );
+      deps.logger.log('warn', 'execution.result_repair', {
+        sessionId: handle.sessionId,
+        taskId: readyTaskId,
+        attempt,
+        message: error.message,
+      });
+    };
+
+    /** 修复会话提示词：附校验错误与（可解析时的）非法结果原文。 */
+    const buildRepairPrompt = (error: ApexError, result: TaskExecutionResult | null): string =>
+      buildExecutionResultRepairPrompt({
+        repositoryRoot: root,
+        runBranch: run.repository.runBranch,
+        task: taskDef,
+        validationError: error.message,
+        invalidResultJson: result === null ? null : JSON.stringify(result, null, 2),
+      });
+
+    /**
+     * 单趟 Execution Session + §9.4 校验；结果契约失败时有界接力修复会话。
+     * §6.3 顺序对每趟会话独立成立：先持久化 activeSession 与未结束
+     * Episode 再启动进程；接续会话复用 running Task（keepTaskRunning），
+     * 被接替的 Episode 已先关闭为 session_error。
+     */
+    const invokeUntilValidResult = async (
+      initialPrompt: string,
+    ): Promise<SessionLoopOutcome> => {
+      let sessionPrompt = initialPrompt;
+      let repairAttempt = 0;
+      let sessionRun = run;
+      for (;;) {
+        // §6.3 第 1–4 步：写 activeSession + Task running + 未结束 Episode，保存后启动。
+        const sessionInput = {
+          type: 'execution' as const,
+          taskId: readyTaskId,
+          planRevision: run.planRevision,
+          specSha256: specBefore.sha256,
+          prompt: sessionPrompt,
+          permissionMode: run.runSettings.executionPermissionMode,
+          repositoryRoot: root,
+        };
+        const handle = await beginSession(
+          deps,
+          sessionRun,
+          sessionInput,
+          repairAttempt > 0 ? { keepTaskRunning: true } : undefined,
+        );
+
+        let fact;
+        try {
+          fact = await invokeSession(deps, handle, sessionInput);
+        } catch (error) {
+          const apex = error as ApexError;
+          if (isClaudeResultInvalid(apex) && repairAttempt < MAX_RESULT_REPAIR_ATTEMPTS) {
+            // 结构 Schema 未过：补失败 Record、关 Episode，接力结果修复会话。
+            await ensureFailedSessionRecord(deps, handle, apex);
+            repairAttempt += 1;
+            sessionRun = closeEpisodeForRepair(handle, apex);
+            sessionPrompt = buildRepairPrompt(apex, null);
+            progressResultRepair(handle, apex, repairAttempt);
+            continue;
+          }
+          const settled = await failWithSession(
+            handle,
+            apex,
+            apex.errorCode === 'RUN_INTERRUPTED' ? 'run_interrupted' : 'claude_call_failed',
+          );
+          return { kind: 'settled', settled };
+        }
+
+        /**
+         * §6.3 第 5 步与 §3.2 结束边界属于同一个 Session 收尾阶段。
+         * 任一持久化或重读错误都必须进入 failWithSession，确保 Episode 关闭、
+         * running Task 转 failed，并清除接力槽。
+         */
+        let specAfter;
+        try {
+          await writeCompletedSessionRecord(deps, handle, fact);
+          specAfter = await deps.git.readSpecFact(root, run.spec.path);
+        } catch (error) {
+          const settled = await failWithSession(handle, error as ApexError, 'claude_call_failed');
+          return { kind: 'settled', settled };
+        }
+        const result: TaskExecutionResult = fact.structuredResult;
+
+        if (specAfter.sha256 !== specBefore.sha256) {
+          // §3.2 Execution 期间 SPEC 变化六步：保存会话事实、不提交基于旧 SPEC
+          // 的结论、§12.3 中间 Checkpoint 或无变更事实、Task 回 pending、Run 转
+          // planning、由新 Revision 接管中间 Checkpoint。
+          let checkpoint;
+          try {
+            checkpoint = await deps.git.createIntermediateCheckpoint(root, {
+              facts: sessionGitFacts(run),
+              sessionStartHead: startFact.head,
+              runId: run.runId,
+              planRevision: run.planRevision,
+              sessionId: handle.sessionId,
+              source: { kind: 'task', taskId: readyTaskId },
+            });
+          } catch (error) {
+            const settled = await failWithSession(handle, error as ApexError, 'checkpoint_failed');
+            return { kind: 'settled', settled };
+          }
+          deps.logger.log('debug', 'execution.spec_changed', {
+            boundary: 'after_session',
+            taskId: readyTaskId,
+            checkpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
+          });
+          let next = closeEpisode(
+            handle.run,
+            readyTaskId,
+            handle.sessionId,
+            {
+              outcome: 'spec_changed',
+              summary: deps.redaction.redactText(result.summary) || 'spec changed during session',
+              acceptanceEvidence: deps.redaction.redactStructured(result.acceptanceEvidence),
+              finalCheckpoint: null,
+              intermediateCheckpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
+              checkpointReason: checkpoint.reason,
+              error: null,
+            },
+            specAfter.sha256,
+          );
+          const task = next.tasks[readyTaskId]!;
+          assertTaskTransition(task.status, 'pending', 'spec_changed');
+          next = {
+            ...next,
+            status: applyRunEvent(next.status, 'SPEC_CHANGED'),
+            currentTaskId: null,
+            activeSession: null,
+            tasks: { ...next.tasks, [readyTaskId]: { ...task, status: 'pending' } },
+            // §12.3 第 5 步：中间 Checkpoint 追加到 run.json（无变更则不追加）。
+            intermediateCheckpoints: checkpoint.noChanges
+              ? next.intermediateCheckpoints
+              : [
+                  ...next.intermediateCheckpoints,
+                  {
+                    oid: checkpoint.finalOid,
+                    role: 'task-intermediate' as const,
+                    sourceSessionId: handle.sessionId,
+                    taskId: readyTaskId,
+                    planRevision: run.planRevision,
+                    summary: `SPEC changed during execution of ${readyTaskId}`,
+                    ownerTaskId: null,
+                  },
+                ],
+            repository: { ...next.repository, expectedHead: checkpoint.finalOid },
+            stateRevision: next.stateRevision + 1,
+            updatedAt: now(),
+          };
+          await deps.stateStore.writeRun(next);
+          return {
+            kind: 'settled',
+            settled: {
+              kind: 'replan-needed',
+              run: next,
+              trigger: {
+                type: 'spec_changed',
+                reason: `SPEC changed during execution of ${readyTaskId}`,
+                sourceSessionId: handle.sessionId,
+              },
+            },
+          };
+        }
+
+        // §9.4 字段规则语义校验（结构 Schema 已由适配器校验）。
+        try {
+          validateExecutionResultSemantics(result, taskDef);
+        } catch (error) {
+          const apex = error as ApexError;
+          if (repairAttempt < MAX_RESULT_REPAIR_ATTEMPTS) {
+            repairAttempt += 1;
+            sessionRun = closeEpisodeForRepair(handle, apex);
+            sessionPrompt = buildRepairPrompt(apex, result);
+            progressResultRepair(handle, apex, repairAttempt);
+            continue;
+          }
+          const settled = await failWithSession(handle, apex, 'result_invalid');
+          return { kind: 'settled', settled };
+        }
+
+        return { kind: 'valid', handle, result, specAfter };
+      }
+    };
+
+    const sessionOutcome = await invokeUntilValidResult(prompt);
+    if (sessionOutcome.kind === 'settled') return sessionOutcome.settled;
+    const { handle, result, specAfter } = sessionOutcome;
 
     if (result.decision === 'failed') {
       // §9.6：decision == failed 是合法结果，映射 CLAUDE_REPORTED_FAILURE。

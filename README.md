@@ -160,4 +160,4 @@ npm test                # build + typecheck + vitest + 架构检查 + 禁用模�
 npm run scan-forbidden  # 只跑禁用模式扫描
 ```
 
-代码结构：`src/` 按整洁架构分为 `domain`（契约与不变量）、`application`（用例与端口）、`adapters`（Claude / Git / 状态存储）、`interfaces`（CLI）、`bootstrap`（组装根）；`tests/` 目录与之镜像。完整产品规格见 [docs/SPEC.md](docs/SPEC.md)（v4.1.1），各阶段实施记录见 [docs/sessions/](docs/sessions/)。
+代码结构：`src/` 按整洁架构分为 `domain`（契约与不变量）、`application`（用例与端口）、`adapters`（Claude / Git / 状态存储）、`interfaces`（CLI）、`bootstrap`（组装根）；`tests/` 目录与之镜像。完整产品规格见 [docs/SPEC.md](https://github.com/Emperorywh/ApexCodingAgent/blob/main/docs/SPEC.md)（v4.1.1），各阶段实施记录见 [docs/sessions/](https://github.com/Emperorywh/ApexCodingAgent/tree/main/docs/sessions/)。

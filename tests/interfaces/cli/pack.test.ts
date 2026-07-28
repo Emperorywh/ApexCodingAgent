@@ -76,11 +76,16 @@ describe('publish skeleton (G6)', () => {
     const paths = entries.flatMap((entry) => entry.files.map((file) => file.path));
 
     expect(paths).toContain('package.json');
+    expect(paths).toContain('README.md');
+    expect(paths).toContain('LICENSE');
     expect(paths).toContain('dist/interfaces/cli/main.js');
     for (const path of paths) {
       expect(path.endsWith('.node'), `native module in artifact: ${path}`).toBe(false);
       expect(
-        path === 'package.json' || path.startsWith('dist/'),
+        path === 'package.json' ||
+          path === 'README.md' ||
+          path === 'LICENSE' ||
+          path.startsWith('dist/'),
         `unexpected file in artifact: ${path}`,
       ).toBe(true);
     }

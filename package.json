@@ -1,14 +1,33 @@
 {
   "name": "apex-coding-agent",
-  "version": "0.0.0",
-  "private": true,
+  "version": "2.0.0",
   "description": "Long-running coding agent orchestrator around Claude Code (SPEC v4.1.1)",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "coding-agent",
+    "cli",
+    "orchestrator",
+    "automation",
+    "ai"
+  ],
+  "homepage": "https://github.com/Emperorywh/ApexCodingAgent#readme",
+  "bugs": "https://github.com/Emperorywh/ApexCodingAgent/issues",
+  "license": "MIT",
+  "author": "杨文华 (Emperorywh) <im.ywh@qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Emperorywh/ApexCodingAgent.git"
+  },
   "type": "module",
   "bin": {
     "ApexCodingAgent": "dist/interfaces/cli/main.js"
   },
   "files": [
     "dist"
+  ],
+  "os": [
+    "win32"
   ],
   "engines": {
     "node": ">=22 <23 || >=24 <25"
@@ -17,7 +36,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "npm run build && npm run typecheck && vitest run && node scripts/check-architecture.mjs && node scripts/scan-forbidden.mjs",
-    "scan-forbidden": "node scripts/scan-forbidden.mjs"
+    "scan-forbidden": "node scripts/scan-forbidden.mjs",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "ajv": "^8.17.1"

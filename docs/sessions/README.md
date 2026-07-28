@@ -15,7 +15,7 @@
 | G4 | [G4-claude-runtime.md](G4-claude-runtime.md) | ClaudeRuntimePort 与适配器、stream-json 契约、能力探测、Fake Claude 测试设施 | stream/help 固件测试 + Fake Claude 集成测试绿 |
 | G5 | [G5-use-cases.md](G5-use-cases.md) | 7 个 Application 用例、内置 Prompt、Reporter、Run 驱动器、归档 | Fake Claude + 临时仓库端到端测试绿 |
 | G6 | [G6-cli-bootstrap.md](G6-cli-bootstrap.md) | CLI 四命令、Composition Root、中断信号、退出码、发布骨架 | CLI 进程级测试绿；全量回归绿 |
-| G7 | [G7-release-ci.md](G7-release-ci.md) | 发布矩阵与性能验收（**非开发会话**，CI/清单） | 按 G7 清单执行 |
+| G7 | [G7-release-ci.md](G7-release-ci.md) | 发布矩阵与性能验收（**非开发会话**，CI/清单） | 按 G7 清单执行（执行记录：[G7-execution-report.md](G7-execution-report.md)） |
 
 ## 依赖与顺序
 

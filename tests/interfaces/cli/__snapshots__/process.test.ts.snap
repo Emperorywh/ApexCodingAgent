@@ -18,7 +18,8 @@ exports[`cli process: help & usage (§17) > --help exits 0 and matches the docum
   abandon   把无法继续的非终态 Run 显式转为 abandoned，必须显式 --force
 
 start 参数与选项:
-  spec-path                 显式 SPEC 路径；省略时在仓库内自动发现唯一 SPEC.md
+  spec-path                 显式 SPEC 路径；省略时在调用目录及其子目录内
+                            自动发现唯一 SPEC.md（仓库其余位置不纳入发现）
   --full-access             Execution/Final Review 使用 bypassPermissions
                             （默认 auto；启用时显示风险提示；Planning 恒为 plan）
   --claude-cli-path <path>  Claude CLI 入口（默认: PATH 中的 claude）

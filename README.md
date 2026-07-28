@@ -88,7 +88,7 @@ git commit -m "项目初始版本"
 - 退出后无法访问需要登录的页面
 ```
 
-`SPEC.md` 必须位于当前 Git 仓库内、内容不能为空，并且不要执行 `git add SPEC.md`。仓库中最好只保留这一份名为 `SPEC.md` 的文件。
+`SPEC.md` 必须位于当前 Git 仓库内、内容不能为空，并且不要执行 `git add SPEC.md`。默认情况下 ApexCodingAgent 只在你执行命令的目录及其子目录内查找 `SPEC.md`，因此一个仓库容纳多个项目（monorepo）也没有问题——其他目录里的 `SPEC.md` 不会互相干扰；只要当前目录子树内保持唯一即可。
 
 ### 3. 开始运行
 
@@ -98,9 +98,9 @@ git commit -m "项目初始版本"
 ApexCodingAgent start
 ```
 
-ApexCodingAgent 会自动找到 `SPEC.md` 并开始工作。运行期间请保持这个终端窗口开启。
+ApexCodingAgent 会在当前目录及其子目录内自动找到唯一的 `SPEC.md` 并开始工作。运行期间请保持这个终端窗口开启。
 
-如果需求文档使用了其他文件名，或者仓库中有多份 `SPEC.md`，可以直接指定文件：
+如果需求文档使用了其他文件名，或者当前目录子树内有多份 `SPEC.md`，可以直接指定文件（仍可指向仓库内任意位置）：
 
 ```powershell
 ApexCodingAgent start .\docs\my-spec.md
@@ -148,7 +148,7 @@ ApexCodingAgent start --verbose
 
 | 命令 | 用途 |
 | --- | --- |
-| `ApexCodingAgent start` | 使用仓库中的 `SPEC.md` 开始任务 |
+| `ApexCodingAgent start` | 使用当前目录及子目录内的 `SPEC.md` 开始任务 |
 | `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
 | `ApexCodingAgent start --verbose` | 开始任务，并把调试日志同步输出到终端 |
 | `ApexCodingAgent status` | 查看当前进度或失败原因 |

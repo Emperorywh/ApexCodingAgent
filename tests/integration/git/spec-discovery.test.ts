@@ -102,11 +102,65 @@ describe('default discovery', () => {
     await repo.git('add', '.gitignore');
     await repo.git('commit', '--message', 'ignore vendor');
 
-    expect(await discoverSpecCandidates(createGitRunner(), repo.root)).toEqual([]);
+    expect(await discoverSpecCandidates(createGitRunner(), repo.root, repo.root)).toEqual([]);
     await expectApexErrorAsync(() => port.resolveSpec(repo.root, repo.root, null), 'SPEC_NOT_FOUND');
 
     const fact = await port.resolveSpec(repo.root, repo.root, 'vendor/SPEC.md');
     expect(fact.gitPath).toBe('vendor/SPEC.md');
+  });
+});
+
+describe('invocation-directory scoping', () => {
+  it('resolves the subtree SPEC despite SPECs elsewhere in the repository (monorepo)', async () => {
+    await seedRepo(repo); // tracked SPEC.md at the root, like a sibling project would have
+    await repo.writeFile('china-3d/docs/SPEC.md', '# China 3D\n');
+    await repo.writeFile('agv-map-3d/orchestration/SPEC.md', '# AGV\n');
+    const fact = await port.resolveSpec(repo.root, join(repo.root, 'china-3d'), null);
+    expect(fact.gitPath).toBe('china-3d/docs/SPEC.md');
+    expect(fact.sha256).toBe(sha256('# China 3D\n'));
+  });
+
+  it('scopes discoverSpecCandidates to the invocation subtree', async () => {
+    await seedRepo(repo);
+    await repo.writeFile('sub/a/SPEC.md', '# A\n');
+    await repo.writeFile('sub/b/SPEC.md', '# B\n');
+    const git = createGitRunner();
+    const all = await discoverSpecCandidates(git, repo.root, repo.root);
+    expect([...all].sort()).toEqual(['SPEC.md', 'sub/a/SPEC.md', 'sub/b/SPEC.md']);
+    const scoped = await discoverSpecCandidates(git, repo.root, join(repo.root, 'sub'));
+    expect([...scoped].sort()).toEqual(['sub/a/SPEC.md', 'sub/b/SPEC.md']);
+  });
+
+  it('fails with SPEC_AMBIGUOUS listing only the subtree candidates', async () => {
+    await seedRepo(repo);
+    await repo.writeFile('sub/a/SPEC.md', '# A\n');
+    await repo.writeFile('sub/b/SPEC.md', '# B\n');
+    const error = await expectApexErrorAsync(
+      () => port.resolveSpec(repo.root, join(repo.root, 'sub'), null),
+      'SPEC_AMBIGUOUS',
+    );
+    expect(error.message).toContain('sub/a/SPEC.md');
+    expect(error.message).toContain('sub/b/SPEC.md');
+  });
+
+  it('fails with SPEC_NOT_FOUND when the SPEC exists only outside the subtree', async () => {
+    await seedRepo(repo); // SPEC.md at the root only
+    await repo.writeFile('sub/src/index.ts', 'export {};\n');
+    await expectApexErrorAsync(
+      () => port.resolveSpec(repo.root, join(repo.root, 'sub'), null),
+      'SPEC_NOT_FOUND',
+    );
+  });
+
+  it('does not look into sibling or parent directories', async () => {
+    await seedRepo(repo);
+    await repo.git('rm', '--quiet', 'SPEC.md');
+    await repo.git('commit', '--message', 'drop spec');
+    await repo.writeFile('sub/SPEC.md', '# Sub\n');
+    await expectApexErrorAsync(
+      () => port.resolveSpec(repo.root, join(repo.root, 'sub', 'deeper'), null),
+      'SPEC_NOT_FOUND',
+    );
   });
 });
 

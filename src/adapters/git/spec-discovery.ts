@@ -5,6 +5,11 @@
  * and keeps entries whose file name is strictly `SPEC.md` outside `.git/` and
  * `.apex-coding-agent/` — ignored directories are never traversed by Git
  * itself, so an ignored SPEC is only reachable through an explicit path.
+ * Discovery is scoped to the invocation directory subtree: in a repository
+ * hosting several projects (monorepo), `start` only considers the SPEC.md
+ * files under the directory it was invoked from, so sibling projects no
+ * longer make the default discovery ambiguous. Invoking at the repository
+ * root keeps the previous repository-wide behavior.
  *
  * Explicit paths resolve against the command invocation directory; both the
  * lexical path and the real path must stay inside the repository root
@@ -77,12 +82,13 @@ export function toGitRelativePath(rootPath: string, childPath: string): string {
 // ---------------------------------------------------------------------------
 // Default discovery
 
-/** Default-discovery candidate Git paths (SPEC §3.2). */
-export async function discoverSpecCandidates(git: GitRunner, root: string): Promise<string[]> {
+/** Default-discovery candidate Git paths (SPEC §3.2), scoped to the invocation directory subtree. */
+export async function discoverSpecCandidates(git: GitRunner, root: string, cwd: string): Promise<string[]> {
   const { stdout } = await git.run(
     ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
     root,
   );
+  const prefix = invocationSubtreePrefix(root, cwd);
   return stdout
     .split('\0')
     .filter((entry) => entry.length > 0)
@@ -91,7 +97,18 @@ export async function discoverSpecCandidates(git: GitRunner, root: string): Prom
       const slash = entry.lastIndexOf('/');
       const name = slash >= 0 ? entry.slice(slash + 1) : entry;
       return name === SPEC_FILE_NAME;
-    });
+    })
+    .filter((entry) => prefix === '' || foldCase(entry).startsWith(foldCase(prefix)));
+}
+
+/**
+ * Git-relative subtree prefix of the invocation directory, `''` when invoked
+ * at the repository root (discovery then spans the whole repository).
+ */
+function invocationSubtreePrefix(root: string, cwd: string): string {
+  if (!isPathInside(cwd, root)) return '';
+  const relative = toGitRelativePath(root, cwd);
+  return relative === '' ? '' : `${relative}/`;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,9 +223,12 @@ export async function resolveSpecFact(
   let gitPath: string;
   let absolutePath: string;
   if (explicitPath === null) {
-    const candidates = await discoverSpecCandidates(git, root);
+    const candidates = await discoverSpecCandidates(git, root, cwd);
     if (candidates.length === 0) {
-      throw specError('SPEC_NOT_FOUND', 'no SPEC.md found in tracked or untracked project files');
+      throw specError(
+        'SPEC_NOT_FOUND',
+        'no SPEC.md found in tracked or untracked files under the invocation directory',
+      );
     }
     if (candidates.length > 1) {
       throw specError(

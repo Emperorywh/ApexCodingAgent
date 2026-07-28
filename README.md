@@ -1,163 +1,169 @@
 # ApexCodingAgent
 
-围绕 Claude Code 的前台长时运行编码任务编排器（Windows）。
+ApexCodingAgent 是一款运行在 Windows 终端中的 Claude Code 长任务助手。
 
-你提供一份 `SPEC.md`，ApexCodingAgent 让 Claude Code 围绕这份规格持续完成一个较大的软件需求：先规划，再按任务逐个执行，每个任务边界保存状态和 Git Checkpoint，全部完成后做一次整体 Review 并生成报告。
+当一个软件需求很大、无法在一次 Claude Code 会话中完成时，你只需要准备一份 `SPEC.md`。ApexCodingAgent 会让 Claude Code 先制定计划，再逐项完成任务，保存每一步的 Git 记录，最后检查整体结果并生成报告。
 
-> Claude Code 负责理解、规划、编码、工具调用、测试和 Review；ApexCodingAgent 只负责任务接力、结构化状态、Git Checkpoint 和确定的流程编排。
+它适合：
 
-## 工作流程
+- 开发一个包含多个步骤的新功能
+- 对现有项目进行较大规模的重构
+- 按照明确的需求文档持续完成一个软件项目
 
-```
-ApexCodingAgent start
-        │
-        ├─ 1. 启动前置检查（环境 / Git / Claude / SPEC / 工作区）
-        ├─ 2. Planning Session：Claude 阅读 SPEC 与仓库，生成 Task Plan
-        │     └─ 保存为 .apex-coding-agent/tasks.json
-        ├─ 3. 创建 Run 分支 apex-coding-agent/<runId>
-        ├─ 4. 逐个调度 Task：Claude 执行 → 保存状态 → 本地 Git Checkpoint
-        │     └─ 计划需要调整时，由 Claude 显式形成 Plan Revision
-        ├─ 5. 全部 Task 完成后启动 Final Review Session
-        └─ 6. 生成 .apex-coding-agent/report.md，Run 进入终态
-```
+> ApexCodingAgent 会直接操作你的项目和 Git 仓库。请先备份重要内容，并只在你信任的项目和需求文档中使用。
 
-## 环境要求
+## 下载
 
-- **操作系统**：Windows 10 / 11（不支持 Linux / WSL2）
-- **Node.js**：>= 22 < 23 或 >= 24 < 25
-- **Git**：在 PATH 中可用
-- **Claude Code CLI**：已安装并完成鉴权配置（Provider / CC Switch 等由你自己管理），在 PATH 中名为 `claude`
+### 使用前请先准备
 
-## 安装与构建
+- Windows 10 或 Windows 11
+- [Node.js](https://nodejs.org/) 22.x 或 24.x
+- [Git](https://git-scm.com/downloads/win)
+- Claude Code CLI，并已完成登录或服务商配置
+
+在 PowerShell 中确认这些命令可以正常运行：
 
 ```powershell
-npm install
-npm run build
+node --version
+git --version
+claude --version
 ```
 
-构建产物在 `dist/`，CLI 入口为 `dist/interfaces/cli/main.js`。可以用以下任一方式运行：
+### 安装 ApexCodingAgent
+
+在 PowerShell 中运行：
 
 ```powershell
-node dist/interfaces/cli/main.js --help
-# 或链接为全局命令
-npm link
+npm install -g apex-coding-agent@latest
+```
+
+安装完成后检查：
+
+```powershell
 ApexCodingAgent --help
 ```
 
-## 快速开始
+以后需要更新时，再次执行安装命令即可。
 
-1. 在你的项目中准备好一份完整的 `SPEC.md`（放在仓库内，ApexCodingAgent 会自动发现；也可以用参数显式指定路径）。
-2. 确保工作区干净（除 `SPEC.md` 本身外无未提交改动，且 `SPEC.md` 未被 `git add`）。
-3. 运行：
+## 使用
+
+### 1. 准备项目
+
+你的项目必须是一个 Git 仓库。进入项目目录，并确认除了本次需求文档以外，没有尚未提交的修改：
+
+```powershell
+cd C:\你的项目目录
+git status
+```
+
+如果项目还不是 Git 仓库，可以先执行：
+
+```powershell
+git init
+git add .
+git commit -m "项目初始版本"
+```
+
+### 2. 编写需求文档
+
+在项目中创建一个 `SPEC.md`，写清楚要完成什么。推荐至少包含目标、具体要求和验收标准，例如：
+
+```markdown
+# 用户登录功能
+
+## 目标
+
+为现有网站增加邮箱和密码登录。
+
+## 具体要求
+
+- 用户可以登录和退出
+- 登录失败时显示明确提示
+- 登录状态在刷新页面后仍然保留
+
+## 验收标准
+
+- 正确账号可以成功进入首页
+- 错误密码不能登录
+- 退出后无法访问需要登录的页面
+```
+
+`SPEC.md` 必须位于当前 Git 仓库内、内容不能为空，并且不要执行 `git add SPEC.md`。仓库中最好只保留这一份名为 `SPEC.md` 的文件。
+
+### 3. 开始运行
+
+在项目目录中执行：
 
 ```powershell
 ApexCodingAgent start
 ```
 
-然后保持终端存活，等待 Run 到达终态。运行期间每次状态迁移都会输出一行进度摘要，随时可以另开终端用 `ApexCodingAgent status` 查看快照。
+ApexCodingAgent 会自动找到 `SPEC.md` 并开始工作。运行期间请保持这个终端窗口开启。
 
-## 命令一览
-
-只有四个命令，没有 init / resume / pause / stop / retry，也没有后台模式。
-
-| 命令 | 作用 |
-| --- | --- |
-| `ApexCodingAgent start [spec-path] [选项]` | 创建并前台运行一个新 Run 直到终态 |
-| `ApexCodingAgent status` | 只读展示最近一次状态快照（查看 failed/abandoned 也算成功读取） |
-| `ApexCodingAgent report` | 为已终态的 Run 生成或重新生成 `report.md` |
-| `ApexCodingAgent abandon --force` | 将无法继续的非终态 Run 显式废弃（不可逆，必须带 `--force`） |
-
-`start` 选项：
-
-- `[spec-path]` — 显式 SPEC 路径；省略时在仓库内自动发现唯一的 `SPEC.md`
-- `--full-access` — Execution / Final Review 阶段使用 `bypassPermissions`（默认为 `auto`；启用时会显示风险提示；Planning 恒为 `plan` 模式）
-- `--claude-cli-path <path>` — 指定 Claude CLI 入口（默认：PATH 中的 `claude`）
-- `--git-cli-path <path>` — 指定 Git CLI 入口（默认：PATH 中的 `git`）
-
-## 启动前置条件
-
-`start` 在创建 Run 之前会检查（任一失败则以退出码 3 停止，不创建 Run）：
-
-- Windows 10+ 且 Node.js 版本受支持
-- Git、Claude CLI 可用，且 Claude 能力探测通过（缺失即停止，不走降级）
-- 当前目录在 Git 仓库内
-- SPEC 文件唯一、可读、非空，且未被 staged
-- 工作区干净（仅 SPEC 文件自身例外）
-- 不存在处于非终态的旧 Run；若存在（例如进程曾被强杀），先确认没有旧进程在写仓库，然后执行 `ApexCodingAgent abandon --force` 再重新 `start`
-
-## 配置文件（可选）
-
-配置优先级：**显式 CLI 参数 > `.apex-coding-agent/settings.json` > 内置默认值**。
-
-```json
-{
-  "schemaVersion": 1,
-  "executionPermissionMode": "auto",
-  "claudeCliPath": null,
-  "gitCliPath": null
-}
-```
-
-注意：`settings.json` 不允许把 `executionPermissionMode` 设为 `bypassPermissions`——完全权限必须通过本次命令显式传入 `--full-access`，防止一次历史配置变成后续所有 Run 的隐式授权。
-
-## 状态目录
-
-所有运行状态保存在仓库根的 `.apex-coding-agent/` 下（自动加入 Git exclude，不会被跟踪）：
-
-```
-.apex-coding-agent/
-├── settings.json     # 可选的用户配置
-├── run.json          # 当前 Run 的结构化状态（唯一事实来源）
-├── tasks.json        # 当前 Task Plan
-├── plans/            # 不可变的 Plan Revision 快照
-├── sessions/         # 每次 Claude Session 的记录
-├── logs/             # 运行日志
-├── report.md         # 最终报告（终态后生成）
-└── history/<runId>/  # 已终态 Run 的归档（含 archive-manifest.json 校验清单）
-```
-
-下一次 `start` 时，已终态的旧 Run 会先被完整归档到 `history/`（带 SHA-256 清单校验），再创建新 Run。已完成 Task 的定义、结果和 Checkpoint 不会被后续重新规划静默改写。
-
-## 中断与退出码
-
-`start` 是前台进程，请保持终端存活直到终态。运行期间：
-
-- **第一次 Ctrl+C**：执行有界收尾——停止启动新 Session、终止直接 Claude 子进程（最多等 10 秒）、保存事实、Run 转为 `failed`（错误码 `RUN_INTERRUPTED`），以退出码 130 结束。
-- **第二次 Ctrl+C**：立即结束进程。此后系统不承诺清理残留进程或状态可用，需人工检查后 `abandon --force`。
-
-| 退出码 | 含义 |
-| --- | --- |
-| 0 | 命令成功（status 查看 failed/abandoned 仍属成功读取） |
-| 1 | start 创建的 Run 正常持久化为 failed |
-| 2 | 命令、参数或选项用法错误（`CLI_USAGE_INVALID`） |
-| 3 | 启动前置校验失败，未创建新 Run |
-| 4 | status / report / abandon 命令失败 |
-| 130 | 第一次中断信号已处理并结束当前 start（优先于 1） |
-
-## 需要知道的边界
-
-- Claude 调用失败（崩溃、Provider 故障、网络、额度等非零退出）不会自动重试：保存错误事实后当前 Run 直接进入 `failed`。
-- 不提供 Coordinator 崩溃恢复、进程树管理、PID 跟踪或后台模式；这些是本版本的显式产品边界，不是待实现的缺陷。
-- 信任模型为 trust-first：Claude 在你的 Windows 账户权限内工作，ApexCodingAgent 不提供宿主级安全隔离。`--full-access` 请只在 SPEC 来源可信时使用。
-
-## 常见问题
-
-**提示 `RUN_ALREADY_ACTIVE_OR_INTERRUPTED`？**
-存在非终态的旧 Run。先确认没有旧的 Apex / Claude 进程在写仓库，然后 `ApexCodingAgent abandon --force`，再重新 `start`。
-
-**Run 失败了怎么办？**
-用 `ApexCodingAgent status` 查看 `lastError` 与任务状态；Run 已是终态，修复问题（额度、网络、SPEC 表述等）后直接重新 `start`——旧 Run 会被自动归档，不会丢失。
-
-**想看历史 Run？**
-已终态的 Run 在 `.apex-coding-agent/history/<runId>/` 中，包含全部状态文件与校验清单。
-
-## 开发
+如果需求文档使用了其他文件名，或者仓库中有多份 `SPEC.md`，可以直接指定文件：
 
 ```powershell
-npm run build           # 编译（tsc）
-npm run typecheck       # 测试代码类型检查
-npm test                # build + typecheck + vitest + 架构检查 + 禁用模式扫描
-npm run scan-forbidden  # 只跑禁用模式扫描
+ApexCodingAgent start .\docs\my-spec.md
 ```
 
-代码结构：`src/` 按整洁架构分为 `domain`（契约与不变量）、`application`（用例与端口）、`adapters`（Claude / Git / 状态存储）、`interfaces`（CLI）、`bootstrap`（组装根）；`tests/` 目录与之镜像。完整产品规格见 [docs/SPEC.md](https://github.com/Emperorywh/ApexCodingAgent/blob/main/docs/SPEC.md)（v4.1.1），各阶段实施记录见 [docs/sessions/](https://github.com/Emperorywh/ApexCodingAgent/tree/main/docs/sessions/)。
+### 4. 查看进度和结果
+
+另开一个 PowerShell 窗口，进入同一个项目目录，然后运行：
+
+```powershell
+ApexCodingAgent status
+```
+
+全部完成后，最终报告位于：
+
+```text
+.apex-coding-agent\report.md
+```
+
+如需重新生成报告：
+
+```powershell
+ApexCodingAgent report
+```
+
+## 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `ApexCodingAgent start` | 使用仓库中的 `SPEC.md` 开始任务 |
+| `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
+| `ApexCodingAgent status` | 查看当前进度或失败原因 |
+| `ApexCodingAgent report` | 重新生成最终报告 |
+| `ApexCodingAgent abandon --force` | 放弃一个已经无法继续的任务 |
+
+## 使用时需要注意
+
+- `start` 会一直在前台运行，请不要关闭终端或让电脑休眠。
+- 开始前请提交或移除与本次任务无关的修改；`SPEC.md` 本身不要暂存。
+- 每次运行都会在单独的 Git 分支中进行，并自动创建本地 Git 提交。
+- Claude Code、网络或额度出现问题时，任务会停止。使用 `ApexCodingAgent status` 查看原因，解决问题后重新运行 `ApexCodingAgent start`。
+- ApexCodingAgent 不支持暂停后继续。按一次 `Ctrl+C` 会安全结束当前任务，并将其标记为失败。
+- 如果程序提示已有任务未结束，请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作，再执行：
+
+```powershell
+ApexCodingAgent abandon --force
+ApexCodingAgent start
+```
+
+## 完全权限模式
+
+默认情况下，Claude Code 会使用自动权限模式。如果任务确实需要更高权限，并且你完全信任 `SPEC.md` 的内容，可以运行：
+
+```powershell
+ApexCodingAgent start --full-access
+```
+
+完全权限模式会扩大 Claude Code 可以执行的操作范围，请谨慎使用。
+
+## 卸载
+
+```powershell
+npm uninstall -g apex-coding-agent
+```
+
+项目主页：[GitHub](https://github.com/Emperorywh/ApexCodingAgent) · [npm](https://www.npmjs.com/package/apex-coding-agent) · [问题反馈](https://github.com/Emperorywh/ApexCodingAgent/issues)

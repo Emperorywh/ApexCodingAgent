@@ -3,10 +3,12 @@
  * 环境继承、Session 日志脱敏、Session 类型与结果矩阵、中断、启动失败
  * 以及能力探测。
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createClaudeRuntime } from '../../../src/adapters/claude/client.js';
 import { createNodeFileSystem } from '../../../src/adapters/filesystem/node-file-system.js';
+import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import {
   ClaudeInvocationError,
   type ClaudeRuntimePort,
@@ -21,6 +23,7 @@ import {
   activateHarness,
   COMPLETE_HELP,
   createFakeClaudeHarness,
+  FAKE_CLAUDE_PATH,
   FAKE_VERSION,
   makeRuntime,
   mkRequest,
@@ -360,5 +363,27 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
       () => runtime.probeCapabilities(),
       'CLAUDE_INSTALLATION_UNHEALTHY',
     );
+  }, TEST_TIMEOUT);
+
+  it('resolves the bare default command through a Windows shim on PATH', async () => {
+    await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
+    await writeFile(join(harness.root, 'claude.cmd'), `"${FAKE_CLAUDE_PATH}"   %*\r\n`, 'utf8');
+    const pathKey =
+      Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+    const savedPath = process.env[pathKey];
+    process.env[pathKey] = `${harness.root};${savedPath ?? ''}`;
+    try {
+      const shimmedRuntime = createClaudeRuntime({
+        fileSystem: createNodeFileSystem(),
+        redaction: createRedactor(),
+        probeTimeoutMs: 15_000,
+      });
+      const report = await shimmedRuntime.probeCapabilities();
+      expect(report.version).toBe(FAKE_VERSION);
+      expect(report.capabilities).toHaveLength(7);
+    } finally {
+      if (savedPath === undefined) delete process.env[pathKey];
+      else process.env[pathKey] = savedPath;
+    }
   }, TEST_TIMEOUT);
 });

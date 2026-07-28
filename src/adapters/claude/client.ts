@@ -1,13 +1,15 @@
 /**
  * Claude CLI 进程客户端。所有调用都使用 `child_process.spawn` 参数数组，
  * 不拼接 Shell；stdout/stderr 经过脱敏后由 FileSystemPort 持久化，并把
- * stream-json 契约委托给纯解析器。
+ * stream-json 契约委托给纯解析器。Windows 上 PATH 中的 `claude` 通常只是
+ * npm shim，入口先经 windows-command 解析为真实可执行文件再启动。
  *
  * 子进程原样继承当前用户环境，不读取或缓存凭据，不调用 CC Switch 私有
  * API，也不创建隔离配置目录。本模块不记录 PID、不接管旧 Session、
  * 不恢复 Session，也不自动重启失败进程。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import type { FileSystemPort } from '../../application/ports/file-system.js';
 import type { RedactionPort } from '../../application/ports/redaction.js';
 import type {
@@ -19,6 +21,7 @@ import type {
 import type { SessionType } from '../../domain/schemas/active-session.js';
 import { getSchemaJson } from '../../domain/schemas/index.js';
 import { createCapabilityProbe, type CapabilityProbe, type ProbeRunResult } from './capability.js';
+import { resolveWindowsCommand, type WindowsCommandEnvironment } from './windows-command.js';
 import {
   claudeLogWriteFailed,
   claudeStartFailed,
@@ -39,7 +42,9 @@ const STDERR_LOG_HEADER = '[apex stderr diagnostic]';
 export interface ClaudeRuntimeOptions {
   /**
    * Claude 可执行入口；默认使用 PATH 中的 claude。以 js、mjs 或 cjs
-   * 结尾的脚本通过当前 Node 运行时启动，仍然只使用参数数组。
+   * 结尾的脚本通过当前 Node 运行时启动，仍然只使用参数数组。Windows
+   * 上的裸命令名先经 PATH/PATHEXT 定位并对 npm shim 解引用，得到可
+   * 无 Shell 启动的真实入口。
    */
   readonly claudePath?: string;
   readonly fileSystem: FileSystemPort;
@@ -150,8 +155,32 @@ export function sessionLogPath(sessionId: string): string {
   return `logs/${sessionId}.log`;
 }
 
+/** 从进程环境读取 Windows 命令解析事实；PATH/PATHEXT 键名大小写不敏感。 */
+function systemWindowsCommandEnvironment(): WindowsCommandEnvironment {
+  const readVariable = (name: string): string | undefined => {
+    const key = Object.keys(process.env).find((candidate) => candidate.toUpperCase() === name);
+    return key === undefined ? undefined : process.env[key];
+  };
+  return {
+    platform: process.platform,
+    pathVariable: readVariable('PATH'),
+    pathExtVariable: readVariable('PATHEXT'),
+    fileExists: (absolutePath) => existsSync(absolutePath),
+    readShimText: (absolutePath) => {
+      try {
+        return readFileSync(absolutePath, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
 export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntimePort {
-  const claudePath = options.claudePath ?? DEFAULT_CLAUDE_PATH;
+  const claudePath = resolveWindowsCommand(
+    options.claudePath ?? DEFAULT_CLAUDE_PATH,
+    systemWindowsCommandEnvironment(),
+  );
   const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const fileSystem = options.fileSystem;
   const redaction = options.redaction;

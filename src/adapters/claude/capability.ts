@@ -144,24 +144,42 @@ export interface CapabilityProbe {
   readVersion(): Promise<string | null>;
 }
 
+interface VersionProbeOutcome {
+  readonly version: string | null;
+  /** version 为 null 时的底层原因，进入错误 detail 供启动诊断。 */
+  readonly failure: string | null;
+}
+
 export function createCapabilityProbe(run: ProbeRunner): CapabilityProbe {
-  async function readVersion(): Promise<string | null> {
+  async function readVersionOutcome(): Promise<VersionProbeOutcome> {
     let result: ProbeRunResult;
     try {
       result = await run(['--version']);
-    } catch {
-      return null;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { version: null, failure: `could not be started (${reason})` };
     }
-    if (result.code !== 0) return null;
+    if (result.code !== 0) {
+      const firstStderrLine = result.stderr.split(/\r?\n/, 1)[0]?.trim() ?? '';
+      const suffix = firstStderrLine === '' ? '' : `: ${firstStderrLine.slice(0, 160)}`;
+      return { version: null, failure: `exited with code ${result.code}${suffix}` };
+    }
     const version = result.stdout.trim();
-    return version === '' ? null : version;
+    return version === ''
+      ? { version: null, failure: 'produced no version output' }
+      : { version, failure: null };
+  }
+
+  async function readVersion(): Promise<string | null> {
+    return (await readVersionOutcome()).version;
   }
 
   async function probeCapabilities(): Promise<ClaudeCapabilityReport> {
-    const version = await readVersion();
-    if (version === null) {
-      throw claudeInstallationUnhealthy('claude --version failed or produced no version output');
+    const outcome = await readVersionOutcome();
+    if (outcome.version === null) {
+      throw claudeInstallationUnhealthy(`claude --version ${outcome.failure ?? 'failed'}`);
     }
+    const version = outcome.version;
     let help: ProbeRunResult;
     try {
       help = await run(['--help']);

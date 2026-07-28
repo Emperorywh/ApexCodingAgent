@@ -111,16 +111,21 @@ describe('createCapabilityProbe', () => {
     expect([...report.capabilities].sort()).toEqual([...ALL_CAPABILITY_IDS].sort());
   });
 
-  it('maps a failing --version to CLAUDE_INSTALLATION_UNHEALTHY', async () => {
-    for (const version of [
-      'spawn-failure',
-      { code: 1, stdout: '' },
-      { code: 0, stdout: '  \n' },
-    ] satisfies ScriptedOutcome[]) {
+  it('maps a failing --version to CLAUDE_INSTALLATION_UNHEALTHY naming the underlying reason', async () => {
+    const cases: Array<{ readonly outcome: ScriptedOutcome; readonly reason: string }> = [
+      { outcome: 'spawn-failure', reason: 'could not be started (spawn claude ENOENT)' },
+      { outcome: { code: 1, stdout: '' }, reason: 'exited with code 1' },
+      { outcome: { code: 0, stdout: '  \n' }, reason: 'produced no version output' },
+    ];
+    for (const { outcome, reason } of cases) {
       const probe = createCapabilityProbe(
-        scriptedRunner({ version, help: { code: 0, stdout: helpFixture('complete.help.txt') } }),
+        scriptedRunner({ version: outcome, help: { code: 0, stdout: helpFixture('complete.help.txt') } }),
       );
-      await expectApexErrorAsync(() => probe.probeCapabilities(), 'CLAUDE_INSTALLATION_UNHEALTHY');
+      const error = await expectApexErrorAsync(
+        () => probe.probeCapabilities(),
+        'CLAUDE_INSTALLATION_UNHEALTHY',
+      );
+      expect(error.message).toContain(reason);
     }
   });
 

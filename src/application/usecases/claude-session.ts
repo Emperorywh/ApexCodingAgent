@@ -1,0 +1,344 @@
+/**
+ * Claude Session 生命周期原语（SPEC §6.3 七步持久化生命周期 + §2.4 中断竞速）。
+ *
+ * 顺序铁律（§6.3）：
+ * 1. Coordinator 分配 Session ID；
+ * 2. 先在 run.json.activeSession 保存 Session 事实（Execution 同时置 Task
+ *    running 并追加未结束 Episode，Final Review 追加未结束 FR Episode）；
+ * 3. 保存成功后才能启动 Claude 进程；
+ * 4. Claude 结束后先写最终 Session Record，再提交业务结果；
+ * 5. 业务结果提交后清除 activeSession；
+ * 6. 启动失败也尽可能写失败 Session Record；写不进时只输出诊断。
+ *
+ * 中断竞速（§2.4）：invoke 与"中断请求 + 有界等待"竞速；被 abort 杀掉的
+ * 子进程以 CLAUDE_EXIT_NONZERO 失败，requested=true 时映射为 RUN_INTERRUPTED；
+ * 只有真挂死才走 interruptWaitMs 超时分支，超时照常收尾。
+ */
+import { appendExecutionEpisode, appendFinalReviewEpisode, createExecutionEpisode, createFinalReviewEpisode } from '../../domain/episodes.js';
+import { ApexError } from '../../domain/errors.js';
+import { formatRfc3339Utc } from '../../domain/time.js';
+import { assertTaskTransition } from '../../domain/task-state.js';
+import type { ActiveSession, SessionType } from '../../domain/schemas/active-session.js';
+import type { RunJson } from '../../domain/schemas/run-json.js';
+import type { SessionRecord } from '../../domain/schemas/session-record.js';
+import { ClaudeInvocationError, type ClaudeInvocationFact, type ClaudePermissionModeFor } from '../ports/ClaudeRuntimePort.js';
+import type { SessionGitFacts } from '../ports/GitPort.js';
+import type { UseCaseDeps } from '../usecase-deps.js';
+import { toErrorRecord } from './error-record.js';
+
+export interface BeginSessionInput<T extends SessionType> {
+  readonly type: T;
+  /** execution 必填；其他为 null。 */
+  readonly taskId: string | null;
+  /** planning 传"将生成的 Revision 号"；其他传当前 Revision。 */
+  readonly planRevision: number;
+  /** 会话启动前刚重算的 SPEC SHA。 */
+  readonly specSha256: string;
+  readonly prompt: string;
+  readonly permissionMode: ClaudePermissionModeFor<T>;
+  readonly repositoryRoot: string;
+}
+
+export interface ActiveSessionHandle<T extends SessionType = SessionType> {
+  readonly sessionId: string;
+  readonly type: T;
+  readonly taskId: string | null;
+  readonly planRevision: number;
+  readonly specSha256: string;
+  readonly startedAt: string;
+  /** 已持久化（activeSession 已写入）的 run。 */
+  readonly run: RunJson;
+}
+
+/** 从 run 组 SessionGitFacts（§8.3 会话前后不变量与 Checkpoint 输入）。 */
+export function sessionGitFacts(run: RunJson): SessionGitFacts {
+  return {
+    runBranch: run.repository.runBranch,
+    baseBranchRef: run.repository.baseBranchRef,
+    baseCommit: run.repository.baseCommit,
+    expectedHead: run.repository.expectedHead,
+    completedCheckpoints: Object.values(run.tasks)
+      .filter((task) => task.status === 'completed' && task.finalCheckpoint !== null)
+      .map((task) => task.finalCheckpoint!),
+    specGitPath: run.spec.path,
+  };
+}
+
+/**
+ * §6.3 第 1–4 步：分配 Session ID、写入 activeSession（及 Episode /
+ * Task 运行态）、持久化成功后返回句柄。进程只能在之后启动。
+ */
+export async function beginSession<T extends SessionType>(
+  deps: UseCaseDeps,
+  run: RunJson,
+  input: BeginSessionInput<T>,
+): Promise<ActiveSessionHandle<T>> {
+  const startedAt = formatRfc3339Utc(deps.clock.now());
+  const sessionId = globalThis.crypto.randomUUID();
+  const activeSession: ActiveSession = {
+    sessionId,
+    type: input.type,
+    taskId: input.taskId,
+    planRevision: input.planRevision,
+    specSha256: input.specSha256,
+    startedAt,
+  };
+  let next: RunJson = {
+    ...run,
+    activeSession,
+    stateRevision: run.stateRevision + 1,
+    updatedAt: startedAt,
+  };
+
+  if (input.type === 'execution') {
+    const taskId = input.taskId;
+    const task = taskId === null ? undefined : run.tasks[taskId];
+    if (taskId === null || task === undefined) {
+      throw new ApexError({
+        code: 'STATE_VALIDATION_FAILED',
+        stage: 'execution',
+        message: `execution session requires an existing task, got ${taskId ?? 'null'}`,
+      });
+    }
+    assertTaskTransition(task.status, 'running', 'orchestrator_selected');
+    const episode = createExecutionEpisode({
+      sessionId,
+      taskId,
+      planRevision: input.planRevision,
+      specSha256Before: input.specSha256,
+      startedAt,
+    });
+    next = {
+      ...next,
+      currentTaskId: taskId,
+      tasks: {
+        ...next.tasks,
+        [taskId]: {
+          ...task,
+          status: 'running',
+          executionEpisodes: appendExecutionEpisode(task.executionEpisodes, episode),
+        },
+      },
+    };
+  }
+
+  if (input.type === 'final_review') {
+    const episode = createFinalReviewEpisode({
+      sessionId,
+      planRevision: input.planRevision,
+      specSha256Before: input.specSha256,
+      startedAt,
+    });
+    next = {
+      ...next,
+      finalReviewEpisodes: appendFinalReviewEpisode(next.finalReviewEpisodes, episode),
+    };
+  }
+
+  // §6.3 第 4 步：保存成功后才能启动 Claude 进程。
+  await deps.stateStore.writeRun(next);
+  return {
+    sessionId,
+    type: input.type,
+    taskId: input.taskId,
+    planRevision: input.planRevision,
+    specSha256: input.specSha256,
+    startedAt,
+    run: next,
+  };
+}
+
+type InvokeRaceOutcome<T extends SessionType> =
+  | { readonly kind: 'fact'; readonly fact: ClaudeInvocationFact<T> }
+  | { readonly kind: 'error'; readonly error: unknown }
+  | { readonly kind: 'interrupt-timeout' };
+
+/**
+ * §6.3 第 4–5 步的进程调用段：绑定 abort 后启动唯一一次 invoke，并与
+ * 前台中断做有界竞速（§2.4 第 1–3 步）。
+ *
+ * - 正常结束：返回事实或原样抛出 ClaudeInvocationError；
+ * - 中断期间的调用失败：映射为 RUN_INTERRUPTED（保留原进程退出事实）；
+ * - 中断后子进程真挂死：最多等 interruptWaitMs，超时抛 RUN_INTERRUPTED
+ *   （processExitCode null），照常进入后续收尾。
+ */
+export async function invokeSession<T extends SessionType>(
+  deps: UseCaseDeps,
+  handle: ActiveSessionHandle<T>,
+  input: BeginSessionInput<T>,
+): Promise<ClaudeInvocationFact<T>> {
+  // §2.4 第 2 步：中断时请求终止当前直接子进程（后绑定生效）。
+  deps.interrupt.bindAbort(() => deps.claude.abort());
+
+  /**
+   * 中断可能发生在驱动器的循环顶部检查之后、Session 事实持久化之前。
+   * bindAbort 与 invoke 之间没有 await，因此先同步检查再调用 invoke，
+   * 可以保证已发生的中断不会启动新子进程，同时后续中断仍由绑定回调终止
+   * 已启动的直接子进程。
+   */
+  if (deps.interrupt.requested) {
+    throw new ClaudeInvocationError({
+      code: 'RUN_INTERRUPTED',
+      stage: input.type,
+      message: 'foreground interrupt requested before Claude process start',
+      sessionId: handle.sessionId,
+      taskId: handle.taskId,
+      processExitCode: null,
+      claudeVersion: null,
+    });
+  }
+
+  const invokePromise = deps.claude.invoke<T>({
+    prompt: input.prompt,
+    sessionId: handle.sessionId,
+    cwd: input.repositoryRoot,
+    capabilityReport: deps.capabilityReport,
+    type: input.type,
+    permissionMode: input.permissionMode,
+  });
+  const settled: Promise<InvokeRaceOutcome<T>> = invokePromise.then(
+    (fact): InvokeRaceOutcome<T> => ({ kind: 'fact', fact }),
+    (error: unknown): InvokeRaceOutcome<T> => ({ kind: 'error', error }),
+  );
+  const interruptTimeout: Promise<InvokeRaceOutcome<T>> = deps.interrupt
+    .waitForRequest()
+    .then(() => deps.wait(deps.interruptWaitMs))
+    .then((): InvokeRaceOutcome<T> => ({ kind: 'interrupt-timeout' }));
+
+  const outcome = await Promise.race([settled, interruptTimeout]);
+
+  if (outcome.kind === 'fact') return outcome.fact;
+
+  if (outcome.kind === 'error') {
+    if (!deps.interrupt.requested) throw outcome.error;
+    // abort 杀掉的子进程以 CLAUDE_EXIT_NONZERO（exitCode 可能为 null）失败；
+    // 已请求中断时统一映射为 RUN_INTERRUPTED，保留可观察的进程事实。
+    const original = outcome.error;
+    throw new ClaudeInvocationError({
+      code: 'RUN_INTERRUPTED',
+      stage: input.type,
+      message: 'foreground interrupt requested',
+      sessionId: handle.sessionId,
+      taskId: handle.taskId,
+      processExitCode: original instanceof ClaudeInvocationError ? original.processExitCode : null,
+      claudeVersion: original instanceof ClaudeInvocationError ? original.claudeVersion : null,
+      cause: original,
+    });
+  }
+
+  // §2.4 第 3 步：有界等待超时，无论子进程是否退出都继续后续收尾。
+  // 给 invokePromise 挂空 catch，防止后续 settle 时产生 unhandled rejection。
+  void invokePromise.catch(() => undefined);
+  throw new ClaudeInvocationError({
+    code: 'RUN_INTERRUPTED',
+    stage: input.type,
+    message: 'foreground interrupt requested',
+    sessionId: handle.sessionId,
+    taskId: handle.taskId,
+    processExitCode: null,
+    claudeVersion: null,
+  });
+}
+
+/**
+ * §6.3 第 5 步前半：Session 正常结束后先写 completed Session Record
+ * （不可变）；结构化结果持久化前必须 redactStructured（§18.4）。
+ */
+export async function writeCompletedSessionRecord<T extends SessionType>(
+  deps: UseCaseDeps,
+  handle: ActiveSessionHandle<T>,
+  fact: ClaudeInvocationFact<T>,
+): Promise<void> {
+  const record: SessionRecord = {
+    schemaVersion: 1,
+    sessionId: handle.sessionId,
+    type: handle.type,
+    status: 'completed',
+    runId: handle.run.runId,
+    taskId: handle.taskId,
+    planRevision: handle.planRevision,
+    specSha256: handle.specSha256,
+    startedAt: handle.startedAt,
+    endedAt: formatRfc3339Utc(deps.clock.now()),
+    claude: { version: fact.claudeVersion, model: fact.model, provider: fact.provider },
+    exitCode: 0,
+    structuredResult: deps.redaction.redactStructured(fact.structuredResult),
+    logPath: fact.logPath,
+    error: null,
+  };
+  await deps.stateStore.writeSessionRecord(record);
+}
+
+/**
+ * §6.3 第 7 步：启动失败也尽可能写失败 Session Record；无法写入时只
+ * 输出一行脱敏诊断，不伪造成功状态。
+ */
+export async function writeFailedSessionRecord(
+  deps: UseCaseDeps,
+  handle: ActiveSessionHandle,
+  error: ApexError,
+  facts: { processExitCode: number | null; claudeVersion: string | null },
+): Promise<void> {
+  const endedAt = formatRfc3339Utc(deps.clock.now());
+  const record: SessionRecord = {
+    schemaVersion: 1,
+    sessionId: handle.sessionId,
+    type: handle.type,
+    status: 'failed',
+    runId: handle.run.runId,
+    taskId: handle.taskId,
+    planRevision: handle.planRevision,
+    specSha256: handle.specSha256,
+    startedAt: handle.startedAt,
+    endedAt,
+    claude: { version: facts.claudeVersion ?? 'unknown', model: null, provider: null },
+    exitCode: facts.processExitCode,
+    structuredResult: null,
+    logPath: `logs/${handle.sessionId}.log`,
+    error: toErrorRecord(error, endedAt, deps.redaction),
+  };
+  try {
+    await deps.stateStore.writeSessionRecord(record);
+  } catch (writeError) {
+    const detail = writeError instanceof Error ? writeError.message : String(writeError);
+    deps.output.writeLine(
+      deps.redaction.redactText(
+        `state_error: 失败 Session Record 无法写入（session ${handle.sessionId}），仅输出诊断: ${detail}`,
+      ),
+    );
+  }
+}
+
+/**
+ * 幂等补写失败 Session Record 的统一入口。
+ *
+ * Session Record 一旦存在便不可覆盖；读取本身失败时也不能猜测文件是否
+ * 已经发布，因此只输出诊断并继续业务失败收尾。这样 Planning、Execution
+ * 与 Final Review 共用同一套进程事实映射，不会因复制逻辑而产生分歧。
+ */
+export async function ensureFailedSessionRecord(
+  deps: UseCaseDeps,
+  handle: ActiveSessionHandle,
+  error: ApexError,
+): Promise<void> {
+  let alreadyRecorded: boolean;
+  try {
+    alreadyRecorded = (await deps.stateStore.readSessionRecord(handle.sessionId)) !== null;
+  } catch (readError) {
+    const detail = readError instanceof Error ? readError.message : String(readError);
+    deps.output.writeLine(
+      deps.redaction.redactText(
+        `state_error: 无法确认 Session Record 是否存在（session ${handle.sessionId}），` +
+          `为避免覆盖不可变记录，不再补写: ${detail}`,
+      ),
+    );
+    return;
+  }
+  if (alreadyRecorded) return;
+
+  const processFacts =
+    error instanceof ClaudeInvocationError
+      ? { processExitCode: error.processExitCode, claudeVersion: error.claudeVersion }
+      : { processExitCode: null, claudeVersion: null };
+  await writeFailedSessionRecord(deps, handle, error, processFacts);
+}

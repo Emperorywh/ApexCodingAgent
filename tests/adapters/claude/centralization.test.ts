@@ -76,7 +76,6 @@ describe('claude contract centralization', () => {
       'FINAL_REVIEW_RESULT_INVALID',
       'CLAUDE_CAPABILITY_MISSING',
       'CLAUDE_INSTALLATION_UNHEALTHY',
-      'CLAUDE_REPORTED_FAILURE',
     ];
     for (const code of claudeCodes) {
       const files = offenders(
@@ -87,5 +86,18 @@ describe('claude contract centralization', () => {
       );
       expect(files, `files mapping ${code} outside adapters/claude`).toEqual([]);
     }
+  });
+
+  it('CLAUDE_REPORTED_FAILURE is mapped only at the Application decision point', () => {
+    /**
+     * decision == failed 不是外部失败，而是合法结构化结果；SPEC §9.6 与
+     * TRACE §8 明确由 Application 用例映射 CLAUDE_REPORTED_FAILURE。除错误码
+     * 注册表与该映射点外，任何模块（包括适配器）都不得引用此码。
+     */
+    const allowed = new Set(['domain/errors.ts', 'application/usecases/execute-next-task.ts']);
+    const files = offenders(
+      (file) => !allowed.has(file.path) && file.code.includes('CLAUDE_REPORTED_FAILURE'),
+    );
+    expect(files, 'files referencing CLAUDE_REPORTED_FAILURE outside the Application mapping point').toEqual([]);
   });
 });

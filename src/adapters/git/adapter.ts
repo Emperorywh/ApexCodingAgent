@@ -9,6 +9,7 @@ import {
   assertGitAvailable,
   createRunBranch,
   readHeadFact,
+  readRepositoryStatusFact,
   resolveRepositoryRoot,
 } from './repository.js';
 import { readSpecFact, resolveSpecFact, isSpecStaged } from './spec-discovery.js';
@@ -57,5 +58,6 @@ export function createGitAdapter(options: GitAdapterOptions = {}): GitPort {
     createTaskCheckpoint: (root, input) => createTaskCheckpoint(git, root, input),
     createIntermediateCheckpoint: (root, input) => createIntermediateCheckpoint(git, root, input),
     createFinalReviewCheckpoint: (root, input) => createFinalReviewCheckpoint(git, root, input),
+    readRepositoryStatus: (root) => readRepositoryStatusFact(git, root),
   };
 }

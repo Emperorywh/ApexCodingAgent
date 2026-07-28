@@ -57,6 +57,60 @@ interface CheckpointFlowOptions {
   readonly noChangesReason: 'no_changes' | 'no_intermediate_changes';
 }
 
+/**
+ * §12.2：显式排除 SPEC 与状态目录的 pathspec。
+ *
+ * 必须规避 Git 的一个陷阱：被 ignore 规则命中的路径若以纯字面名出现在
+ * 任何 pathspec（包括 `:(exclude)`）中，`git add` 会按"显式指定已忽略
+ * 路径"报错退出（ SPEC 只可能位于 ignored 位置时通过显式路径指定；
+ * `.apex-coding-agent/` 总是被 info/exclude 忽略）。把最后一个字面字符
+ * 改写为单字符类可保持精确匹配，同时不再触发该检查。
+ */
+function escapeGlobLiteralCharacter(character: string): string {
+  switch (character) {
+    case '[':
+      return '[[]';
+    case ']':
+      return '[]]';
+    case '*':
+      return '[*]';
+    case '?':
+      return '[?]';
+    case '\\':
+      return '[\\\\]';
+    default:
+      return character;
+  }
+}
+
+/** 把最后一个字符编码为单字符类，使整个 pathspec 保持非字面模式。 */
+function literalCharacterClass(character: string): string {
+  switch (character) {
+    case '[':
+      return '[[]';
+    case ']':
+      return '[]]';
+    case '-':
+      return '[-]';
+    case '^':
+    case '!':
+    case '\\':
+      return `[\\${character}]`;
+    default:
+      return `[${character}]`;
+  }
+}
+
+function exclusionPathspec(gitRelativePath: string): string {
+  const characters = [...gitRelativePath];
+  const last = characters.pop()!;
+  const escapedPrefix = characters.map(escapeGlobLiteralCharacter).join('');
+  return `:(exclude)${escapedPrefix}${literalCharacterClass(last)}`;
+}
+
+/** 状态目录的内容排除（目录自身不入库，glob 匹配其全部内容）。 */
+const STATE_DIR_EXCLUSION = exclusionPathspec('.apex-coding-agent') + '/**';
+
 async function runCheckpointFlow(
   git: GitRunner,
   root: string,
@@ -78,8 +132,8 @@ async function runCheckpointFlow(
       '--all',
       '--',
       '.',
-      `:(exclude)${facts.specGitPath}`,
-      ':(exclude).apex-coding-agent',
+      exclusionPathspec(facts.specGitPath),
+      STATE_DIR_EXCLUSION,
     ],
     root,
   );

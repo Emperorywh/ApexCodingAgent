@@ -117,9 +117,36 @@ describe('task checkpoint (§12.2)', () => {
     expect(outcome.coordinatorCommit).not.toBeNull();
 
     expect((await committedPaths()).trim()).toBe('src/index.ts');
-    const status = (await repo.gitRaw('status', '--porcelain')).stdout;
+    const status = (
+      await repo.gitRaw('status', '--porcelain', '--untracked-files=all')
+    ).stdout;
     expect(status).toContain(' M SPEC.md');
     expect(status).toContain('?? .apex-coding-agent/');
+  });
+
+  it('精确排除路径段含方括号的 SPEC', async () => {
+    /**
+     * Windows 允许目录名包含 `[`/`]`，但 Git pathspec 会把它们解释为
+     * 字符类。本用例保证适配器转义完整路径，而不是把权威 SPEC 意外加入
+     * Coordinator Checkpoint。
+     */
+    const specialFacts = { ...facts, specGitPath: 'docs/[x]/SPEC.md' };
+    const specialStart = await port.assertSessionStart(repo.root, specialFacts);
+    await repo.writeFile('docs/[x]/SPEC.md', '# Changed during execution\n');
+    await repo.writeFile('src/index.ts', 'export const value = 2;\n');
+
+    const outcome = await port.createTaskCheckpoint(repo.root, {
+      ...taskInput(),
+      facts: specialFacts,
+      sessionStartHead: specialStart.head,
+    });
+
+    expect(outcome.coordinatorCommit).not.toBeNull();
+    expect((await committedPaths()).trim()).toBe('src/index.ts');
+    const status = (
+      await repo.gitRaw('status', '--porcelain', '--untracked-files=all')
+    ).stdout;
+    expect(status).toContain('?? docs/[x]/SPEC.md');
   });
 
   it('records the reason instead of creating an empty commit when nothing changed', async () => {

@@ -25,6 +25,16 @@ export interface GitHeadFact {
 }
 
 /**
+ * 只读仓库状态（报告用，SPEC §14.4）：HEAD 事实与
+ * `git status --porcelain` 原始行集合，不做任何解释或过滤。
+ */
+export interface RepositoryStatusFact {
+  readonly head: GitHeadFact;
+  /** `git status --porcelain` 原始行集合（仅过滤空行）。 */
+  readonly statusEntries: readonly string[];
+}
+
+/**
  * SPEC resolution result (SPEC §3.2). `gitPath` is the authoritative
  * `/`-separated path relative to the repository root; `sha256` is computed
  * over the raw file bytes (BOM included).
@@ -246,4 +256,7 @@ export interface GitPort {
     root: string,
     input: FinalReviewCheckpointInput,
   ): Promise<CheckpointOutcome>;
+
+  /** 只读仓库状态（报告用）：HEAD 事实与 status --porcelain 行；不做任何不变量断言。 */
+  readRepositoryStatus(root: string): Promise<RepositoryStatusFact>;
 }

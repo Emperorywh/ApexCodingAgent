@@ -11,7 +11,7 @@ import {
   isUuid,
   taskIdNumber,
 } from '../../src/domain/ids.js';
-import { isRfc3339Utc } from '../../src/domain/time.js';
+import { formatRfc3339Utc, isRfc3339Utc } from '../../src/domain/time.js';
 import { RUN_ID, UUID_1 } from './fixtures.js';
 
 describe('ids', () => {
@@ -84,5 +84,15 @@ describe('time', () => {
     expect(isRfc3339Utc('2026-01-01T24:00:00Z')).toBe(false);
     expect(isRfc3339Utc('2026-02-30T00:00:00Z')).toBe(false);
     expect(isRfc3339Utc('not-a-date')).toBe(false);
+  });
+
+  it('formats Dates as UTC RFC 3339 accepted by the validator', () => {
+    expect(formatRfc3339Utc(new Date(Date.UTC(2026, 0, 2, 3, 4, 5, 6)))).toBe(
+      '2026-01-02T03:04:05.006Z',
+    );
+    expect(isRfc3339Utc(formatRfc3339Utc(new Date(Date.UTC(1999, 11, 31, 23, 59, 59))))).toBe(
+      true,
+    );
+    expect(() => formatRfc3339Utc(new Date(Number.NaN))).toThrow(RangeError);
   });
 });

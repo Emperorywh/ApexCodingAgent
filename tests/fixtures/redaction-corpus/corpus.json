@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "description": "Centralized versioned credential corpus (SPEC NFR-006 / §18.4). Each sample: rule = the redaction rule it exercises (src/adapters/redaction/redaction-rules.ts), snippet = realistic text triggering the rule, secret = the exact substring that must never reach a sink. Every rule has at least one sample; adding a rule without adding samples fails the corpus test. All secrets are synthetic.",
+  "samples": [
+    {
+      "id": "authorization-header-basic",
+      "rule": "authorization-header",
+      "snippet": "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+      "secret": "dXNlcjpwYXNzd29yZA=="
+    },
+    {
+      "id": "proxy-authorization-bearer",
+      "rule": "authorization-header",
+      "snippet": "Proxy-Authorization: Bearer proxytok-abcdef1234567890",
+      "secret": "proxytok-abcdef1234567890"
+    },
+    {
+      "id": "cookie-header",
+      "rule": "cookie-header",
+      "snippet": "Cookie: session=abc123def456ghi789; csrftoken=xyz987654",
+      "secret": "abc123def456ghi789"
+    },
+    {
+      "id": "set-cookie-header",
+      "rule": "cookie-header",
+      "snippet": "Set-Cookie: sid=deadbeefcafe12345678; Path=/; HttpOnly",
+      "secret": "deadbeefcafe12345678"
+    },
+    {
+      "id": "credential-url",
+      "rule": "credential-url",
+      "snippet": "fatal: unable to access 'https://deploy-bot:Sup3rSecretP4ss!@git.example.com/team/repo.git/': The requested URL returned error: 403",
+      "secret": "Sup3rSecretP4ss!"
+    },
+    {
+      "id": "bearer-token",
+      "rule": "bearer-token",
+      "snippet": "the client presented Bearer abcdefgh-12345678-ZYXWVUTSRQ in plaintext",
+      "secret": "abcdefgh-12345678-ZYXWVUTSRQ"
+    },
+    {
+      "id": "basic-token",
+      "rule": "basic-token",
+      "snippet": "Basic QWxhZGRpbjpPcGVuU2VzYW1lMTIz",
+      "secret": "QWxhZGRpbjpPcGVuU2VzYW1lMTIz"
+    },
+    {
+      "id": "jwt",
+      "rule": "jwt",
+      "snippet": "retrying with token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c failed",
+      "secret": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c"
+    },
+    {
+      "id": "aws-access-key",
+      "rule": "aws-access-key",
+      "snippet": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
+      "secret": "AKIAIOSFODNN7EXAMPLE"
+    },
+    {
+      "id": "github-token",
+      "rule": "github-token",
+      "snippet": "GITHUB_TOKEN=ghp_abcdefghijABCDEFGHIJ1234567890ab",
+      "secret": "ghp_abcdefghijABCDEFGHIJ1234567890ab"
+    },
+    {
+      "id": "openai-key",
+      "rule": "openai-key",
+      "snippet": "sk-proj-abcdef1234567890ABCDEF_xyz-9876543210",
+      "secret": "sk-proj-abcdef1234567890ABCDEF_xyz-9876543210"
+    },
+    {
+      "id": "slack-token",
+      "rule": "slack-token",
+      "snippet": "xoxb-123456789012-abcdefghijkl",
+      "secret": "xoxb-123456789012-abcdefghijkl"
+    },
+    {
+      "id": "google-api-key",
+      "rule": "google-api-key",
+      "snippet": "AIzaSyD4iE2x6yVvB3nN8pQ9rT0uW1zX2yC3bA4",
+      "secret": "AIzaSyD4iE2x6yVvB3nN8pQ9rT0uW1zX2yC3bA4"
+    },
+    {
+      "id": "stripe-key",
+      "rule": "stripe-key",
+      "snippet": "sk_live_4eC39HqLyjWDarjtT1zdp7dc",
+      "secret": "sk_live_4eC39HqLyjWDarjtT1zdp7dc"
+    },
+    {
+      "id": "npm-token",
+      "rule": "npm-token",
+      "snippet": "npm_abcdef1234567890ABCDEFGHIJ1234567890",
+      "secret": "npm_abcdef1234567890ABCDEFGHIJ1234567890"
+    },
+    {
+      "id": "field-apikey-json",
+      "rule": "sensitive-field",
+      "snippet": "\"apiKey\": \"correct-horse-battery-staple-7\"",
+      "secret": "correct-horse-battery-staple-7"
+    },
+    {
+      "id": "field-password-env",
+      "rule": "sensitive-field",
+      "snippet": "DATABASE_PASSWORD=correct-horse-battery-staple-7",
+      "secret": "correct-horse-battery-staple-7"
+    },
+    {
+      "id": "field-client-secret-json",
+      "rule": "sensitive-field",
+      "snippet": "\"client_secret\": \"s3cr3t-v4lue-with-dashes\"",
+      "secret": "s3cr3t-v4lue-with-dashes"
+    },
+    {
+      "id": "field-authorization-json",
+      "rule": "sensitive-field",
+      "snippet": "\"authorization\": \"Bearer qrstuvwx-12345678\"",
+      "secret": "qrstuvwx-12345678"
+    },
+    {
+      "id": "field-access-token-yaml",
+      "rule": "sensitive-field",
+      "snippet": "access_token: 9xyzABCD-1234-5678-wxyz",
+      "secret": "9xyzABCD-1234-5678-wxyz"
+    },
+    {
+      "id": "private-key-block",
+      "rule": "private-key-block",
+      "snippet": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7dKj8fHh3kLmN9pQrS2tUvWxYzAbCdEfGhIjKlMnOpQrStUv\nWxYz1234567890AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx\nKjNmHgFdSaPoIyUrTxWvEqAzCxVbNmLkJhGdFsAaQpWoEiRtYuMzXcVbNnMkLq\n-----END RSA PRIVATE KEY-----",
+      "secret": "WxYz1234567890AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx"
+    }
+  ]
+}

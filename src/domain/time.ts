@@ -1,8 +1,9 @@
 /**
- * Time format validation (SPEC §11.5: program-generated, UTC RFC 3339).
+ * Time format validation and formatting (SPEC §11.5: program-generated, UTC
+ * RFC 3339).
  *
- * Pure validation only — timestamps are produced by the Application/Adapter
- * layers (ClockPort), never by the Domain and never by the model.
+ * Pure functions only — the clock itself is injected via ClockPort
+ * (Application/Adapter layers); the Domain and the model never read a clock.
  */
 
 /** UTC RFC 3339 with mandatory `Z` designator, optional fractional seconds. */
@@ -32,4 +33,13 @@ export function isRfc3339Utc(value: string): boolean {
     date.getUTCMonth() === month - 1 &&
     date.getUTCDate() === day
   );
+}
+
+/**
+ * Formats a Date as UTC RFC 3339 (`YYYY-MM-DDTHH:mm:ss.sssZ`). This is the
+ * single formatter for every program-generated timestamp (SPEC §11.5).
+ * Throws a RangeError for an invalid Date.
+ */
+export function formatRfc3339Utc(date: Date): string {
+  return date.toISOString();
 }

@@ -60,6 +60,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
 
   /** 终态失败收尾：清槽、lastError、terminalAt，尽力持久化（§15 state_error）。 */
   async function failTerminal(run: RunJson, error: ApexError): Promise<ExecuteNextTaskResult> {
+    deps.logger.log('error', 'execution.run_failed', {
+      errorCode: error.errorCode,
+      stage: error.stage,
+      message: error.message,
+    });
     const terminal = toTerminalFailedRun(run, error, now(), deps.redaction);
     await persistRunBestEffort(deps, terminal);
     return { kind: 'failed', run: terminal };
@@ -112,6 +117,12 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     options?: { readonly episodeOutcome?: 'failed' | 'session_error' },
   ): Promise<ExecuteNextTaskResult> {
     const taskId = handle.taskId!;
+    deps.logger.log('error', 'execution.session_failed', {
+      sessionId: handle.sessionId,
+      taskId,
+      errorCode: error.errorCode,
+      taskFailureReason,
+    });
     await ensureFailedSessionRecord(deps, handle, error);
     let next = closeEpisode(
       handle.run,
@@ -156,6 +167,9 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     if (readyTaskId === null) {
       const allCompleted = tasks.tasks.every((task) => run.tasks[task.id]?.status === 'completed');
       if (allCompleted) {
+        deps.logger.log('debug', 'execution.all_tasks_completed', {
+          taskCount: tasks.tasks.length,
+        });
         const reviewing: RunJson = {
           ...run,
           status: applyRunEvent(run.status, 'ALL_TASKS_COMPLETED'),
@@ -176,11 +190,16 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       );
     }
     const taskDef: PlannedTask = tasks.tasks.find((task) => task.id === readyTaskId)!;
+    deps.logger.log('debug', 'execution.task.selected', {
+      taskId: readyTaskId,
+      planRevision: run.planRevision,
+    });
 
     // §3.2：Session 启动前重算 SPEC SHA-256。
     const specBefore = await deps.git.readSpecFact(root, run.spec.path);
     if (specBefore.sha256 !== run.spec.sha256) {
       // SPEC 在 Session 外变化：尚未启动任何会话，直接转 planning 触发新 Revision。
+      deps.logger.log('debug', 'execution.spec_changed', { boundary: 'outside_session' });
       const replanning: RunJson = {
         ...run,
         status: applyRunEvent(run.status, 'SPEC_CHANGED'),
@@ -206,6 +225,10 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     } catch (error) {
       return failTerminal(run, error as ApexError);
     }
+    deps.logger.log('debug', 'execution.session_start.asserted', {
+      taskId: readyTaskId,
+      head: startFact.head,
+    });
 
     const prompt = buildExecutionPrompt({
       repositoryRoot: root,
@@ -281,6 +304,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       } catch (error) {
         return failWithSession(handle, error as ApexError, 'checkpoint_failed');
       }
+      deps.logger.log('debug', 'execution.spec_changed', {
+        boundary: 'after_session',
+        taskId: readyTaskId,
+        checkpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
+      });
       let next = closeEpisode(
         handle.run,
         readyTaskId,
@@ -344,6 +372,10 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
 
     if (result.decision === 'failed') {
       // §9.6：decision == failed 是合法结果，映射 CLAUDE_REPORTED_FAILURE。
+      deps.logger.log('debug', 'execution.claude_reported_failure', {
+        taskId: readyTaskId,
+        sessionId: handle.sessionId,
+      });
       const reported = new ApexError({
         code: 'CLAUDE_REPORTED_FAILURE',
         stage: 'execution',
@@ -374,6 +406,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     if (result.decision === 'replan_required') {
       // §13 步骤 1–4：保存 Record 与原因、§12.3 中间 Checkpoint、Task 回
       // pending、Run 转 planning（新 Revision 由驱动器触发）。
+      deps.logger.log('debug', 'execution.replan_requested', {
+        taskId: readyTaskId,
+        sessionId: handle.sessionId,
+        reason: result.replanReason ?? null,
+      });
       let checkpoint;
       try {
         checkpoint = await deps.git.createIntermediateCheckpoint(root, {
@@ -457,6 +494,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     } catch (error) {
       return failWithSession(handle, error as ApexError, 'checkpoint_failed');
     }
+    deps.logger.log('debug', 'execution.task.checkpointed', {
+      taskId: readyTaskId,
+      sessionId: handle.sessionId,
+      checkpoint: checkpoint.finalOid,
+    });
     let next = closeEpisode(
       handle.run,
       readyTaskId,

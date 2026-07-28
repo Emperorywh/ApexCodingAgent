@@ -50,13 +50,18 @@ export function toTerminalFailedRun(
  * 状态无法写入时仅输出诊断），不抛错、不伪造成功状态。
  */
 export async function persistRunBestEffort(
-  deps: Pick<UseCaseDeps, 'stateStore' | 'output' | 'redaction'>,
+  deps: Pick<UseCaseDeps, 'stateStore' | 'output' | 'redaction' | 'logger'>,
   run: RunJson,
 ): Promise<void> {
   try {
     await deps.stateStore.writeRun(run);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    deps.logger.log('error', 'run.persist_failed', {
+      runId: run.runId,
+      status: run.status,
+      message: detail,
+    });
     deps.output.writeLine(
       deps.redaction.redactText(`state_error: run.json 无法写入，仅输出诊断: ${detail}`),
     );

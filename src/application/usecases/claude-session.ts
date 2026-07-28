@@ -15,13 +15,13 @@
  * 只有真挂死才走 interruptWaitMs 超时分支，超时照常收尾。
  */
 import { appendExecutionEpisode, appendFinalReviewEpisode, createExecutionEpisode, createFinalReviewEpisode } from '../../domain/episodes.js';
-import { ApexError } from '../../domain/errors.js';
+import { ApexError, isApexError } from '../../domain/errors.js';
 import { formatRfc3339Utc } from '../../domain/time.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
 import type { ActiveSession, SessionType } from '../../domain/schemas/active-session.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { SessionRecord } from '../../domain/schemas/session-record.js';
-import { ClaudeInvocationError, type ClaudeInvocationFact, type ClaudePermissionModeFor } from '../ports/ClaudeRuntimePort.js';
+import { ClaudeInvocationError, type ClaudeInvocationFact, type ClaudePermissionModeFor, type ClaudeStreamActivity } from '../ports/ClaudeRuntimePort.js';
 import type { SessionGitFacts } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import { toErrorRecord } from './error-record.js';
@@ -137,6 +137,12 @@ export async function beginSession<T extends SessionType>(
 
   // §6.3 第 4 步：保存成功后才能启动 Claude 进程。
   await deps.stateStore.writeRun(next);
+  deps.logger.log('debug', 'session.begin.persisted', {
+    sessionId,
+    type: input.type,
+    taskId: input.taskId,
+    planRevision: input.planRevision,
+  });
   return {
     sessionId,
     type: input.type,
@@ -152,6 +158,19 @@ type InvokeRaceOutcome<T extends SessionType> =
   | { readonly kind: 'fact'; readonly fact: ClaudeInvocationFact<T> }
   | { readonly kind: 'error'; readonly error: unknown }
   | { readonly kind: 'interrupt-timeout' };
+
+/** 阶段行/心跳行的公共标识：短 Session ID + 类型。 */
+function sessionLabel(handle: ActiveSessionHandle): string {
+  return `session ${handle.sessionId.slice(0, 8)} ${handle.type}`;
+}
+
+/** 会话耗时的人类可读格式（`83s` / `3m12s`），只用于进度行。 */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes === 0 ? `${seconds}s` : `${minutes}m${String(seconds).padStart(2, '0')}s`;
+}
 
 /**
  * §6.3 第 4–5 步的进程调用段：绑定 abort 后启动唯一一次 invoke，并与
@@ -188,6 +207,23 @@ export async function invokeSession<T extends SessionType>(
     });
   }
 
+  const label = sessionLabel(handle);
+  const taskPart = handle.taskId === null ? '' : `, task ${handle.taskId}`;
+  deps.output.writeLine(
+    deps.redaction.redactText(
+      `[apex] ${label} started (plan revision ${handle.planRevision}${taskPart})`,
+    ),
+  );
+  const startedMs = deps.clock.now().getTime();
+  const elapsedMs = (): number => deps.clock.now().getTime() - startedMs;
+  let activity: ClaudeStreamActivity = { receivedStdoutBytes: 0, lastEventType: null };
+  deps.logger.log('debug', 'session.invoke.start', {
+    sessionId: handle.sessionId,
+    type: handle.type,
+    taskId: handle.taskId,
+    planRevision: handle.planRevision,
+  });
+
   const invokePromise = deps.claude.invoke<T>({
     prompt: input.prompt,
     sessionId: handle.sessionId,
@@ -195,6 +231,9 @@ export async function invokeSession<T extends SessionType>(
     capabilityReport: deps.capabilityReport,
     type: input.type,
     permissionMode: input.permissionMode,
+    onStreamActivity: (next) => {
+      activity = next;
+    },
   });
   const settled: Promise<InvokeRaceOutcome<T>> = invokePromise.then(
     (fact): InvokeRaceOutcome<T> => ({ kind: 'fact', fact }),
@@ -205,39 +244,114 @@ export async function invokeSession<T extends SessionType>(
     .then(() => deps.wait(deps.interruptWaitMs))
     .then((): InvokeRaceOutcome<T> => ({ kind: 'interrupt-timeout' }));
 
-  const outcome = await Promise.race([settled, interruptTimeout]);
+  /**
+   * 心跳行：Session 未 settle 时每个间隔输出一次（已耗时 + 流活跃事实），
+   * settle 后由 finally 清除标志位让循环自然退出；循环自身的异常不得
+   * 影响 §2.4 竞速，因此挂空 catch（组合根的 wait 定时器已 unref，残留
+   * 一次等待不会拖延进程退出）。
+   */
+  let heartbeatActive = true;
+  const heartbeat = (async (): Promise<void> => {
+    while (heartbeatActive) {
+      await deps.wait(deps.sessionHeartbeatMs);
+      if (!heartbeatActive) return;
+      deps.output.writeLine(
+        deps.redaction.redactText(
+          `[apex] ${label} running ${formatElapsed(elapsedMs())} ` +
+            `(last event ${activity.lastEventType ?? 'none'}, ` +
+            `received ${activity.receivedStdoutBytes} bytes)`,
+        ),
+      );
+    }
+  })();
+  void heartbeat.catch(() => undefined);
 
-  if (outcome.kind === 'fact') return outcome.fact;
+  function progressFailed(errorCode: string): void {
+    deps.output.writeLine(
+      deps.redaction.redactText(
+        `[apex] ${label} failed after ${formatElapsed(elapsedMs())} (${errorCode})`,
+      ),
+    );
+  }
 
-  if (outcome.kind === 'error') {
-    if (!deps.interrupt.requested) throw outcome.error;
-    // abort 杀掉的子进程以 CLAUDE_EXIT_NONZERO（exitCode 可能为 null）失败；
-    // 已请求中断时统一映射为 RUN_INTERRUPTED，保留可观察的进程事实。
-    const original = outcome.error;
+  try {
+    const outcome = await Promise.race([settled, interruptTimeout]);
+
+    if (outcome.kind === 'fact') {
+      deps.output.writeLine(
+        deps.redaction.redactText(
+          `[apex] ${label} finished in ${formatElapsed(elapsedMs())} ` +
+            `(model ${outcome.fact.model ?? 'unknown'}, exit 0)`,
+        ),
+      );
+      deps.logger.log('debug', 'session.invoke.end', {
+        sessionId: handle.sessionId,
+        type: handle.type,
+        elapsedMs: elapsedMs(),
+        exitCode: 0,
+        model: outcome.fact.model,
+        provider: outcome.fact.provider,
+      });
+      return outcome.fact;
+    }
+
+    if (outcome.kind === 'error') {
+      if (!deps.interrupt.requested) {
+        const errorCode = isApexError(outcome.error) ? outcome.error.errorCode : 'unknown';
+        progressFailed(errorCode);
+        deps.logger.log('error', 'session.invoke.error', {
+          sessionId: handle.sessionId,
+          type: handle.type,
+          elapsedMs: elapsedMs(),
+          errorCode,
+          message: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+        });
+        throw outcome.error;
+      }
+      // abort 杀掉的子进程以 CLAUDE_EXIT_NONZERO（exitCode 可能为 null）失败；
+      // 已请求中断时统一映射为 RUN_INTERRUPTED，保留可观察的进程事实。
+      const original = outcome.error;
+      progressFailed('RUN_INTERRUPTED');
+      deps.logger.log('warn', 'session.invoke.interrupted', {
+        sessionId: handle.sessionId,
+        type: handle.type,
+        elapsedMs: elapsedMs(),
+        processExitCode: original instanceof ClaudeInvocationError ? original.processExitCode : null,
+      });
+      throw new ClaudeInvocationError({
+        code: 'RUN_INTERRUPTED',
+        stage: input.type,
+        message: 'foreground interrupt requested',
+        sessionId: handle.sessionId,
+        taskId: handle.taskId,
+        processExitCode: original instanceof ClaudeInvocationError ? original.processExitCode : null,
+        claudeVersion: original instanceof ClaudeInvocationError ? original.claudeVersion : null,
+        cause: original,
+      });
+    }
+
+    // §2.4 第 3 步：有界等待超时，无论子进程是否退出都继续后续收尾。
+    // 给 invokePromise 挂空 catch，防止后续 settle 时产生 unhandled rejection。
+    void invokePromise.catch(() => undefined);
+    progressFailed('RUN_INTERRUPTED');
+    deps.logger.log('warn', 'session.invoke.interrupt_timeout', {
+      sessionId: handle.sessionId,
+      type: handle.type,
+      elapsedMs: elapsedMs(),
+      interruptWaitMs: deps.interruptWaitMs,
+    });
     throw new ClaudeInvocationError({
       code: 'RUN_INTERRUPTED',
       stage: input.type,
       message: 'foreground interrupt requested',
       sessionId: handle.sessionId,
       taskId: handle.taskId,
-      processExitCode: original instanceof ClaudeInvocationError ? original.processExitCode : null,
-      claudeVersion: original instanceof ClaudeInvocationError ? original.claudeVersion : null,
-      cause: original,
+      processExitCode: null,
+      claudeVersion: null,
     });
+  } finally {
+    heartbeatActive = false;
   }
-
-  // §2.4 第 3 步：有界等待超时，无论子进程是否退出都继续后续收尾。
-  // 给 invokePromise 挂空 catch，防止后续 settle 时产生 unhandled rejection。
-  void invokePromise.catch(() => undefined);
-  throw new ClaudeInvocationError({
-    code: 'RUN_INTERRUPTED',
-    stage: input.type,
-    message: 'foreground interrupt requested',
-    sessionId: handle.sessionId,
-    taskId: handle.taskId,
-    processExitCode: null,
-    claudeVersion: null,
-  });
 }
 
 /**
@@ -267,6 +381,10 @@ export async function writeCompletedSessionRecord<T extends SessionType>(
     error: null,
   };
   await deps.stateStore.writeSessionRecord(record);
+  deps.logger.log('debug', 'session.record.completed', {
+    sessionId: handle.sessionId,
+    type: handle.type,
+  });
 }
 
 /**
@@ -299,8 +417,18 @@ export async function writeFailedSessionRecord(
   };
   try {
     await deps.stateStore.writeSessionRecord(record);
+    deps.logger.log('debug', 'session.record.failed_written', {
+      sessionId: handle.sessionId,
+      type: handle.type,
+      errorCode: error.errorCode,
+    });
   } catch (writeError) {
     const detail = writeError instanceof Error ? writeError.message : String(writeError);
+    deps.logger.log('error', 'session.record.write_failed', {
+      sessionId: handle.sessionId,
+      type: handle.type,
+      message: detail,
+    });
     deps.output.writeLine(
       deps.redaction.redactText(
         `state_error: 失败 Session Record 无法写入（session ${handle.sessionId}），仅输出诊断: ${detail}`,
@@ -326,6 +454,11 @@ export async function ensureFailedSessionRecord(
     alreadyRecorded = (await deps.stateStore.readSessionRecord(handle.sessionId)) !== null;
   } catch (readError) {
     const detail = readError instanceof Error ? readError.message : String(readError);
+    deps.logger.log('error', 'session.record.read_failed', {
+      sessionId: handle.sessionId,
+      type: handle.type,
+      message: detail,
+    });
     deps.output.writeLine(
       deps.redaction.redactText(
         `state_error: 无法确认 Session Record 是否存在（session ${handle.sessionId}），` +

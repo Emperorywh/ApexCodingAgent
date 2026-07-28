@@ -102,7 +102,11 @@ describe('e2e archive on next start (§4.4)', () => {
         const archivedSessions = await readdir(join(archiveDir, 'sessions'));
         expect(archivedSessions.filter((name) => name.endsWith('.json'))).toHaveLength(3);
         const archivedLogs = await readdir(join(archiveDir, 'logs'));
-        expect(archivedLogs.filter((name) => name.endsWith('.log'))).toHaveLength(3);
+        expect(
+          archivedLogs.filter((name) => name.endsWith('.log') && name !== 'apex-debug.log'),
+        ).toHaveLength(3);
+        // 调试日志随 logs/ 目录一并归档（§4.4）。
+        expect(archivedLogs).toContain('apex-debug.log');
         const report = await readFile(join(archiveDir, 'report.md'), 'utf8');
         expect(report).toContain(run1.runId);
 

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createInterruptController } from '../../../src/application/interrupt.js';
-import type { StartRunResult } from '../../../src/application/usecases/start-run.js';
+import type { StartRunInput, StartRunResult } from '../../../src/application/usecases/start-run.js';
 import { createCliRuntime } from '../../../src/bootstrap/composition-root.js';
 import { collectEnvironmentFacts } from '../../../src/bootstrap/environment.js';
 import { ApexError } from '../../../src/domain/errors.js';
@@ -188,8 +188,34 @@ describe('runCli exit codes (§17)', () => {
     expect(stderr.join('\n')).toContain('SPEC_NOT_FOUND');
   });
 
-  it('start wires the first interrupt signal to the interrupt controller', async () => {
-    const run = makeRunJson({
+  it('start 把 --verbose 透传进 StartRunInput', async () => {
+    const run = makeRunJson({ status: 'completed', terminalAt: '2026-01-01T01:00:00Z' });
+    let received: StartRunInput | null = null;
+    const { runtime } = makeRuntime({
+      startRun: {
+        execute: async (input: StartRunInput) => {
+          received = input;
+          return { kind: 'completed', run };
+        },
+      },
+    });
+    const code = await runCli(['start', '--verbose'], runtime);
+    expect(code).toBe(CLI_EXIT.ok);
+    expect(received!.verbose).toBe(true);
+
+    const quiet = makeRuntime({
+      startRun: {
+        execute: async (input: StartRunInput) => {
+          received = input;
+          return { kind: 'completed', run };
+        },
+      },
+    });
+    expect(await runCli(['start'], quiet.runtime)).toBe(CLI_EXIT.ok);
+    expect(received!.verbose).toBe(false);
+  });
+
+  it('start wires the first interrupt signal to the interrupt controller', async () => {    const run = makeRunJson({
       status: 'failed',
       terminalAt: '2026-01-01T01:00:00Z',
       lastError: makeErrorRecord('RUN_INTERRUPTED'),

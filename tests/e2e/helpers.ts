@@ -20,6 +20,8 @@ import { createJsonStateStore } from '../../src/adapters/state/json-state-store.
 import { createMarkdownReporter } from '../../src/adapters/reporter/markdown-reporter.js';
 import { createRunArchiver } from '../../src/adapters/state/run-archiver.js';
 import { createInterruptController, type InterruptController } from '../../src/application/interrupt.js';
+import { createDebugLogger } from '../../src/adapters/logging/debug-file-logger.js';
+import { createNullLogger } from '../../src/application/ports/logger.js';
 import {
   createStartRun,
   type EnvironmentFacts,
@@ -113,7 +115,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   const interruptWaitMs = options.interruptWaitMs ?? 10_000;
   const stateDir = `${repo.root.replace(/\\/g, '/')}/.apex-coding-agent`;
 
-  const makeBoundDeps: StartRunDeps['makeBoundDeps'] = ({ stateDir: dir, git, claude, capabilityReport }) => ({
+  const makeBoundDeps: StartRunDeps['makeBoundDeps'] = ({ stateDir: dir, git, claude, capabilityReport, logger }) => ({
     stateDir: dir,
     stateStore: createJsonStateStore({ stateDir: dir, fs: fileSystem }),
     git,
@@ -124,9 +126,11 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     reporter: createMarkdownReporter({ stateDir: dir, fileSystem, redaction }),
     archiver: createRunArchiver({ stateDir: dir, fs: fileSystem, clock }),
     output: { writeLine: (line) => outputLines.push(line) },
+    logger,
     interrupt,
     wait,
     interruptWaitMs,
+    sessionHeartbeatMs: 15_000,
     capabilityReport,
   });
 
@@ -147,6 +151,14 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         probeTimeoutMs: 15_000,
       }),
     makeBoundDeps,
+    makeLogger: ({ stateDir: dir, verbose }) =>
+      createDebugLogger({
+        fileSystem,
+        clock,
+        redaction,
+        logPath: `${dir}/logs/apex-debug.log`,
+        mirror: verbose ? (line) => outputLines.push(line) : null,
+      }),
   };
 
   const environment: EnvironmentFacts = {
@@ -192,6 +204,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         fullAccess: false,
         claudeCliPath: null,
         gitCliPath: null,
+        verbose: false,
         environment,
         ...input,
       };
@@ -238,6 +251,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
           probeTimeoutMs: 15_000,
         }),
         capabilityReport: { version: FAKE_VERSION, capabilities: [] },
+        logger: createNullLogger(),
       });
     },
     async cleanup() {

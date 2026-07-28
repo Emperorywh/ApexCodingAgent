@@ -58,6 +58,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
 
   async function failTerminal(run: RunJson, error: ApexError): Promise<RunFinalReviewResult> {
+    deps.logger.log('error', 'final_review.run_failed', {
+      errorCode: error.errorCode,
+      stage: error.stage,
+      message: error.message,
+    });
     const terminal = toTerminalFailedRun(run, error, now(), deps.redaction);
     await persistRunBestEffort(deps, terminal);
     return { kind: 'failed', run: terminal };
@@ -68,6 +73,10 @@ export function createRunFinalReview(deps: UseCaseDeps): {
     handle: ActiveSessionHandle<'final_review'>,
     error: ApexError,
   ): Promise<RunFinalReviewResult> {
+    deps.logger.log('error', 'final_review.session_failed', {
+      sessionId: handle.sessionId,
+      errorCode: error.errorCode,
+    });
     await ensureFailedSessionRecord(deps, handle, error);
     const closed = closeFinalReviewEpisodeAsSessionError(
       handle.run,
@@ -157,6 +166,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
     } catch (error) {
       return failWithSession(handle, error as ApexError);
     }
+    deps.logger.log('debug', 'final_review.spec_changed', {
+      sessionId: handle.sessionId,
+      trigger: trigger.type,
+      checkpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
+    });
     let next = closeEpisode(handle.run, handle.sessionId, {
       ...episodeInput,
       checkpointRole: checkpoint.noChanges ? null : 'final-review-intermediate',
@@ -319,6 +333,10 @@ export function createRunFinalReview(deps: UseCaseDeps): {
 
     if (result.decision === 'replan_required') {
       // §12.4 第 4 步 + §14.2 第 3 步：中间 Checkpoint，Run 转 planning。
+      deps.logger.log('debug', 'final_review.replan_requested', {
+        sessionId: handle.sessionId,
+        reason: result.replanReason ?? null,
+      });
       let checkpoint;
       try {
         checkpoint = await deps.git.createIntermediateCheckpoint(root, {
@@ -486,6 +504,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
     } catch (error) {
       return failTerminal(withEpisode, error as ApexError);
     }
+    deps.logger.log('debug', 'final_review.completed', {
+      sessionId: handle.sessionId,
+      finalCommit: checkpoint.finalOid,
+      reportPath: 'report.md',
+    });
     return { kind: 'completed', run: candidate };
   }
 

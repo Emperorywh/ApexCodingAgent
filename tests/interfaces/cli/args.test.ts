@@ -26,6 +26,7 @@ describe('parseCliArgs (§17)', () => {
       fullAccess: false,
       claudeCliPath: null,
       gitCliPath: null,
+      verbose: false,
     });
     expect(
       parseCliArgs([
@@ -43,6 +44,23 @@ describe('parseCliArgs (§17)', () => {
       fullAccess: true,
       claudeCliPath: 'C:/tools/claude.exe',
       gitCliPath: 'C:/tools/git.exe',
+      verbose: false,
+    });
+    expect(parseCliArgs(['start', '--verbose'])).toEqual({
+      kind: 'start',
+      specPath: null,
+      fullAccess: false,
+      claudeCliPath: null,
+      gitCliPath: null,
+      verbose: true,
+    });
+    expect(parseCliArgs(['start', '-v'])).toEqual({
+      kind: 'start',
+      specPath: null,
+      fullAccess: false,
+      claudeCliPath: null,
+      gitCliPath: null,
+      verbose: true,
     });
     expect(parseCliArgs(['status'])).toEqual({ kind: 'status' });
     expect(parseCliArgs(['report'])).toEqual({ kind: 'report' });

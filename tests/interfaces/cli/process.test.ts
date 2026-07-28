@@ -148,6 +148,9 @@ describe('cli process: start exit codes', () => {
       // 每次状态迁移一行进度摘要（§17 start 语义）
       expect(started.stdout).toContain('planning -> running');
       expect(started.stdout).toContain('final_review -> completed');
+      // 会话阶段行；默认不把调试 JSON 行镜像到 stderr
+      expect(started.stdout).toContain('planning started');
+      expect(started.stderr).not.toContain('"event":"');
 
       const status = await awaitOutcome(
         spawnCli(['status'], { cwd: fixture.repo.root, env: fixture.fake.env }),
@@ -164,6 +167,37 @@ describe('cli process: start exit codes', () => {
       );
       expect(report.code).toBe(0);
       expect(report.stdout).toContain('report written: report.md');
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  }, 150_000);
+
+  it('start --verbose mirrors debug JSON lines to stderr and keeps the file log', async () => {
+    ensureCliBuilt();
+    const fixture = await createFixture();
+    try {
+      await seedRepo(fixture.repo);
+      await fixture.fake.writeScenario(HAPPY_SEQUENCE);
+
+      const outcome = await awaitOutcome(
+        spawnCli(['start', '--verbose', '--claude-cli-path', FAKE_CLAUDE_PATH], {
+          cwd: fixture.repo.root,
+          env: fixture.fake.env,
+        }),
+        90_000,
+      );
+      expect(outcome.code).toBe(0);
+      // --verbose：调试 JSON 行镜像到 stderr（JSON Lines，含事件名）
+      expect(outcome.stderr).toContain('"event":"run.created"');
+      expect(outcome.stderr).toContain('"event":"session.invoke.start"');
+      expect(outcome.stderr).toContain('"event":"session.invoke.end"');
+      // 文件日志始终落盘
+      const debugLog = await readFile(
+        join(fixture.stateDir, 'logs', 'apex-debug.log'),
+        'utf8',
+      );
+      expect(debugLog).toContain('"event":"run.created"');
+      expect(debugLog).toContain('"event":"driver.run_completed"');
     } finally {
       await cleanupFixture(fixture);
     }

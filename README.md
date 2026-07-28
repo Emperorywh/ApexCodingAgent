@@ -108,6 +108,8 @@ ApexCodingAgent start .\docs\my-spec.md
 
 ### 4. 查看进度和结果
 
+运行期间，终端会持续输出进度：每次状态迁移、每个 Claude 会话的开始和结束各有一行 `[apex]` 提示；会话运行较久时，每 15 秒会再输出一行心跳（已运行时长、正在处理的事件）。长时间没有新输出通常只是 Claude Code 仍在工作，并非卡死。
+
 另开一个 PowerShell 窗口，进入同一个项目目录，然后运行：
 
 ```powershell
@@ -126,12 +128,29 @@ ApexCodingAgent status
 ApexCodingAgent report
 ```
 
+### 5. 排查问题
+
+每次运行都会把详细的调试日志写入下面的文件（随本次任务一同归档到 `history` 目录）：
+
+```text
+.apex-coding-agent\logs\apex-debug.log
+```
+
+日志为 JSON Lines 格式，每行包含时间、级别和事件名，可用于排查 ApexCodingAgent 自身的问题。如果想在运行时同步查看这些日志，可以加 `--verbose`：
+
+```powershell
+ApexCodingAgent start --verbose
+```
+
+`--verbose` 会把调试日志同时输出到终端的 stderr，不影响任务本身。
+
 ## 常用命令
 
 | 命令 | 用途 |
 | --- | --- |
 | `ApexCodingAgent start` | 使用仓库中的 `SPEC.md` 开始任务 |
 | `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
+| `ApexCodingAgent start --verbose` | 开始任务，并把调试日志同步输出到终端 |
 | `ApexCodingAgent status` | 查看当前进度或失败原因 |
 | `ApexCodingAgent report` | 重新生成最终报告 |
 | `ApexCodingAgent abandon --force` | 放弃一个已经无法继续的任务 |

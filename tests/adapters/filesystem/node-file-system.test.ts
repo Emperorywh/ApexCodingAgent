@@ -52,6 +52,18 @@ describe('node file system', () => {
     expect(entries[1]!.isFile).toBe(true);
   });
 
+  it('appends to an existing file and creates a missing one', async () => {
+    const encoder = new TextEncoder();
+    const existing = join(dir, 'append-existing.txt');
+    await fs.writeFile(existing, encoder.encode('ab'));
+    await fs.appendFile(existing, encoder.encode('cd'));
+    expect(new TextDecoder().decode(await fs.readFile(existing))).toBe('abcd');
+
+    const missing = join(dir, 'append-created.txt');
+    await fs.appendFile(missing, encoder.encode('xy'));
+    expect(new TextDecoder().decode(await fs.readFile(missing))).toBe('xy');
+  });
+
   it('renames over an existing target', async () => {
     const from = join(dir, 'from.txt');
     const to = join(dir, 'to.txt');

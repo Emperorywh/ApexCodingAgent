@@ -54,6 +54,12 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
           message: error instanceof Error ? error.message : String(error),
           cause: error,
         });
+    deps.logger.log('error', 'driver.unexpected_error', {
+      errorCode: apex.errorCode,
+      stage: apex.stage,
+      message: apex.message,
+      stack: apex.stack ?? null,
+    });
     const run = await deps.stateStore.readRun().catch(() => null);
     if (run === null || isTerminalRunStatus(run.status)) {
       throw apex;
@@ -81,6 +87,13 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
       }
       if (isTerminalRunStatus(run.status)) return run;
 
+      deps.logger.log('debug', 'driver.status', {
+        runId: run.runId,
+        status: run.status,
+        stateRevision: run.stateRevision,
+        planRevision: run.planRevision,
+      });
+
       // §2.4：中断落在会话之外（无 activeSession）时直接有界收尾。
       if (deps.interrupt.requested && run.activeSession === null) {
         const interrupted = new ApexError({
@@ -104,6 +117,10 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
           case 'planning': {
             const result = await generatePlanRevision.execute(trigger);
             if (result.kind === 'committed') {
+              deps.logger.log('debug', 'driver.plan_committed', {
+                runId: run.runId,
+                planRevision: result.run.planRevision,
+              });
               progress(
                 `run ${run.runId} planning -> running (plan revision ${result.run.planRevision} committed)`,
               );
@@ -111,6 +128,11 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
             } else if (result.kind === 'spec-changed') {
               progress(`run ${run.runId} SPEC changed during planning; replanning`);
             } else {
+              deps.logger.log('error', 'driver.run_failed', {
+                runId: run.runId,
+                status: 'planning',
+                errorCode: result.run.lastError?.errorCode ?? 'unknown',
+              });
               progress(`run ${run.runId} planning -> failed (${result.run.lastError?.errorCode ?? 'unknown'})`);
               return result.run;
             }
@@ -120,13 +142,29 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
             const result = await executeNextTask.execute();
             if (result.kind === 'task-completed') {
               const checkpoint = result.run.tasks[result.taskId]?.finalCheckpoint ?? '';
+              deps.logger.log('debug', 'driver.task_completed', {
+                runId: run.runId,
+                taskId: result.taskId,
+                checkpoint,
+              });
               progress(`task ${result.taskId} -> completed (checkpoint ${checkpoint.slice(0, 12)})`);
             } else if (result.kind === 'replan-needed') {
               trigger = result.trigger;
+              deps.logger.log('debug', 'driver.replan', {
+                runId: run.runId,
+                status: 'running',
+                trigger: result.trigger.type,
+                reason: result.trigger.reason,
+              });
               progress(`run ${run.runId} running -> planning (${result.trigger.type})`);
             } else if (result.kind === 'final-review') {
               progress(`run ${run.runId} running -> final_review (all tasks completed)`);
             } else {
+              deps.logger.log('error', 'driver.run_failed', {
+                runId: run.runId,
+                status: 'running',
+                errorCode: result.run.lastError?.errorCode ?? 'unknown',
+              });
               progress(`run ${run.runId} running -> failed (${result.run.lastError?.errorCode ?? 'unknown'})`);
               return result.run;
             }
@@ -135,13 +173,28 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
           case 'final_review': {
             const result = await runFinalReview.execute();
             if (result.kind === 'completed') {
+              deps.logger.log('debug', 'driver.run_completed', {
+                runId: run.runId,
+                reportPath: result.run.reportPath ?? 'report.md',
+              });
               progress(`run ${run.runId} final_review -> completed (report ${result.run.reportPath ?? 'report.md'})`);
               return result.run;
             }
             if (result.kind === 'replan-needed') {
               trigger = result.trigger;
+              deps.logger.log('debug', 'driver.replan', {
+                runId: run.runId,
+                status: 'final_review',
+                trigger: result.trigger.type,
+                reason: result.trigger.reason,
+              });
               progress(`run ${run.runId} final_review -> planning (${result.trigger.type})`);
             } else {
+              deps.logger.log('error', 'driver.run_failed', {
+                runId: run.runId,
+                status: 'final_review',
+                errorCode: result.run.lastError?.errorCode ?? 'unknown',
+              });
               progress(`run ${run.runId} final_review -> failed (${result.run.lastError?.errorCode ?? 'unknown'})`);
               return result.run;
             }

@@ -69,6 +69,11 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
 
   /** 终态失败收尾：清槽、lastError、terminalAt，尽力持久化（§15 state_error）。 */
   async function failTerminal(run: RunJson, error: ApexError): Promise<GeneratePlanRevisionResult> {
+    deps.logger.log('error', 'planning.run_failed', {
+      errorCode: error.errorCode,
+      stage: error.stage,
+      message: error.message,
+    });
     const terminal = toTerminalFailedRun(run, error, now(), deps.redaction);
     await persistRunBestEffort(deps, terminal);
     return { kind: 'failed', run: terminal };
@@ -94,6 +99,11 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     }
     const tasks = await deps.stateStore.readTasks();
     const root = run.repository.root;
+    deps.logger.log('debug', 'planning.begin', {
+      trigger: trigger.type,
+      reason: trigger.reason,
+      nextRevision: run.planRevision + 1,
+    });
 
     // §3.2：Planning Session 启动前重算 SPEC SHA-256。
     let specBefore;
@@ -177,6 +187,10 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     if (specAfter.sha256 !== specBefore.sha256) {
       // SPEC 在 Planning 期间变化：草稿基于旧 SPEC，丢弃；SPEC_CHANGED
       // planning→planning 不换状态，清槽后由驱动器用新 SPEC 重跑。
+      deps.logger.log('debug', 'planning.spec_changed', {
+        sessionId: handle.sessionId,
+        nextRevision: run.planRevision + 1,
+      });
       const stayed: RunJson = {
         ...handle.run,
         activeSession: null,
@@ -194,6 +208,11 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
         plannerSessionId: handle.sessionId,
         specSha256: specBefore.sha256,
         repositoryRoot: root,
+      });
+      deps.logger.log('debug', 'planning.committed', {
+        sessionId: handle.sessionId,
+        planRevision: committed.planRevision,
+        taskCount: Object.keys(committed.tasks).length,
       });
       return { kind: 'committed', run: committed };
     } catch (error) {

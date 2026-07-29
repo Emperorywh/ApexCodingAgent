@@ -21,6 +21,7 @@ import {
   seedRepo,
   type TempRepo,
 } from './helpers.js';
+import { createTestProcessExecutor } from '../../process-executor.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const sha256 = (bytes: Uint8Array | string): string =>
@@ -31,7 +32,7 @@ let port: GitPort;
 
 beforeEach(async () => {
   repo = await createTempRepo();
-  port = createGitAdapter();
+  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
 });
 
 afterEach(async () => {
@@ -102,7 +103,13 @@ describe('default discovery', () => {
     await repo.git('add', '.gitignore');
     await repo.git('commit', '--message', 'ignore vendor');
 
-    expect(await discoverSpecCandidates(createGitRunner(), repo.root, repo.root)).toEqual([]);
+    expect(
+      await discoverSpecCandidates(
+        createGitRunner({ processExecutor: createTestProcessExecutor() }),
+        repo.root,
+        repo.root,
+      ),
+    ).toEqual([]);
     await expectApexErrorAsync(() => port.resolveSpec(repo.root, repo.root, null), 'SPEC_NOT_FOUND');
 
     const fact = await port.resolveSpec(repo.root, repo.root, 'vendor/SPEC.md');
@@ -124,7 +131,7 @@ describe('invocation-directory scoping', () => {
     await seedRepo(repo);
     await repo.writeFile('sub/a/SPEC.md', '# A\n');
     await repo.writeFile('sub/b/SPEC.md', '# B\n');
-    const git = createGitRunner();
+    const git = createGitRunner({ processExecutor: createTestProcessExecutor() });
     const all = await discoverSpecCandidates(git, repo.root, repo.root);
     expect([...all].sort()).toEqual(['SPEC.md', 'sub/a/SPEC.md', 'sub/b/SPEC.md']);
     const scoped = await discoverSpecCandidates(git, repo.root, join(repo.root, 'sub'));

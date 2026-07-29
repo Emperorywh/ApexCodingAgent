@@ -22,6 +22,7 @@ import {
   seedRepo,
   type TempRepo,
 } from './helpers.js';
+import { createTestProcessExecutor } from '../../process-executor.js';
 
 let repo: TempRepo;
 let port: GitPort;
@@ -30,7 +31,7 @@ let start: SessionStartFact;
 
 beforeEach(async () => {
   repo = await createTempRepo();
-  port = createGitAdapter();
+  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
   const baseCommit = await seedRepo(repo);
   await port.createRunBranch(repo.root, RUN_ID);
   facts = mkFacts({ baseCommit, expectedHead: await repo.head() });

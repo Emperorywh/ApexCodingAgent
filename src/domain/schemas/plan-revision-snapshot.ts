@@ -47,6 +47,11 @@ export interface PlanRevisionSnapshot {
   tasks: PlannedTask[];
 }
 
+/**
+ * 计划快照复用已经类型化的计划子结构，避免重复计划字段。
+ *
+ * 触发事实与模型计划由同一持久化边界组合，避免独立 Schema 发生漂移。
+ */
 export const planRevisionSnapshotSchema = {
   type: 'object',
   additionalProperties: false,
@@ -75,7 +80,7 @@ export const planRevisionSnapshotSchema = {
       additionalProperties: false,
       required: ['type', 'reason', 'sourceSessionId'],
       properties: {
-        type: { enum: [...PLAN_REVISION_TRIGGER_TYPES] },
+        type: { type: 'string', enum: [...PLAN_REVISION_TRIGGER_TYPES] },
         reason: { type: 'string', minLength: 1 },
         sourceSessionId: {
           anyOf: [{ type: 'null' }, { type: 'string', pattern: UUID_PATTERN.source }],

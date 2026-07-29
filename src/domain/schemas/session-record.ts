@@ -44,6 +44,11 @@ export interface SessionRecord {
   error: ErrorRecord | null;
 }
 
+/**
+ * Session Record 显式组合公共事实与三类结构化结果联合类型。
+ *
+ * 会话类型、结果类型和错误状态的对应关系仍由领域不变式显式校验。
+ */
 export const sessionRecordSchema = {
   type: 'object',
   additionalProperties: false,
@@ -67,8 +72,8 @@ export const sessionRecordSchema = {
   properties: {
     schemaVersion: { type: 'integer', const: 1 },
     sessionId: { type: 'string', pattern: UUID_PATTERN.source },
-    type: { enum: ['planning', 'execution', 'final_review'] },
-    status: { enum: ['completed', 'failed'] },
+    type: { type: 'string', enum: ['planning', 'execution', 'final_review'] },
+    status: { type: 'string', enum: ['completed', 'failed'] },
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
     taskId: { anyOf: [{ type: 'null' }, { type: 'string', pattern: TASK_ID_PATTERN.source }] },
     planRevision: { type: 'integer', minimum: 1 },

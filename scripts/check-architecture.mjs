@@ -7,6 +7,7 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const scannedLayers = ['src/domain', 'src/application'];
@@ -27,8 +28,60 @@ function listTsFiles(dir) {
   return out;
 }
 
-const importSpecifierPattern =
-  /(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+/**
+ * 通过 TypeScript AST 收集所有静态可判定的模块引用。
+ *
+ * 统一覆盖 import、export from、动态 import、import type、import equals 与
+ * 静态 require，避免正则把注释或字符串内容误识别为真实的跨层依赖。
+ *
+ * @param {string} source
+ * @param {string} file
+ * @returns {string[]}
+ */
+function collectModuleSpecifiers(source, file) {
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const specifiers = [];
+  const collectLiteral = (node) => {
+    if (node !== undefined && ts.isStringLiteralLike(node)) {
+      specifiers.push(node.text);
+    }
+  };
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      collectLiteral(node.moduleSpecifier);
+    } else if (
+      ts.isCallExpression(node) &&
+      (
+        node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === 'require'
+        )
+      )
+    ) {
+      collectLiteral(node.arguments[0]);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument)
+    ) {
+      collectLiteral(node.argument.literal);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      collectLiteral(node.moduleReference.expression);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return specifiers;
+}
 
 /** @param {string} specifier @returns {string | null} */
 function classifyViolation(specifier) {
@@ -48,9 +101,7 @@ const violations = [];
 for (const layer of scannedLayers) {
   for (const file of listTsFiles(join(repoRoot, layer))) {
     const source = readFileSync(file, 'utf8');
-    for (const match of source.matchAll(importSpecifierPattern)) {
-      const specifier = match[1] ?? match[2];
-      if (!specifier) continue;
+    for (const specifier of collectModuleSpecifiers(source, file)) {
       const problem = classifyViolation(specifier);
       if (problem) {
         violations.push(`${relative(repoRoot, file)}: ${problem}`);

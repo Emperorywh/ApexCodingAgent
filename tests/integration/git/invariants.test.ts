@@ -19,13 +19,14 @@ import {
   seedRepo,
   type TempRepo,
 } from './helpers.js';
+import { createTestProcessExecutor } from '../../process-executor.js';
 
 let repo: TempRepo;
 let port: GitPort;
 
 beforeEach(async () => {
   repo = await createTempRepo();
-  port = createGitAdapter();
+  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
 });
 
 afterEach(async () => {

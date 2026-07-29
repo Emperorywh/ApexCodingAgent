@@ -38,6 +38,11 @@ export interface FinalReviewEpisode {
   error: ErrorRecord | null;
 }
 
+/**
+ * 最终复核 Episode 的持久化形状由标准 JSON Schema 和契约测试覆盖。
+ *
+ * 决策与检查点角色的组合规则继续由领域层集中维护。
+ */
 export const finalReviewEpisodeSchema = {
   type: 'object',
   additionalProperties: false,
@@ -65,7 +70,10 @@ export const finalReviewEpisodeSchema = {
     startedAt: { type: 'string', format: 'rfc3339' },
     endedAt: { anyOf: [{ type: 'null' }, { type: 'string', format: 'rfc3339' }] },
     decision: {
-      anyOf: [{ type: 'null' }, { enum: [...FINAL_REVIEW_EPISODE_DECISIONS] }],
+      anyOf: [
+        { type: 'null' },
+        { type: 'string', enum: [...FINAL_REVIEW_EPISODE_DECISIONS] },
+      ],
     },
     summary: { type: ['string', 'null'], minLength: 1 },
     reviewedTaskIds: {
@@ -74,7 +82,13 @@ export const finalReviewEpisodeSchema = {
     },
     changedAreas: { type: 'array', items: { type: 'string', minLength: 1 } },
     checkpointRole: {
-      anyOf: [{ type: 'null' }, { enum: ['final-review-final', 'final-review-intermediate'] }],
+      anyOf: [
+        { type: 'null' },
+        {
+          type: 'string',
+          enum: ['final-review-final', 'final-review-intermediate'],
+        },
+      ],
     },
     checkpoint: {
       anyOf: [{ type: 'null' }, { type: 'string', pattern: GIT_OID_PATTERN.source }],

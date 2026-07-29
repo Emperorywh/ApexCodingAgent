@@ -17,6 +17,7 @@ import type {
 } from '../../../src/application/ports/ClaudeRuntimePort.js';
 import type { FileSystemPort } from '../../../src/application/ports/file-system.js';
 import type { SessionType } from '../../../src/domain/schemas/active-session.js';
+import { createTestProcessExecutor } from '../../process-executor.js';
 
 export const FAKE_CLAUDE_PATH = fileURLToPath(
   new URL('../../fake-claude/claude.mjs', import.meta.url),
@@ -123,6 +124,7 @@ export function makeRuntime(options?: {
 }): ClaudeRuntimePort {
   return createClaudeRuntime({
     claudePath: options?.claudePath ?? FAKE_CLAUDE_PATH,
+    processExecutor: createTestProcessExecutor(),
     fileSystem: options?.fileSystem ?? createNodeFileSystem(),
     redaction: createRedactor(),
     probeTimeoutMs: 15_000,

@@ -30,7 +30,7 @@ import { ApexError } from '../../domain/errors.js';
 
 export type GitAdapterOptions = GitRunnerOptions;
 
-export function createGitAdapter(options: GitAdapterOptions = {}): GitPort {
+export function createGitAdapter(options: GitAdapterOptions): GitPort {
   const git = createGitRunner(options);
   return {
     assertAvailable: () => assertGitAvailable(git, process.cwd()),

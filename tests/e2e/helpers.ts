@@ -16,6 +16,7 @@ import { createSystemClock } from '../../src/adapters/clock/system-clock.js';
 import { createRedactor } from '../../src/adapters/redaction/redactor.js';
 import { createGitAdapter } from '../../src/adapters/git/adapter.js';
 import { createClaudeRuntime } from '../../src/adapters/claude/client.js';
+import { createTestProcessExecutor } from '../process-executor.js';
 import { createJsonStateStore } from '../../src/adapters/state/json-state-store.js';
 import { createMarkdownReporter } from '../../src/adapters/reporter/markdown-reporter.js';
 import { createRunArchiver } from '../../src/adapters/state/run-archiver.js';
@@ -183,7 +184,10 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
          * Git Adapter，确保配置测试仍经过完整仓库校验。
          */
         gitPortPaths.push(gitCliPath);
-        return createGitAdapter(gitCliPath === null ? {} : { gitPath: gitCliPath });
+        return createGitAdapter({
+          processExecutor: createTestProcessExecutor(),
+          ...(gitCliPath === null ? {} : { gitPath: gitCliPath }),
+        });
       },
       makeClaudePort: (claudeCliPath) => {
         /*
@@ -193,6 +197,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         claudePortPaths.push(claudeCliPath);
         return createClaudeRuntime({
           claudePath: claudeCliPath ?? FAKE_CLAUDE_PATH,
+          processExecutor: createTestProcessExecutor(),
           fileSystem,
           redaction,
           probeTimeoutMs: 15_000,
@@ -319,9 +324,10 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     makeBoundDeps() {
       return startDeps.makeBoundDeps({
         stateDir,
-        git: createGitAdapter({}),
+        git: createGitAdapter({ processExecutor: createTestProcessExecutor() }),
         claude: createClaudeRuntime({
           claudePath: FAKE_CLAUDE_PATH,
+          processExecutor: createTestProcessExecutor(),
           fileSystem,
           redaction,
           probeTimeoutMs: 15_000,

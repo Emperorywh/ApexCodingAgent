@@ -19,6 +19,11 @@ export interface FinalReviewResult {
   replanReason: string | null;
 }
 
+/**
+ * 最终复核结果复用任务测试结构，避免复制测试报告字段。
+ *
+ * 显式 null 与跨字段业务规则分别由 Schema 契约测试和 results 模块负责。
+ */
 export const finalReviewResultSchema = {
   type: 'object',
   additionalProperties: false,
@@ -32,7 +37,7 @@ export const finalReviewResultSchema = {
     'replanReason',
   ],
   properties: {
-    decision: { enum: ['completed', 'replan_required'] },
+    decision: { type: 'string', enum: ['completed', 'replan_required'] },
     summary: { type: 'string', minLength: 1 },
     reviewedTaskIds: {
       type: 'array',

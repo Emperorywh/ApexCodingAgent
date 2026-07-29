@@ -13,6 +13,7 @@ import {
   seedRepo,
   type TempRepo,
 } from './helpers.js';
+import { createTestProcessExecutor } from '../../process-executor.js';
 
 let repo: TempRepo;
 
@@ -27,7 +28,10 @@ afterEach(async () => {
 
 describe('spawn failures', () => {
   it('maps a missing git executable to GIT_COMMAND_FAILED', async () => {
-    const runner = createGitRunner({ gitPath: 'git-apex-g3-does-not-exist' });
+    const runner = createGitRunner({
+      processExecutor: createTestProcessExecutor(),
+      gitPath: 'git-apex-g3-does-not-exist',
+    });
     const error = await expectApexErrorAsync(
       () => runner.run(['--version'], repo.root),
       'GIT_COMMAND_FAILED',
@@ -36,14 +40,20 @@ describe('spawn failures', () => {
   });
 
   it('maps a missing git executable to GIT_UNAVAILABLE at the startup gate', async () => {
-    const port = createGitAdapter({ gitPath: 'git-apex-g3-does-not-exist' });
+    const port = createGitAdapter({
+      processExecutor: createTestProcessExecutor(),
+      gitPath: 'git-apex-g3-does-not-exist',
+    });
     await expectApexErrorAsync(() => port.assertAvailable(), 'GIT_UNAVAILABLE');
   });
 });
 
 describe('stderr capture and redaction', () => {
   it('carries redacted stderr in the error tool summary', async () => {
-    const runner = createGitRunner({ redact: () => 'MASKED' });
+    const runner = createGitRunner({
+      processExecutor: createTestProcessExecutor(),
+      redact: () => 'MASKED',
+    });
     const error = await expectApexErrorAsync(
       () => runner.run(['rev-parse', '--verify', 'refs/heads/does-not-exist'], repo.root),
       'GIT_COMMAND_FAILED',
@@ -52,7 +62,7 @@ describe('stderr capture and redaction', () => {
   });
 
   it('reports raw stderr when no redaction hook is configured', async () => {
-    const runner = createGitRunner();
+    const runner = createGitRunner({ processExecutor: createTestProcessExecutor() });
     const error = await expectApexErrorAsync(
       () => runner.run(['rev-parse', '--verify', 'refs/heads/does-not-exist'], repo.root),
       'GIT_COMMAND_FAILED',
@@ -64,7 +74,7 @@ describe('stderr capture and redaction', () => {
 
 describe('runAllowFailure', () => {
   it('resolves with the exit code instead of throwing', async () => {
-    const runner = createGitRunner();
+    const runner = createGitRunner({ processExecutor: createTestProcessExecutor() });
     const result = await runner.runAllowFailure(
       ['merge-base', '--is-ancestor', 'HEAD', 'HEAD'],
       repo.root,

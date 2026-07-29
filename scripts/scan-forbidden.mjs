@@ -17,6 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 /**
  * 默认扫描脚本所在仓库；`--root` 只用于隔离 Fixture 和发布流水线。
@@ -88,11 +89,25 @@ function listFiles(dir, suffixes, excludedDirectories = new Set()) {
   return out;
 }
 
-/** 剥离块注释与行注释（保留字符串中的 "://"）。 */
+/**
+ * 使用 TypeScript AST 打印器移除真实注释，同时保留全部类型与运行时代码。
+ *
+ * 解析器能正确区分注释与字符串、模板文本、正则字面量；这里只在内存中生成扫描文本，
+ * 不会格式化或写回用户源码。
+ */
 function stripComments(code) {
-  return code
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/(^|[^:"'`\w])\/\/[^\n]*/g, '$1');
+  const sourceFile = ts.createSourceFile(
+    'source.ts',
+    code,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const printer = ts.createPrinter({
+    newLine: ts.NewLineKind.LineFeed,
+    removeComments: true,
+  });
+  return printer.printFile(sourceFile);
 }
 
 const violations = [];

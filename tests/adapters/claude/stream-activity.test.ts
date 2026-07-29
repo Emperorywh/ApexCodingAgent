@@ -3,7 +3,7 @@
  * 摘要只用于前台进度展示：无法摘要的事件返回 null，字段缺失不得抛错。
  */
 import { describe, expect, it } from 'vitest';
-import { summarizeStreamEvent } from '../../../src/adapters/claude/client.js';
+import { summarizeStreamEvent } from '../../../src/adapters/claude/stream-parser.js';
 
 describe('summarizeStreamEvent', () => {
   it('assistant 思考块摘要为 thinking 行', () => {

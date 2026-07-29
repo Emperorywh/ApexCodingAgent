@@ -1,14 +1,15 @@
 /**
- * Git CLI process wrapper (SPEC §7.2): `child_process.spawn` with an argument
- * array — never a shell string. Collects stdout/stderr, enforces a per-command
+ * Git CLI process wrapper (SPEC §7.2): delegates the argument-array execution
+ * boundary to the shared ProcessExecutor and never constructs a shell string.
+ * It collects the bounded output of short Git commands, enforces a per-command
  * timeout, and maps every non-zero exit / spawn failure / timeout to
  * `GIT_COMMAND_FAILED` (SPEC §15.3 git_error row). Expected-non-zero probes
  * (`merge-base --is-ancestor`, `diff --cached --quiet`, detached-HEAD
  * `symbolic-ref`) go through {@link GitRunner.runAllowFailure} and map their
  * own exit codes.
  */
-import { spawn } from 'node:child_process';
 import { ApexError } from '../../domain/errors.js';
+import type { ProcessExecutor } from '../process/process-executor.js';
 
 const GIT_STAGE = 'git';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -30,6 +31,7 @@ export interface GitRunner {
 }
 
 export interface GitRunnerOptions {
+  readonly processExecutor: ProcessExecutor;
   /** git executable (SPEC §17 `--git-cli-path`); defaults to `git` on PATH. */
   readonly gitPath?: string;
   readonly timeoutMs?: number;
@@ -52,66 +54,57 @@ export function gitCommandFailed(
   });
 }
 
-export function createGitRunner(options: GitRunnerOptions = {}): GitRunner {
+export function createGitRunner(options: GitRunnerOptions): GitRunner {
   const gitPath = options.gitPath ?? 'git';
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  function spawnGit(args: readonly string[], cwd: string): Promise<GitRunResult> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(gitPath, [...args], {
-        cwd,
-        shell: false,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill();
-        reject(
-          gitCommandFailed(`git ${args.join(' ')} timed out after ${timeoutMs}ms`),
-        );
-      }, timeoutMs);
-      child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-      child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-      child.on('error', (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(
-          gitCommandFailed(`failed to spawn git (${gitPath}): ${error.message}`, {
-            cause: error,
-          }),
-        );
-      });
-      child.on('close', (code) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({
-          code: code ?? -1,
-          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf8'),
-        });
-      });
+  /**
+   * Git 命令输出规模受具体协议约束，可以在统一执行器内完整收集。
+   *
+   * 这里仅解释进程终态并映射稳定 Git 错误；底层执行器不会知道哪些非零
+   * 退出属于探测语义，因此 runAllowFailure 仍能保留原有行为。
+   */
+  async function executeGit(args: readonly string[], cwd: string): Promise<GitRunResult> {
+    const outcome = await options.processExecutor.execute({
+      command: gitPath,
+      args,
+      cwd,
+      timeoutMs,
+      collectOutput: true,
     });
+    if (outcome.kind === 'spawn-failed') {
+      throw gitCommandFailed(`failed to spawn git (${gitPath}): ${outcome.error.message}`, {
+        cause: outcome.error,
+      });
+    }
+    if (outcome.kind === 'timeout') {
+      throw gitCommandFailed(`git ${args.join(' ')} timed out after ${timeoutMs}ms`);
+    }
+    if (outcome.streamFailed) {
+      throw gitCommandFailed(`git ${args.join(' ')} stdout/stderr stream failed`, {
+        stderr: outcome.stderr,
+        ...(options.redact === undefined ? {} : { redact: options.redact }),
+      });
+    }
+    return {
+      code: outcome.code ?? -1,
+      stdout: outcome.stdout,
+      stderr: outcome.stderr,
+    };
   }
 
   return {
     redact: options.redact ?? ((text: string) => text),
     async run(args, cwd) {
-      const result = await spawnGit(args, cwd);
+      const result = await executeGit(args, cwd);
       if (result.code !== 0) {
-        throw gitCommandFailed(`git ${args.join(' ')} exited with code ${result.code}`, {
+        throw gitCommandFailed(`git (${gitPath}) ${args.join(' ')} exited with code ${result.code}`, {
           stderr: result.stderr,
           ...(options.redact === undefined ? {} : { redact: options.redact }),
         });
       }
       return result;
     },
-    runAllowFailure: spawnGit,
+    runAllowFailure: executeGit,
   };
 }

@@ -6,6 +6,7 @@
  * rules) live in `src/domain/plan.ts`.
  */
 import { GIT_OID_PATTERN, TASK_ID_PATTERN } from '../ids.js';
+import type { JSONSchemaType } from 'ajv';
 
 export type EstimatedSize = 'small' | 'medium' | 'large';
 
@@ -34,6 +35,11 @@ export interface TaskPlanDraft {
   tasks: PlannedTask[];
 }
 
+/**
+ * Schema 对象同时接受 Ajv 的编译期契约检查与运行时严格校验。
+ *
+ * 字段类型一旦偏离领域接口，TypeScript 会在构建阶段直接报告，而不是等到持久化时才暴露。
+ */
 export const plannedTaskSchema = {
   type: 'object',
   additionalProperties: false,
@@ -67,10 +73,10 @@ export const plannedTaskSchema = {
       type: 'array',
       items: { type: 'string', format: 'git-relative-path' },
     },
-    estimatedSize: { enum: ['small', 'medium', 'large'] },
+    estimatedSize: { type: 'string', enum: ['small', 'medium', 'large'] },
     context: { type: 'string', minLength: 1 },
   },
-} as const;
+} as const satisfies JSONSchemaType<PlannedTask>;
 
 export const checkpointDispositionSchema = {
   type: 'object',
@@ -81,7 +87,7 @@ export const checkpointDispositionSchema = {
     ownerTaskId: { type: 'string', pattern: TASK_ID_PATTERN.source },
     rationale: { type: 'string', minLength: 1 },
   },
-} as const;
+} as const satisfies JSONSchemaType<CheckpointDisposition>;
 
 export const taskPlanDraftSchema = {
   type: 'object',
@@ -96,4 +102,4 @@ export const taskPlanDraftSchema = {
     },
     tasks: { type: 'array', items: plannedTaskSchema },
   },
-} as const;
+} as const satisfies JSONSchemaType<TaskPlanDraft>;

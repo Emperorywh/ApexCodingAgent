@@ -3,6 +3,7 @@
  * archived terminal Run under `history/<run-id>/`.
  */
 import { RUN_ID_PATTERN, SHA256_PATTERN } from '../ids.js';
+import type { JSONSchemaType } from 'ajv';
 
 export type ArchivedRunStatus = 'completed' | 'failed' | 'abandoned';
 
@@ -20,6 +21,11 @@ export interface RunArchiveManifest {
   files: RunArchiveManifestFile[];
 }
 
+/**
+ * 归档清单通过 Ajv 官方泛型绑定文件清单和终态字段。
+ *
+ * 归档格式变更若未同步领域接口，会在构建阶段被拒绝。
+ */
 export const runArchiveManifestSchema = {
   type: 'object',
   additionalProperties: false,
@@ -27,7 +33,7 @@ export const runArchiveManifestSchema = {
   properties: {
     schemaVersion: { type: 'integer', const: 1 },
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
-    runStatus: { enum: ['completed', 'failed', 'abandoned'] },
+    runStatus: { type: 'string', enum: ['completed', 'failed', 'abandoned'] },
     archivedAt: { type: 'string', format: 'rfc3339' },
     files: {
       type: 'array',
@@ -43,4 +49,4 @@ export const runArchiveManifestSchema = {
       },
     },
   },
-} as const;
+} as const satisfies JSONSchemaType<RunArchiveManifest>;

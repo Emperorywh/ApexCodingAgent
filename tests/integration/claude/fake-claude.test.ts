@@ -32,6 +32,7 @@ import {
   streamLines,
   type FakeClaudeHarness,
 } from './helpers.js';
+import { createTestProcessExecutor } from '../../process-executor.js';
 
 const TEST_TIMEOUT = { timeout: 30_000 };
 
@@ -102,6 +103,37 @@ describe('argument array contract (SPEC §7.2)', () => {
     expect(log).toContain(SESSION_ID);
   }, TEST_TIMEOUT);
 
+  it('persists stdout events before the Claude process exits', async () => {
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: streamLines('execution'),
+      sleepMs: 1_000,
+    });
+    const invocation = runtime.invoke(mkRequest(harness));
+
+    let streamedLog: string | null = null;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        const candidate = await harness.readSessionLog(SESSION_ID);
+        if (candidate.includes('"type":"result"')) {
+          streamedLog = candidate;
+          break;
+        }
+      } catch {
+        // 日志文件在首个 stdout 字节到达前尚未创建，短暂轮询属于预期状态。
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    /**
+     * Fake Claude 在输出完整事件后仍保持存活，因此此时读到结果行可以证明日志是增量落盘，
+     * 而不是在子进程退出后一次性写入；最终结果仍需正常完成并通过结构校验。
+     */
+    expect(streamedLog).not.toBeNull();
+    const fact = await invocation;
+    expect(fact.exitCode).toBe(0);
+  }, TEST_TIMEOUT);
+
   it('preserves a redacted stderr diagnosis even when the session succeeds', async () => {
     const token = 'sk-ant-abcdef1234567890ABCDEF_xyz';
     await harness.writeScenario({
@@ -170,6 +202,30 @@ describe('argument array contract (SPEC §7.2)', () => {
     );
     expect(error).toBeInstanceOf(ClaudeInvocationError);
     expect((error as ClaudeInvocationError).processExitCode).toBe(1);
+  }, TEST_TIMEOUT);
+
+  it('recognizes a resume diagnosis after long stderr without retaining the full text', async () => {
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      exitCode: 1,
+      stderrText:
+        `${'ordinary diagnostic '.repeat(3_000)}\n` +
+        'No conversation found with session ID: missing',
+    });
+
+    /**
+     * 诊断位于有界错误摘要之外，仍应由滚动匹配器识别；这同时验证内存上限
+     * 不会改变原有的 CLAUDE_RESUME_UNAVAILABLE 分类语义。
+     */
+    await expectApexErrorAsync(
+      () =>
+        runtime.invoke(
+          mkRequest(harness, {
+            resumeFromSessionId: '123e4567-e89b-42d3-a456-426614174999',
+          }),
+        ),
+      'CLAUDE_RESUME_UNAVAILABLE',
+    );
   }, TEST_TIMEOUT);
 
   it('does not classify ordinary resume failures as transcript unavailable', async () => {
@@ -466,6 +522,7 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     process.env[pathKey] = `${harness.root};${savedPath ?? ''}`;
     try {
       const shimmedRuntime = createClaudeRuntime({
+        processExecutor: createTestProcessExecutor(),
         fileSystem: createNodeFileSystem(),
         redaction: createRedactor(),
         probeTimeoutMs: 15_000,

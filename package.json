@@ -1,6 +1,6 @@
 {
   "name": "apex-coding-agent",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "Long-running coding agent orchestrator around Claude Code (SPEC v4.1.1)",
   "keywords": [
     "claude-code",
@@ -40,7 +40,8 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "ajv": "^8.17.1"
+    "ajv": "^8.17.1",
+    "execa": "^10.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

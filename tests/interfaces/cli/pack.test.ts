@@ -123,6 +123,32 @@ describe('publish skeleton (G6)', () => {
     }
   });
 
+  it('scan-forbidden.mjs removes only real TypeScript comments', async () => {
+    const root = await createScanFixture({
+      source:
+        'const endpoint = `https://example.test/${"ready"}`;\n' +
+        '/** stop, cancel and PID are documentation only. */\n' +
+        'export const safeEndpoint = endpoint;\n',
+      lock: {
+        name: 'scan-fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'scan-fixture', version: '1.0.0' } },
+      },
+    });
+    try {
+      /**
+       * 模板字符串会迫使解析器处理词法上下文；其后的注释必须被忽略，
+       * 同时 URL 中的双斜杠也不能被误当作行注释。
+       */
+      const outcome = runForbiddenScan(root);
+      expect(outcome.status).toBe(0);
+      expect(outcome.stdout).toContain('scan-forbidden: OK');
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
+
   it('scan-forbidden.mjs follows nested optional production dependencies', async () => {
     const root = await createScanFixture({
       source: 'export const safe = true;\n',

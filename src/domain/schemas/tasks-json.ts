@@ -4,6 +4,7 @@
  * the Coordinator, never by the model.
  */
 import { RUN_ID_PATTERN, UUID_PATTERN } from '../ids.js';
+import type { JSONSchemaType } from 'ajv';
 import {
   checkpointDispositionSchema,
   plannedTaskSchema,
@@ -25,6 +26,11 @@ export interface TasksJson {
   tasks: PlannedTask[];
 }
 
+/**
+ * tasks.json 复用计划子结构，并由 Ajv 泛型检查完整的持久化契约。
+ *
+ * 系统补充的运行事实与模型返回的计划字段由这一顶层 Schema 明确组合。
+ */
 export const tasksJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -57,4 +63,4 @@ export const tasksJsonSchema = {
     },
     tasks: { type: 'array', items: plannedTaskSchema },
   },
-} as const;
+} as const satisfies JSONSchemaType<TasksJson>;

@@ -17,6 +17,7 @@ import { createJsonStateStore } from '../adapters/state/json-state-store.js';
 import { createMarkdownReporter } from '../adapters/reporter/markdown-reporter.js';
 import { createRunArchiver } from '../adapters/state/run-archiver.js';
 import { createDebugLogger } from '../adapters/logging/debug-file-logger.js';
+import { createExecaProcessExecutor } from '../adapters/process/execa-process-executor.js';
 import { createInterruptController } from '../application/interrupt.js';
 import type { ClockPort } from '../application/ports/clock.js';
 import type { GitPort } from '../application/ports/GitPort.js';
@@ -67,6 +68,13 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
   const fileSystem = createNodeFileSystem();
   const clock = createSystemClock();
   const redaction = createRedactor();
+  /*
+   * Git 与 Claude 共享同一个无状态进程执行器。
+   *
+   * Execa 的具体类型被限制在 Adapter 内部，Application 用例只接触各自
+   * 的 GitPort 与 ClaudeRuntimePort，避免跨层耦合。
+   */
+  const processExecutor = createExecaProcessExecutor();
   const interrupt = createInterruptController();
   // OutputPort 只承载单行、已脱敏文本（§18.4 控制台 Sink）。
   const output = { writeLine: (line: string) => options.stdout(line) };
@@ -85,10 +93,14 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
   };
 
   const makeGitPort: RunCommandDeps['makeGitPort'] = (gitCliPath) =>
-    createGitAdapter(gitCliPath === null ? {} : { gitPath: gitCliPath });
+    createGitAdapter({
+      processExecutor,
+      ...(gitCliPath === null ? {} : { gitPath: gitCliPath }),
+    });
   const makeClaudePort: RunCommandDeps['makeClaudePort'] = (claudeCliPath) =>
     createClaudeRuntime({
       ...(claudeCliPath === null ? {} : { claudePath: claudeCliPath }),
+      processExecutor,
       fileSystem,
       redaction,
     });
@@ -168,7 +180,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
    * 入口定位仓库；业务用例只能获得各自命令门面传入的最小依赖。
    */
   async function createRepositoryCommandDeps(): Promise<RepositoryCommandDeps> {
-    const git = createGitAdapter({});
+    const git = createGitAdapter({ processExecutor });
     const root = (await git.resolveRepositoryRoot(options.cwd)).replace(/\\/g, '/');
     const stateDir = `${root}/${STATE_DIR_NAME}`;
     return {

@@ -11,6 +11,10 @@ import type { ResumePoint, RunJson } from '../../domain/schemas/run-json.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
 import type { FileSystemPort } from '../ports/file-system.js';
 import type { StateStorePort } from '../ports/state-store.js';
+import {
+  normalizeAbsoluteWindowsPath,
+  sameWindowsPath,
+} from '../windows-path.js';
 import type { OwnerLiveness } from './run-heartbeat.js';
 
 const STATE_DIR_NAME = '.apex-coding-agent';
@@ -29,14 +33,6 @@ export interface ResumeClassification {
   readonly liveness: OwnerLiveness | null;
 }
 
-/** Windows 绝对路径统一为 `/`，仅用于应用层路径比较与向上遍历。 */
-function normalizeAbsolutePath(path: string): string {
-  const normalized = path.replace(/\\/g, '/');
-  return /^[A-Za-z]:\/$/.test(normalized)
-    ? normalized
-    : normalized.replace(/\/+$/, '');
-}
-
 /** 返回父目录；到达盘符根目录后返回 null。 */
 function parentPath(path: string): string | null {
   if (/^[A-Za-z]:\/$/.test(path)) return null;
@@ -48,11 +44,6 @@ function parentPath(path: string): string | null {
 
 function childPath(parent: string, child: string): string {
   return parent.endsWith('/') ? `${parent}${child}` : `${parent}/${child}`;
-}
-
-function sameWindowsPath(left: string, right: string): boolean {
-  return normalizeAbsolutePath(left).toLowerCase() ===
-    normalizeAbsolutePath(right).toLowerCase();
 }
 
 /**
@@ -67,7 +58,7 @@ export async function discoverResumeState(
   makeStateStore: (stateDir: string) => StateStorePort,
   cwd: string,
 ): Promise<DiscoveredResumeState> {
-  let cursor = normalizeAbsolutePath(await fileSystem.realpath(cwd));
+  let cursor = normalizeAbsoluteWindowsPath(await fileSystem.realpath(cwd));
   for (;;) {
     const stateDir = childPath(cursor, STATE_DIR_NAME);
     const runPath = childPath(stateDir, 'run.json');

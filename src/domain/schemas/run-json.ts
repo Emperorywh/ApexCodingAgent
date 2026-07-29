@@ -112,6 +112,11 @@ const nullableGitOid = {
   anyOf: [{ type: 'null' }, { type: 'string', pattern: GIT_OID_PATTERN.source }],
 } as const;
 
+/**
+ * run.json 显式组合全部运行事实与标准 JSON Schema 的 null 联合。
+ *
+ * Schema 负责结构边界，状态转换与跨字段条件仍由状态机和 invariants 模块集中维护。
+ */
 export const runJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -142,7 +147,7 @@ export const runJsonSchema = {
     schemaVersion: { type: 'integer', const: 1 },
     stateRevision: { type: 'integer', minimum: 1 },
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
-    status: { enum: [...RUN_STATUSES] },
+    status: { type: 'string', enum: [...RUN_STATUSES] },
     spec: {
       type: 'object',
       additionalProperties: false,
@@ -153,13 +158,18 @@ export const runJsonSchema = {
       },
     },
     planRevision: { type: 'integer', minimum: 0 },
-    tasksSha256: { anyOf: [{ type: 'null' }, { type: 'string', format: 'sha256' }] },
+    tasksSha256: {
+      anyOf: [{ type: 'null' }, { type: 'string', format: 'sha256' }],
+    },
     runSettings: {
       type: 'object',
       additionalProperties: false,
       required: ['executionPermissionMode', 'claudeCliPath', 'gitCliPath'],
       properties: {
-        executionPermissionMode: { enum: [...EXECUTION_PERMISSION_MODES] },
+        executionPermissionMode: {
+          type: 'string',
+          enum: [...EXECUTION_PERMISSION_MODES],
+        },
         claudeCliPath: { type: ['string', 'null'], minLength: 1 },
         gitCliPath: { type: ['string', 'null'], minLength: 1 },
       },
@@ -201,12 +211,21 @@ export const runJsonSchema = {
           additionalProperties: false,
           required: ['fromStatus', 'taskId', 'sessionId'],
           properties: {
-            fromStatus: { enum: ['planning', 'running', 'final_review'] },
+            fromStatus: {
+              type: 'string',
+              enum: ['planning', 'running', 'final_review'],
+            },
             taskId: {
-              anyOf: [{ type: 'null' }, { type: 'string', pattern: TASK_ID_PATTERN.source }],
+              anyOf: [
+                { type: 'null' },
+                { type: 'string', pattern: TASK_ID_PATTERN.source },
+              ],
             },
             sessionId: {
-              anyOf: [{ type: 'null' }, { type: 'string', pattern: UUID_PATTERN.source }],
+              anyOf: [
+                { type: 'null' },
+                { type: 'string', pattern: UUID_PATTERN.source },
+              ],
             },
           },
         },
@@ -214,6 +233,8 @@ export const runJsonSchema = {
     },
     createdAt: { type: 'string', format: 'rfc3339' },
     updatedAt: { type: 'string', format: 'rfc3339' },
-    terminalAt: { anyOf: [{ type: 'null' }, { type: 'string', format: 'rfc3339' }] },
+    terminalAt: {
+      anyOf: [{ type: 'null' }, { type: 'string', format: 'rfc3339' }],
+    },
   },
 } as const;

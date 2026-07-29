@@ -34,6 +34,11 @@ export interface TaskRuntimeState {
   failure: ErrorRecord | null;
 }
 
+/**
+ * 任务运行态组合 Episode、结果与错误子结构，避免重复字段定义。
+ *
+ * 状态相关的可空约束仍由 invariants 模块统一执行，避免跨层重复状态规则。
+ */
 export const taskRuntimeStateSchema = {
   type: 'object',
   additionalProperties: false,
@@ -48,7 +53,7 @@ export const taskRuntimeStateSchema = {
   ],
   properties: {
     taskId: { type: 'string', pattern: TASK_ID_PATTERN.source },
-    status: { enum: [...TASK_STATUSES] },
+    status: { type: 'string', enum: [...TASK_STATUSES] },
     executionEpisodes: { type: 'array', items: taskExecutionEpisodeSchema },
     completedResult: { anyOf: [{ type: 'null' }, taskExecutionResultSchema] },
     finalCheckpoint: {

@@ -17,6 +17,7 @@ import { createRunDriver } from '../run-driver.js';
 import { createNullLogger, type LoggerPort } from '../ports/logger.js';
 import type { RunCommandDeps } from '../run-command-deps.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
+import { sameWindowsPath } from '../windows-path.js';
 import { sessionGitFacts } from './claude-session.js';
 import { reconcileOrphanedSessionFacts } from './orphaned-session-reconciler.js';
 import {
@@ -65,13 +66,6 @@ interface PreparedResume {
   readonly run: RunJson;
   readonly classification: ResumeClassification;
   readonly validatedHead: string;
-}
-
-/** Windows 路径比较只用于验证 Git 与状态发现得到的是同一仓库。 */
-function sameWindowsPath(left: string, right: string): boolean {
-  const normalize = (value: string): string =>
-    value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  return normalize(left) === normalize(right);
 }
 
 function asApexError(error: unknown, stage: string): ApexError {

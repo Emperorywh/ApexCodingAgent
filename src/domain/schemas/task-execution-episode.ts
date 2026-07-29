@@ -44,6 +44,11 @@ export interface TaskExecutionEpisode {
   error: ErrorRecord | null;
 }
 
+/**
+ * 执行 Episode 的追加事实由标准 JSON Schema 和契约测试覆盖。
+ *
+ * 结束状态之间的条件关系仍留在领域不变式中，避免把业务状态机藏进 Schema。
+ */
 export const taskExecutionEpisodeSchema = {
   type: 'object',
   additionalProperties: false,
@@ -72,7 +77,10 @@ export const taskExecutionEpisodeSchema = {
     startedAt: { type: 'string', format: 'rfc3339' },
     endedAt: { anyOf: [{ type: 'null' }, { type: 'string', format: 'rfc3339' }] },
     outcome: {
-      anyOf: [{ type: 'null' }, { enum: [...EXECUTION_EPISODE_OUTCOMES] }],
+      anyOf: [
+        { type: 'null' },
+        { type: 'string', enum: [...EXECUTION_EPISODE_OUTCOMES] },
+      ],
     },
     summary: { type: ['string', 'null'], minLength: 1 },
     acceptanceEvidence: { type: 'array', items: acceptanceEvidenceSchema },

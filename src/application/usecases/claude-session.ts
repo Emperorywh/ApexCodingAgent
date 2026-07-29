@@ -249,6 +249,8 @@ export async function invokeSession<T extends SessionType>(
     receivedStdoutBytes: 0,
     lastEventType: null,
     lastEventSummary: null,
+    model: null,
+    provider: null,
   };
   deps.logger.log('debug', 'session.invoke.start', {
     sessionId: handle.sessionId,
@@ -259,6 +261,8 @@ export async function invokeSession<T extends SessionType>(
 
   /** 已输出的事件摘要（按字符串去重，同一事件不因分块重复打印）。 */
   let printedSummary: string | null = null;
+  /** init 元数据行每次 Session 只输出一次（model 首次非空时）。 */
+  let modelLinePrinted = false;
 
   const invokePromise = deps.claude.invoke<T>({
     prompt: input.prompt,
@@ -270,6 +274,16 @@ export async function invokeSession<T extends SessionType>(
     resumeFromSessionId: input.resumeFromSessionId ?? null,
     onStreamActivity: (next) => {
       activity = next;
+      // init 事件一到就告知本次 Session 实际使用的模型与 Provider。
+      if (!modelLinePrinted && next.model != null) {
+        modelLinePrinted = true;
+        const providerPart = next.provider == null ? '' : `, provider ${next.provider}`;
+        deps.output.writeLine(
+          deps.redaction.redactText(
+            `[apex] ${label} using model ${next.model}${providerPart}`,
+          ),
+        );
+      }
       // §17 进度语义：每个可摘要的 stream-json 事件输出一行（思考、
       // 工具调用、工具结果等），让前台能看到 Session 的每一步。
       if (next.lastEventSummary !== null && next.lastEventSummary !== printedSummary) {

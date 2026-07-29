@@ -12,6 +12,7 @@ import type {
 import type { FileSystemPort } from '../ports/file-system.js';
 import type { LoggerPort } from '../ports/logger.js';
 import type { OutputPort } from '../ports/output.js';
+import type { RedactionPort } from '../ports/redaction.js';
 
 /** 前台 Run 命令的环境事实，由 Composition Root 采集并显式注入。 */
 export interface EnvironmentFacts {
@@ -79,6 +80,7 @@ export async function assertStateDirectoryWritable(
 export async function probeClaudeCapabilities(
   claude: ClaudeRuntimePort,
   output: OutputPort,
+  redaction: RedactionPort,
   logger: LoggerPort,
   eventPrefix: 'startup' | 'resume',
   claudeCliPath: string | null,
@@ -88,6 +90,12 @@ export async function probeClaudeCapabilities(
     claudePath: claudeCliPath ?? 'claude',
   });
   const report = await claude.probeCapabilities();
+  // 版本来自 `claude --version` 输出，属动态内容，打印前过统一脱敏边界。
+  output.writeLine(
+    redaction.redactText(
+      `[apex] claude version: ${report.version} (${report.capabilities.length} capabilities confirmed)`,
+    ),
+  );
   logger.log('debug', `${eventPrefix}.probe.end`, {
     version: report.version,
     capabilities: report.capabilities.join(','),

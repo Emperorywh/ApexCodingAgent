@@ -65,6 +65,13 @@ export interface ClaudeStreamActivity {
    * 展示，绝不参与 §7.2 的结果判定。
    */
   readonly lastEventSummary: string | null;
+  /**
+   * 从 system/init 事件尽力提取的模型标识（首个非空值）；尚未见到时
+   * 为 null。只做进度展示，持久化事实仍以 §7.2 结果评估为准。
+   */
+  readonly model: string | null;
+  /** 同 model 一并提取的 Provider 标识；缺失时为 null。 */
+  readonly provider: string | null;
 }
 
 /**

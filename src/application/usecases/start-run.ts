@@ -134,6 +134,7 @@ export function createStartRun(deps: RunCommandDeps): {
       const capabilityReport = await probeClaudeCapabilities(
         claude,
         deps.output,
+        deps.redaction,
         logger,
         'startup',
         claudeCliPath,

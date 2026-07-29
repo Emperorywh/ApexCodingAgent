@@ -49,6 +49,10 @@ describe('e2e debug logging', () => {
       expect(progress.some((line) => line.includes('session') && line.includes('planning started'))).toBe(true);
       expect(progress.some((line) => line.includes('finished in') && line.includes('exit 0'))).toBe(true);
 
+      // 启动探测后输出版本行；init 元数据到达后输出模型行
+      expect(progress.some((line) => line.includes(`claude version: ${FAKE_VERSION}`))).toBe(true);
+      expect(progress.some((line) => line.includes('using model fake-model'))).toBe(true);
+
       // 默认 verbose=false：调试 JSON 行不镜像到控制台
       expect(progress.some((line) => line.includes('"event":"run.created"'))).toBe(false);
     } finally {

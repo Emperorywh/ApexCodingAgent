@@ -229,4 +229,97 @@ describe('invokeSession 用户反馈', () => {
     expect(eventLines[0]).toBe('[apex] session 123e4567 planning › thinking: 先读 SPEC');
     expect(eventLines[1]).toBe('[apex] session 123e4567 planning › tool: Read — docs/SPEC.md');
   });
+
+  it('init 元数据首次非空时输出一行模型信息，且不重复输出', async () => {
+    let capturedRequest: {
+      onStreamActivity?: (activity: {
+        receivedStdoutBytes: number;
+        lastEventType: string | null;
+        lastEventSummary: string | null;
+        model: string | null;
+        provider: string | null;
+      }) => void;
+    } | null = null;
+    let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
+    const { deps, lines } = createDeps(
+      (request) =>
+        new Promise((resolve) => {
+          capturedRequest = request as typeof capturedRequest;
+          resolveInvoke = resolve;
+        }),
+    );
+
+    const pending = invokeSession(deps, handle, input);
+
+    // init 事件到达前：没有模型行。
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 10,
+      lastEventType: null,
+      lastEventSummary: null,
+      model: null,
+      provider: null,
+    });
+    expect(lines.some((line) => line.includes('using model'))).toBe(false);
+
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 80,
+      lastEventType: 'system',
+      lastEventSummary: 'system: init',
+      model: 'claude-fake-model-1',
+      provider: 'fake-provider',
+    });
+    // 分块重复上报同一 init 元数据：不重复输出。
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 90,
+      lastEventType: 'system',
+      lastEventSummary: 'system: init',
+      model: 'claude-fake-model-1',
+      provider: 'fake-provider',
+    });
+
+    resolveInvoke!(makeFact());
+    await pending;
+
+    const modelLines = lines.filter((line) => line.includes('using model'));
+    expect(modelLines).toHaveLength(1);
+    expect(modelLines[0]).toBe(
+      '[apex] session 123e4567 planning using model claude-fake-model-1, provider fake-provider',
+    );
+  });
+
+  it('provider 缺失时模型行只携带 model', async () => {
+    let capturedRequest: {
+      onStreamActivity?: (activity: {
+        receivedStdoutBytes: number;
+        lastEventType: string | null;
+        lastEventSummary: string | null;
+        model: string | null;
+        provider: string | null;
+      }) => void;
+    } | null = null;
+    let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
+    const { deps, lines } = createDeps(
+      (request) =>
+        new Promise((resolve) => {
+          capturedRequest = request as typeof capturedRequest;
+          resolveInvoke = resolve;
+        }),
+    );
+
+    const pending = invokeSession(deps, handle, input);
+    capturedRequest!.onStreamActivity?.({
+      receivedStdoutBytes: 80,
+      lastEventType: 'system',
+      lastEventSummary: 'system: init',
+      model: 'claude-fake-model-1',
+      provider: null,
+    });
+
+    resolveInvoke!(makeFact());
+    await pending;
+
+    const modelLines = lines.filter((line) => line.includes('using model'));
+    expect(modelLines).toHaveLength(1);
+    expect(modelLines[0]).toBe('[apex] session 123e4567 planning using model claude-fake-model-1');
+  });
 });

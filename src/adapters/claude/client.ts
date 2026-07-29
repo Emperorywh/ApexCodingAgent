@@ -270,6 +270,7 @@ export function summarizeStreamEvent(event: Record<string, unknown>): string | n
 /**
  * 逐 chunk 累计 stdout 字节数，并按行缓冲尽力提取最近一个 stream-json
  * 事件的 `type` 与单行摘要（JSON.parse 失败的行保持上一已知值）。
+ * system/init 事件携带的 model/provider 元数据按首个非空值记录。
  * 只用于心跳行与事件行展示，不参与 §7.2 的结果判定。
  */
 function createStreamActivityTracker(
@@ -279,6 +280,8 @@ function createStreamActivityTracker(
   let receivedStdoutBytes = 0;
   let lastEventType: string | null = null;
   let lastEventSummary: string | null = null;
+  let model: string | null = null;
+  let provider: string | null = null;
   let lineBuffer = '';
   return (chunk: Buffer): void => {
     receivedStdoutBytes += chunk.length;
@@ -295,9 +298,22 @@ function createStreamActivityTracker(
             parsed !== null &&
             typeof (parsed as { type?: unknown }).type === 'string'
           ) {
-            lastEventType = (parsed as { type: string }).type;
-            const summary = summarizeStreamEvent(parsed as Record<string, unknown>);
+            const event = parsed as Record<string, unknown>;
+            lastEventType = event['type'] as string;
+            const summary = summarizeStreamEvent(event);
             if (summary !== null) lastEventSummary = summary;
+            if (event['type'] === 'system' && event['subtype'] === 'init') {
+              if (model === null && typeof event['model'] === 'string' && event['model'] !== '') {
+                model = event['model'];
+              }
+              if (
+                provider === null &&
+                typeof event['provider'] === 'string' &&
+                event['provider'] !== ''
+              ) {
+                provider = event['provider'];
+              }
+            }
           }
         } catch {
           // 非 JSON 事件行：忽略，保持上一已知事件类型与摘要。
@@ -305,7 +321,7 @@ function createStreamActivityTracker(
       }
       newlineIndex = lineBuffer.indexOf('\n');
     }
-    report({ receivedStdoutBytes, lastEventType, lastEventSummary });
+    report({ receivedStdoutBytes, lastEventType, lastEventSummary, model, provider });
   };
 }
 

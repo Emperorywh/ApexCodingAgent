@@ -25,6 +25,13 @@ import { InMemoryFileSystem } from './in-memory-file-system.js';
 
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 
+/** 带 errno code 的平台错误（模拟 Windows 文件系统失败形态）。 */
+function codedError(code: string): Error {
+  const error = new Error(`${code}: simulated platform failure`) as Error & { code?: string };
+  error.code = code;
+  return error;
+}
+
 let fs: InMemoryFileSystem;
 let store: StateStorePort;
 
@@ -118,6 +125,35 @@ describe('write protocol failure mapping (SPEC §11.2)', () => {
   it('maps rename failures to STATE_WRITE_FAILED and cleans up the temp file', async () => {
     fs.injectFailure({ op: 'rename', pathIncludes: 'run.json', error: new Error('access denied') });
     await expectApexErrorAsync(() => store.writeRun(mkRun()), 'STATE_WRITE_FAILED');
+    expect(fs.files.has(RUN_PATH)).toBe(false);
+    expect([...fs.files.keys()].filter((path) => path.includes('.tmp-'))).toEqual([]);
+  });
+
+  /**
+   * Windows 上并发读者（轮询读、另一个 CLI 进程、杀毒扫描）短暂持有目标
+   * 文件时 rename 以 EPERM/EACCES/EBUSY 瞬态失败；协议必须在有界退避后
+   * 重试，不能让一次毫秒级读取竞速杀死整个 Run。
+   */
+  it('retries a transient sharing-violation rename failure and still commits', async () => {
+    fs.injectFailure({ op: 'rename', pathIncludes: 'run.json', error: codedError('EPERM') });
+    const run = mkRun();
+    await store.writeRun(run);
+    expect(await store.readRun()).toEqual(run);
+    expect(fs.ops.filter((op) => op.op === 'rename')).toHaveLength(2);
+  });
+
+  it('does not retry rename failures outside the transient sharing-violation set', async () => {
+    fs.injectFailure({ op: 'rename', pathIncludes: 'run.json', error: codedError('ENOENT') });
+    await expectApexErrorAsync(() => store.writeRun(mkRun()), 'STATE_WRITE_FAILED');
+    expect(fs.ops.filter((op) => op.op === 'rename')).toHaveLength(1);
+  });
+
+  it('surfaces STATE_WRITE_FAILED when the violation outlasts the retry budget', async () => {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      fs.injectFailure({ op: 'rename', pathIncludes: 'run.json', error: codedError('EBUSY') });
+    }
+    await expectApexErrorAsync(() => store.writeRun(mkRun()), 'STATE_WRITE_FAILED');
+    expect(fs.ops.filter((op) => op.op === 'rename')).toHaveLength(12);
     expect(fs.files.has(RUN_PATH)).toBe(false);
     expect([...fs.files.keys()].filter((path) => path.includes('.tmp-'))).toEqual([]);
   });
@@ -403,5 +439,12 @@ describe('heartbeat.json liveness facts (§2.4)', () => {
   it('maps write I/O failures to STATE_WRITE_FAILED', async () => {
     fs.injectFailure({ op: 'writeFile', pathIncludes: 'heartbeat.json', error: new Error('disk full') });
     await expectApexErrorAsync(() => store.writeHeartbeat(FACT), 'STATE_WRITE_FAILED');
+  });
+
+  it('absorbs a transient sharing-violation rename failure on heartbeat replacement', async () => {
+    fs.injectFailure({ op: 'rename', pathIncludes: 'heartbeat.json', error: codedError('EPERM') });
+    await store.writeHeartbeat(FACT);
+    expect(await store.readHeartbeat()).toEqual(FACT);
+    expect(fs.ops.filter((op) => op.op === 'rename')).toHaveLength(2);
   });
 });

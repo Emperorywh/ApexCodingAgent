@@ -42,6 +42,7 @@ import {
   ensureDirectory,
   isNotFound,
   readJsonIfExists,
+  renameReplacing,
   serializeJson,
   sha256Hex,
   stateValidationFailed,
@@ -337,7 +338,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
       throw stateWriteFailed(`failed to write temporary file for ${heartbeatPath}`, error);
     }
     try {
-      await fs.rename(tempPath, heartbeatPath);
+      await renameReplacing(fs, tempPath, heartbeatPath);
     } catch (error) {
       await fs.unlink(tempPath).catch(() => undefined);
       throw stateWriteFailed(`failed to replace ${heartbeatPath}`, error);

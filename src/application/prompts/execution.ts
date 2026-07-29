@@ -92,7 +92,7 @@ const RESULT_FORMAT_SECTION = `TASK_EXECUTION_RESULT_FORMAT（结构化结果格
 - acceptanceEvidence: { criterionIndex, status: "satisfied" | "not_satisfied", evidence } 数组，按 CURRENT_TASK 的 acceptanceCriteria 原索引逐条给出
 - changedAreas: 字符串数组，记录本次修改的区域
 - remainingRisks: 字符串数组
-- replanReason: replan_required 时必须非空，否则为 null
+- replanReason: replan_required 时必须为非空字符串；否则必须为 JSON null（不是字符串 "null"、"N/A" 或空字符串）
 允许返回 replan_required（见执行要求第 11 条）。`;
 
 /** 系统上下文小节，覆盖 SPEC §9.2 全部 11 项。 */

@@ -17,7 +17,11 @@ import {
   closeExecutionEpisode,
   type ExecutionEpisodeEnding,
 } from '../../domain/episodes.js';
-import { isClaudeResultInvalid, validateExecutionResultSemantics } from '../../domain/results.js';
+import {
+  isClaudeResultInvalid,
+  normalizeExecutionResult,
+  validateExecutionResultSemantics,
+} from '../../domain/results.js';
 import { applyRunEvent } from '../../domain/run-state.js';
 import {
   assertTaskTransition,
@@ -389,7 +393,18 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
           const settled = await failWithSession(handle, error as ApexError, 'claude_call_failed');
           return { kind: 'settled', settled };
         }
-        const result: TaskExecutionResult = fact.structuredResult;
+        const rawResult: TaskExecutionResult = fact.structuredResult;
+        // 契约边界归一化：completed/failed 下模型误填的 replanReason 是死
+        // 数据，归一为 null 而不是让整趟已验证的工作因格式噪声报废。
+        const result = normalizeExecutionResult(rawResult);
+        if (result !== rawResult) {
+          deps.logger.log('warn', 'execution.result_normalized', {
+            sessionId: handle.sessionId,
+            taskId: readyTaskId,
+            decision: rawResult.decision,
+            droppedReplanReason: deps.redaction.redactText(rawResult.replanReason ?? ''),
+          });
+        }
 
         if (specAfter.sha256 !== specBefore.sha256) {
           // §3.2 Execution 期间 SPEC 变化六步：保存会话事实、不提交基于旧 SPEC

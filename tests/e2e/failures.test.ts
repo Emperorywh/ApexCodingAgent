@@ -221,7 +221,7 @@ describe('e2e claude failure mapping (§9.6)', () => {
   );
 
   it(
-    'completed with non-null replanReason triggers a result-repair session and the run completes',
+    'completed with non-null replanReason is normalized to null and completes without a repair session',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -230,11 +230,10 @@ describe('e2e claude failure mapping (§9.6)', () => {
           scenarioAfterPlan(
             {
               writeFiles: [{ path: 'src/feature-a.ts', content: 'export const a = 1;\n' }],
-              // 与现网故障同形：decision=completed 但 replanReason 非 null。
+              // 与现网故障同形：decision=completed 但 replanReason 非 null
+              // （模型把 required 字段填成占位字符串）。
               stdoutLines: streamOf(executionCompleted(1, { replanReason: '误填的原因' })),
             },
-            // 结果修复会话：返回耦合合法的 completed 结果。
-            { stdoutLines: streamOf(executionCompleted()) },
             { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
           ),
         );
@@ -245,35 +244,30 @@ describe('e2e claude failure mapping (§9.6)', () => {
         const run = result.run;
         expect(run.status).toBe('completed');
         expect(run.tasks['TASK-001']!.status).toBe('completed');
+        // 提交的业务结果已归一为 null。
+        expect(run.tasks['TASK-001']!.completedResult?.replanReason).toBeNull();
 
-        // 首次 Episode 以 session_error 关闭，修复接力 Episode 以 completed 关闭。
+        // 噪声字段不再触发结果修复接力：唯一 Episode 直接 completed。
         const episodes = run.tasks['TASK-001']!.executionEpisodes;
-        expect(episodes).toHaveLength(2);
-        expect(episodes[0]!.outcome).toBe('session_error');
-        expect(episodes[0]!.error?.errorCode).toBe('CLAUDE_RESULT_INVALID');
-        expect(episodes[1]!.outcome).toBe('completed');
+        expect(episodes).toHaveLength(1);
+        expect(episodes[0]!.outcome).toBe('completed');
 
-        // planning + 执行 + 结果修复 + final review：共 4 个 Session。
+        // planning + 执行 + final review：共 3 个 Session，无修复会话。
         const invocations = await harness.readRecords();
         const sessions = invocations.filter((record) => record.argv.includes('--session-id'));
-        expect(sessions).toHaveLength(4);
-        // 修复会话的提示词携带校验错误与非法结果原文。
-        const repairPrompt = sessions[2]!.argv[sessions[2]!.argv.length - 1]!;
-        expect(repairPrompt).toContain('结果修复');
-        expect(repairPrompt).toContain('decision completed requires replanReason to be null');
-        expect(repairPrompt).toContain('误填的原因');
-
-        // 前台能看到结果被拒与修复接力的事实。
+        expect(sessions).toHaveLength(3);
         expect(
           harness.outputLines.some((line) => line.includes('starting result-repair session')),
-        ).toBe(true);
+        ).toBe(false);
 
-        // 首次会话的 completed Record 与修复会话的 completed Record 都保留。
+        // Session Record 是模型输出的不可变事实：保留原始占位值，不归一。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(4);
+        expect(records).toHaveLength(3);
         expect(records[1]!.status).toBe('completed');
-        expect(records[2]!.status).toBe('completed');
-        expect(records[2]!.structuredResult).toMatchObject({ decision: 'completed' });
+        expect(records[1]!.structuredResult).toMatchObject({
+          decision: 'completed',
+          replanReason: '误填的原因',
+        });
       } finally {
         await harness.cleanup();
       }

@@ -117,7 +117,7 @@ const RESULT_FORMAT_SECTION = `FINAL_REVIEW_RESULT_FORMAT（结构化结果格�
 - tests: 与 TaskExecutionResult 相同的 { command, result: "passed" | "failed" | "not_run" } 结构
 - changedAreas: 字符串数组，记录 Final Review 直接修改的区域
 - remainingRisks: 字符串数组
-- replanReason: replan_required 时必须非空；completed 时必须为 null
+- replanReason: replan_required 时必须为非空字符串；completed 时必须为 JSON null（不是字符串 "null"、"N/A" 或空字符串）
 completed 不得包含失败测试；发现任一 completed Task 的 acceptanceEvidence 缺失或矛盾时只能返回 replan_required。`;
 
 /** 系统上下文小节，覆盖 SPEC §26“系统会提供”的全部条目。 */

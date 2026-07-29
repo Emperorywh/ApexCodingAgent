@@ -16,7 +16,10 @@ import {
   closeFinalReviewEpisode,
   type FinalReviewEpisodeEnding,
 } from '../../domain/episodes.js';
-import { validateFinalReviewResultSemantics } from '../../domain/results.js';
+import {
+  normalizeFinalReviewResult,
+  validateFinalReviewResultSemantics,
+} from '../../domain/results.js';
 import { applyRunEvent } from '../../domain/run-state.js';
 import { formatRfc3339Utc } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
@@ -309,7 +312,17 @@ export function createRunFinalReview(deps: UseCaseDeps): {
     } catch (error) {
       return failWithSession(handle, error as ApexError);
     }
-    const result = fact.structuredResult;
+    const rawResult = fact.structuredResult;
+    // 与 Execution 相同的契约边界归一化（Final Review 没有结果修复接力，
+    // 模型误填的 replanReason 在这里更是一票否决，必须先归一）。
+    const result = normalizeFinalReviewResult(rawResult);
+    if (result !== rawResult) {
+      deps.logger.log('warn', 'final_review.result_normalized', {
+        sessionId: handle.sessionId,
+        decision: rawResult.decision,
+        droppedReplanReason: deps.redaction.redactText(rawResult.replanReason ?? ''),
+      });
+    }
     if (specAfter.sha256 !== specBefore.sha256) {
       // §3.2 Final Review 期间 SPEC 变化五步。
       return finishSpecChanged(run, handle, startFact.head, specAfter.sha256, {

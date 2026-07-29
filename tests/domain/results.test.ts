@@ -4,6 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  normalizeExecutionResult,
+  normalizeFinalReviewResult,
   validateExecutionResultSemantics,
   validateFinalReviewResultSemantics,
 } from '../../src/domain/results.js';
@@ -232,5 +234,39 @@ describe('FinalReviewResult semantics (§14.1)', () => {
         COMPLETED_IDS,
       ),
     ).not.toThrow();
+  });
+});
+
+describe('replanReason normalization at the contract boundary', () => {
+  it('coerces a placeholder replanReason to null for completed and failed decisions', () => {
+    // 与现网故障同形：模型把 required 的 replanReason 填成占位字符串。
+    const completed = normalizeExecutionResult(mkResult({ replanReason: 'null' }));
+    expect(completed.replanReason).toBeNull();
+    expect(() => validateExecutionResultSemantics(completed, TASK)).not.toThrow();
+
+    const failed = normalizeExecutionResult(
+      mkResult({ decision: 'failed', replanReason: 'N/A' }),
+    );
+    expect(failed.replanReason).toBeNull();
+    expect(() => validateExecutionResultSemantics(failed, TASK)).not.toThrow();
+  });
+
+  it('keeps the reason for replan_required and returns the same reference when unchanged', () => {
+    const replan = mkResult({ decision: 'replan_required', replanReason: 'architecture changed' });
+    expect(normalizeExecutionResult(replan)).toBe(replan);
+
+    const clean = mkResult();
+    expect(normalizeExecutionResult(clean)).toBe(clean);
+  });
+
+  it('coerces a placeholder replanReason to null for a completed final review', () => {
+    const normalized = normalizeFinalReviewResult(mkFinalReview({ replanReason: '无' }));
+    expect(normalized.replanReason).toBeNull();
+    expect(() =>
+      validateFinalReviewResultSemantics(normalized, ['TASK-001', 'TASK-002']),
+    ).not.toThrow();
+
+    const replan = mkFinalReview({ decision: 'replan_required', replanReason: 'gap found' });
+    expect(normalizeFinalReviewResult(replan)).toBe(replan);
   });
 });

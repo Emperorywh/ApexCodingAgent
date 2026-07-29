@@ -108,7 +108,9 @@ ApexCodingAgent start .\docs\my-spec.md
 
 ### 4. 查看进度和结果
 
-运行期间，终端会持续输出进度：每次状态迁移、每个 Claude 会话的开始和结束各有一行 `[apex]` 提示；会话运行较久时，每 15 秒会再输出一行心跳（已运行时长、正在处理的事件）。长时间没有新输出通常只是 Claude Code 仍在工作，并非卡死。
+运行期间，终端会按层级输出精简进度：阶段开始与结果、实际模型、关键工具动作，以及长时间静默时的存活心跳。思考过程、成功工具结果和底层系统事件不会逐条冲刷终端，但完整 Claude 流仍保存在 `.apex-coding-agent\logs\<session-id>.log`，结构化运行诊断保存在 `.apex-coding-agent\logs\apex-debug.log`。使用 `--verbose` 可把结构化诊断同步输出到 stderr。
+
+交互式终端会使用克制的语义颜色；重定向到文件或管道时自动保持纯文本。可设置 `NO_COLOR` 环境变量关闭颜色。
 
 另开一个 PowerShell 窗口，进入同一个项目目录，然后运行：
 

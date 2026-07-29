@@ -13,11 +13,13 @@
  */
 
 import type {
+  ClaudeStreamDisplayEvent,
   ClaudeStructuredResultBySessionType,
   ClaudeStreamActivity,
 } from '../../application/ports/ClaudeRuntimePort.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
 import { validate } from '../../domain/schemas/index.js';
+import { stripVTControlCharacters } from 'node:util';
 import {
   claudeExitNonZero,
   claudeResultInvalid,
@@ -91,9 +93,15 @@ export interface StreamEvaluation<T extends SessionType = SessionType> {
 
 type StreamEvent = Record<string, unknown>;
 type StreamContentBlock = Record<string, unknown>;
+type StreamDisplayEventDraft = Omit<ClaudeStreamDisplayEvent, 'sequence'>;
 
 function toSummaryLine(text: string): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  /*
+   * Claude 或 Provider 元数据可能夹带颜色控制序列。原始 Session 日志仍
+   * 保存脱敏后的完整事件，但任何进入展示事实的文本必须先清理控制序列，
+   * 防止模型名或工具详情污染用户终端。
+   */
+  const oneLine = stripVTControlCharacters(text).replace(/\s+/g, ' ').trim();
   return oneLine.length <= EVENT_SUMMARY_LIMIT
     ? oneLine
     : `${oneLine.slice(0, EVENT_SUMMARY_LIMIT)}…`;
@@ -110,24 +118,36 @@ function readContentBlocks(event: StreamEvent): StreamContentBlock[] {
   );
 }
 
-function summarizeToolUse(block: StreamContentBlock): string {
+function describeToolUse(block: StreamContentBlock): StreamDisplayEventDraft {
   const name = typeof block['name'] === 'string' ? block['name'] : 'unknown';
   const input = block['input'];
-  if (typeof input !== 'object' || input === null) return `tool: ${name}`;
+  if (typeof input !== 'object' || input === null) {
+    return { kind: 'tool', label: toSummaryLine(name), detail: null };
+  }
   const record = input as Record<string, unknown>;
   for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'description']) {
     const value = record[key];
     if (typeof value === 'string' && value.trim() !== '') {
-      return `tool: ${name} — ${toSummaryLine(value)}`;
+      return {
+        kind: 'tool',
+        label: toSummaryLine(name),
+        detail: toSummaryLine(value),
+      };
     }
   }
-  return `tool: ${name}`;
+  return { kind: 'tool', label: toSummaryLine(name), detail: null };
 }
 
-function summarizeToolResult(block: StreamContentBlock): string {
-  const prefix = block['is_error'] === true ? 'tool result (error)' : 'tool result';
+function describeToolResult(block: StreamContentBlock): StreamDisplayEventDraft {
+  const isError = block['is_error'] === true;
   const content = block['content'];
-  if (typeof content === 'string') return `${prefix}: ${toSummaryLine(content)}`;
+  if (typeof content === 'string') {
+    return {
+      kind: isError ? 'tool_error' : 'tool_result',
+      label: isError ? '工具执行失败' : '工具结果',
+      detail: toSummaryLine(content),
+    };
+  }
   if (Array.isArray(content)) {
     const text = content
       .map((part: unknown) => {
@@ -137,51 +157,96 @@ function summarizeToolResult(block: StreamContentBlock): string {
       })
       .filter((part: string) => part !== '')
       .join(' ');
-    if (text !== '') return `${prefix}: ${toSummaryLine(text)}`;
+    if (text !== '') {
+      return {
+        kind: isError ? 'tool_error' : 'tool_result',
+        label: isError ? '工具执行失败' : '工具结果',
+        detail: toSummaryLine(text),
+      };
+    }
   }
-  return `${prefix} received`;
+  return {
+    kind: isError ? 'tool_error' : 'tool_result',
+    label: isError ? '工具执行失败' : '工具结果',
+    detail: null,
+  };
 }
 
 /**
- * 从单个事件提取面向用户的活动摘要。
+ * 从单个事件提取一个或多个结构化展示事实。
  *
- * 该函数不参与结果判定；未知事件或字段缺失只会返回 null，不能改变
- * Session 的成功、失败或结构化结果。
+ * 一个 assistant/user 事件可能同时包含多个工具块；逐块返回可以保证默认
+ * 终端不漏掉实际动作，同时仍让 Application 自主过滤 thinking 与结果噪声。
  */
-export function summarizeStreamEvent(event: StreamEvent): string | null {
+export function describeStreamEvent(event: StreamEvent): StreamDisplayEventDraft[] {
   const type = event['type'];
   if (type === 'assistant' || type === 'user') {
-    const parts: string[] = [];
+    const events: StreamDisplayEventDraft[] = [];
     for (const block of readContentBlocks(event)) {
       switch (block['type']) {
         case 'thinking':
           if (typeof block['thinking'] === 'string' && block['thinking'].trim() !== '') {
-            parts.push(`thinking: ${toSummaryLine(block['thinking'])}`);
+            events.push({
+              kind: 'thinking',
+              label: '思考',
+              detail: toSummaryLine(block['thinking']),
+            });
           }
           break;
         case 'text':
           if (typeof block['text'] === 'string' && block['text'].trim() !== '') {
-            parts.push(toSummaryLine(block['text']));
+            events.push({
+              kind: 'message',
+              label: '消息',
+              detail: toSummaryLine(block['text']),
+            });
           }
           break;
         case 'tool_use':
-          parts.push(summarizeToolUse(block));
+          events.push(describeToolUse(block));
           break;
         case 'tool_result':
-          parts.push(summarizeToolResult(block));
+          events.push(describeToolResult(block));
           break;
         default:
           break;
       }
     }
-    return parts.length === 0 ? null : toSummaryLine(parts.join(' | '));
+    return events;
   }
   if (type === 'system') {
     const subtype = typeof event['subtype'] === 'string' ? event['subtype'] : 'unknown';
-    return `system: ${subtype}`;
+    return [{ kind: 'system', label: toSummaryLine(subtype), detail: null }];
   }
-  if (type === 'result') return 'result event received';
-  return null;
+  if (type === 'result') return [{ kind: 'result', label: '结果已返回', detail: null }];
+  return [];
+}
+
+/**
+ * 单行摘要兼容入口供纯解析测试和诊断使用。
+ *
+ * 正式进度链路使用 describeStreamEvent 的结构化结果，不再解析该字符串；
+ * 多块内容仍以稳定分隔符合并，便于日志断言。
+ */
+export function summarizeStreamEvent(event: StreamEvent): string | null {
+  const descriptions = describeStreamEvent(event);
+  if (descriptions.length === 0) return null;
+  const parts = descriptions.map((description) => {
+    if (description.kind === 'thinking') return `thinking: ${description.detail ?? ''}`;
+    if (description.kind === 'tool') {
+      return `tool: ${description.label}${description.detail === null ? '' : ` — ${description.detail}`}`;
+    }
+    if (description.kind === 'tool_error') {
+      return `tool result (error)${description.detail === null ? ' received' : `: ${description.detail}`}`;
+    }
+    if (description.kind === 'tool_result') {
+      return `tool result${description.detail === null ? ' received' : `: ${description.detail}`}`;
+    }
+    if (description.kind === 'system') return `system: ${description.label}`;
+    if (description.kind === 'result') return 'result event received';
+    return description.detail ?? description.label;
+  });
+  return toSummaryLine(parts.join(' | '));
 }
 
 /**
@@ -196,7 +261,8 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   let lineNumber = 0;
   let receivedStdoutBytes = 0;
   let lastEventType: string | null = null;
-  let lastEventSummary: string | null = null;
+  let displayEvent: ClaudeStreamDisplayEvent | null = null;
+  let displaySequence = 0;
   let hasContent = false;
   let parseFailure: StreamParseFailure | null = null;
   let sessionIdConflict = false;
@@ -207,11 +273,15 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   let provider: string | null = null;
   let finished = false;
 
+  /**
+   * 每个结构化展示事实立即上报。
+   *
+   * 回调粒度绑定“完整事件/内容块”而不是底层 stdout chunk；操作系统即使
+   * 把多行合并成一个 chunk，也不会再吞掉前面的工具动作。
+   */
   function consumeEvent(event: StreamEvent): void {
     if (typeof event['type'] === 'string') {
       lastEventType = event['type'];
-      const summary = summarizeStreamEvent(event);
-      if (summary !== null) lastEventSummary = summary;
     }
     if ('session_id' in event && event['session_id'] !== options.sessionId) {
       sessionIdConflict = true;
@@ -234,6 +304,16 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
         terminalHasStructuredOutput = true;
         structuredOutput = event['structured_output'];
       }
+    }
+    const descriptions = describeStreamEvent(event);
+    if (descriptions.length === 0) {
+      reportActivity();
+      return;
+    }
+    for (const description of descriptions) {
+      displaySequence += 1;
+      displayEvent = { sequence: displaySequence, ...description };
+      reportActivity();
     }
   }
 
@@ -279,7 +359,7 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
     options.onActivity?.({
       receivedStdoutBytes,
       lastEventType,
-      lastEventSummary,
+      displayEvent,
       model,
       provider,
     });
@@ -289,8 +369,16 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
     push(chunk): readonly number[] {
       if (finished) throw new Error('cannot push to a finished Claude stream collector');
       receivedStdoutBytes += chunk.byteLength;
+      const sequenceBefore = displaySequence;
+      const eventTypeBefore = lastEventType;
       const safeRecordBoundaryOffsets = consumeText(decoder.decode(chunk, { stream: true }));
-      reportActivity();
+      /*
+       * 没有完整事件时仍上报字节活跃事实，供静默心跳判断流是否继续前进。
+       * 已完整消费事件时 consumeEvent 已逐条回调，这里不得再重复上报。
+       */
+      if (displaySequence === sequenceBefore && lastEventType === eventTypeBefore) {
+        reportActivity();
+      }
       return safeRecordBoundaryOffsets;
     },
     finish(): CollectedClaudeStream {
@@ -398,9 +486,14 @@ export function evaluateCollectedStreamOutcome<T extends SessionType>(
    * 这既阻止未知事件污染持久化事实，也不会读取或推导用户环境中的
    * Provider 配置。
    */
-  const model = input.stream.model === null ? null : input.redact(input.stream.model);
+  const model =
+    input.stream.model === null
+      ? null
+      : input.redact(stripVTControlCharacters(input.stream.model));
   const provider =
-    input.stream.provider === null ? null : input.redact(input.stream.provider);
+    input.stream.provider === null
+      ? null
+      : input.redact(stripVTControlCharacters(input.stream.provider));
   return {
     structuredResult:
       input.stream.structuredOutput as ClaudeStructuredResultBySessionType[T],

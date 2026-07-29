@@ -339,9 +339,8 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     ): void => {
       deps.output.writeLine(
         deps.redaction.redactText(
-          `[apex] session ${handle.sessionId.slice(0, 8)} execution result invalid ` +
-            `(${error.message}); starting result-repair session ` +
-            `(${attempt}/${MAX_RESULT_REPAIR_ATTEMPTS})`,
+          `↻ 执行结果校验失败 · 会话 ${handle.sessionId.slice(0, 8)} · ` +
+            `正在启动修复会话 ${attempt}/${MAX_RESULT_REPAIR_ATTEMPTS} · ${error.message}`,
         ),
       );
       deps.logger.log('warn', 'execution.result_repair', {

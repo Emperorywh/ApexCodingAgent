@@ -6,16 +6,23 @@
  */
 import { createCliRuntime } from '../../bootstrap/composition-root.js';
 import { collectEnvironmentFacts } from '../../bootstrap/environment.js';
+import { writeConsoleText } from './console-output.js';
 import { runCli } from './run.js';
+
+/*
+ * 颜色只属于真实 TTY 呈现，重定向和 CI 始终输出纯文本。
+ * 遵循 NO_COLOR 约定，用户无需额外 Apex 专用配置即可关闭颜色。
+ */
+const colorEnabled = process.env['NO_COLOR'] === undefined;
 
 const runtime = createCliRuntime({
   cwd: process.cwd(),
   environment: collectEnvironmentFacts(),
   stdout: (text) => {
-    process.stdout.write(text.endsWith('\n') ? text : `${text}\n`);
+    writeConsoleText(process.stdout, text, colorEnabled);
   },
   stderr: (text) => {
-    process.stderr.write(text.endsWith('\n') ? text : `${text}\n`);
+    writeConsoleText(process.stderr, text, colorEnabled);
   },
 });
 

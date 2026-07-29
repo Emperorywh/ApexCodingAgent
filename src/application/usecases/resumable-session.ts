@@ -103,8 +103,8 @@ export async function invokeResumableSession<T extends SessionType>(
       sessionRun = input.closeResumeAttempt(handle, apex);
       deps.output.writeLine(
         deps.redaction.redactText(
-          `[apex] session ${handle.sessionId.slice(0, 8)} ${handle.type} resume unavailable ` +
-            `(${apex.errorCode}); starting a fresh session with the full prompt`,
+          `↻ 会话 ${handle.sessionId.slice(0, 8)} 无法恢复 · ${apex.errorCode} · ` +
+            '将使用完整提示创建新会话',
         ),
       );
       deps.logger.log('warn', 'session.resume_fallback', {

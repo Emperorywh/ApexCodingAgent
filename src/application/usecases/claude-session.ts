@@ -23,6 +23,14 @@ import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { SessionRecord } from '../../domain/schemas/session-record.js';
 import { ClaudeInvocationError, type ClaudeInvocationFact, type ClaudePermissionModeFor, type ClaudeStreamActivity } from '../ports/ClaudeRuntimePort.js';
 import type { SessionGitFacts } from '../ports/GitPort.js';
+import {
+  renderSessionActivity,
+  renderSessionFailed,
+  renderSessionFinished,
+  renderSessionHeartbeat,
+  renderSessionModel,
+  renderSessionStarted,
+} from '../presentation/progress.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import { toErrorRecord } from './error-record.js';
 
@@ -188,11 +196,6 @@ type InvokeRaceOutcome<T extends SessionType> =
   | { readonly kind: 'error'; readonly error: unknown }
   | { readonly kind: 'interrupt-timeout' };
 
-/** 阶段行/心跳行的公共标识：短 Session ID + 类型。 */
-function sessionLabel(handle: ActiveSessionHandle): string {
-  return `session ${handle.sessionId.slice(0, 8)} ${handle.type}`;
-}
-
 /** 会话耗时的人类可读格式（`83s` / `3m12s`），只用于进度行。 */
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -236,11 +239,14 @@ export async function invokeSession<T extends SessionType>(
     });
   }
 
-  const label = sessionLabel(handle);
-  const taskPart = handle.taskId === null ? '' : `, task ${handle.taskId}`;
   deps.output.writeLine(
     deps.redaction.redactText(
-      `[apex] ${label} started (plan revision ${handle.planRevision}${taskPart})`,
+      renderSessionStarted({
+        sessionId: handle.sessionId,
+        type: handle.type,
+        taskId: handle.taskId,
+        planRevision: handle.planRevision,
+      }),
     ),
   );
   const startedMs = deps.clock.now().getTime();
@@ -248,7 +254,7 @@ export async function invokeSession<T extends SessionType>(
   let activity: ClaudeStreamActivity = {
     receivedStdoutBytes: 0,
     lastEventType: null,
-    lastEventSummary: null,
+    displayEvent: null,
     model: null,
     provider: null,
   };
@@ -259,10 +265,17 @@ export async function invokeSession<T extends SessionType>(
     planRevision: handle.planRevision,
   });
 
-  /** 已输出的事件摘要（按字符串去重，同一事件不因分块重复打印）。 */
-  let printedSummary: string | null = null;
+  /** 已消费的结构化展示事件序号；同一快照因分块活跃上报时不会重复打印。 */
+  let printedEventSequence = 0;
   /** init 元数据行每次 Session 只输出一次（model 首次非空时）。 */
   let modelLinePrinted = false;
+  /**
+   * 最近一次真正写入用户终端的活动时间。
+   *
+   * 心跳只在一个完整间隔内没有模型/工具活动时输出，避免用户刚看到动作行
+   * 紧接着又收到“仍在工作”的重复事实。
+   */
+  let lastVisibleActivityMs = startedMs;
 
   const invokePromise = deps.claude.invoke<T>({
     prompt: input.prompt,
@@ -277,20 +290,26 @@ export async function invokeSession<T extends SessionType>(
       // init 事件一到就告知本次 Session 实际使用的模型与 Provider。
       if (!modelLinePrinted && next.model != null) {
         modelLinePrinted = true;
-        const providerPart = next.provider == null ? '' : `, provider ${next.provider}`;
         deps.output.writeLine(
-          deps.redaction.redactText(
-            `[apex] ${label} using model ${next.model}${providerPart}`,
-          ),
+          deps.redaction.redactText(renderSessionModel(next.model, next.provider)),
         );
+        lastVisibleActivityMs = deps.clock.now().getTime();
       }
-      // §17 进度语义：每个可摘要的 stream-json 事件输出一行（思考、
-      // 工具调用、工具结果等），让前台能看到 Session 的每一步。
-      if (next.lastEventSummary !== null && next.lastEventSummary !== printedSummary) {
-        printedSummary = next.lastEventSummary;
-        deps.output.writeLine(
-          deps.redaction.redactText(`[apex] ${label} › ${next.lastEventSummary}`),
-        );
+      /*
+       * 默认终端只展示工具动作与工具错误。thinking、system、普通文本和
+       * 成功工具结果仍完整进入 Session 日志；--verbose 另有结构化调试流，
+       * 因此这里的降噪不会损失排错事实。
+       */
+      if (
+        next.displayEvent !== null &&
+        next.displayEvent.sequence > printedEventSequence
+      ) {
+        printedEventSequence = next.displayEvent.sequence;
+        const line = renderSessionActivity(next.displayEvent, input.repositoryRoot);
+        if (line !== null) {
+          deps.output.writeLine(deps.redaction.redactText(line));
+          lastVisibleActivityMs = deps.clock.now().getTime();
+        }
       }
     },
   });
@@ -314,13 +333,18 @@ export async function invokeSession<T extends SessionType>(
     while (heartbeatActive) {
       await deps.wait(deps.sessionHeartbeatMs);
       if (!heartbeatActive) return;
+      if (deps.clock.now().getTime() - lastVisibleActivityMs < deps.sessionHeartbeatMs) {
+        continue;
+      }
       deps.output.writeLine(
         deps.redaction.redactText(
-          `[apex] ${label} running ${formatElapsed(elapsedMs())} ` +
-            `(last event ${activity.lastEventType ?? 'none'}, ` +
-            `received ${activity.receivedStdoutBytes} bytes)`,
+          renderSessionHeartbeat(
+            formatElapsed(elapsedMs()),
+            activity.receivedStdoutBytes,
+          ),
         ),
       );
+      lastVisibleActivityMs = deps.clock.now().getTime();
     }
   })();
   void heartbeat.catch(() => undefined);
@@ -328,7 +352,7 @@ export async function invokeSession<T extends SessionType>(
   function progressFailed(errorCode: string): void {
     deps.output.writeLine(
       deps.redaction.redactText(
-        `[apex] ${label} failed after ${formatElapsed(elapsedMs())} (${errorCode})`,
+        renderSessionFailed(handle.type, formatElapsed(elapsedMs()), errorCode),
       ),
     );
   }
@@ -339,8 +363,11 @@ export async function invokeSession<T extends SessionType>(
     if (outcome.kind === 'fact') {
       deps.output.writeLine(
         deps.redaction.redactText(
-          `[apex] ${label} finished in ${formatElapsed(elapsedMs())} ` +
-            `(model ${outcome.fact.model ?? 'unknown'}, exit 0)`,
+          renderSessionFinished(
+            handle.type,
+            formatElapsed(elapsedMs()),
+            outcome.fact.model,
+          ),
         ),
       );
       deps.logger.log('debug', 'session.invoke.end', {
@@ -490,7 +517,7 @@ export async function writeFailedSessionRecord(
     });
     deps.output.writeLine(
       deps.redaction.redactText(
-        `state_error: 失败 Session Record 无法写入（session ${handle.sessionId}），仅输出诊断: ${detail}`,
+        `! 状态写入失败 · Session ${handle.sessionId} 的失败记录 · ${detail}`,
       ),
     );
   }
@@ -520,8 +547,8 @@ export async function ensureFailedSessionRecord(
     });
     deps.output.writeLine(
       deps.redaction.redactText(
-        `state_error: 无法确认 Session Record 是否存在（session ${handle.sessionId}），` +
-          `为避免覆盖不可变记录，不再补写: ${detail}`,
+        `! 状态读取失败 · 无法确认 Session ${handle.sessionId} 的记录是否存在 · ` +
+          `为避免覆盖不可变记录，不再补写 · ${detail}`,
       ),
     );
     return;

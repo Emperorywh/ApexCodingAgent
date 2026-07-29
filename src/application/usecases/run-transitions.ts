@@ -76,7 +76,7 @@ export async function persistRunBestEffort(
       message: detail,
     });
     deps.output.writeLine(
-      deps.redaction.redactText(`state_error: run.json 无法写入，仅输出诊断: ${detail}`),
+      deps.redaction.redactText(`! 状态写入失败 · run.json · ${detail}`),
     );
   }
 }

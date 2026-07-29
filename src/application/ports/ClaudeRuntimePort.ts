@@ -53,6 +53,28 @@ interface ClaudeInvocationRequestBase {
   readonly resumeFromSessionId?: string | null;
 }
 
+/**
+ * 单个 stream-json 事件的终端展示事实。
+ *
+ * Adapter 负责解释 Claude 的原始字段并给事件编号；Application 只按 kind
+ * 决定默认终端是否展示，不再解析 `tool:` 等魔法字符串。
+ */
+export interface ClaudeStreamDisplayEvent {
+  readonly sequence: number;
+  readonly kind:
+    | 'thinking'
+    | 'message'
+    | 'tool'
+    | 'tool_result'
+    | 'tool_error'
+    | 'system'
+    | 'result';
+  /** 工具名、系统子类型或稳定的人类标签。 */
+  readonly label: string;
+  /** 已压成单行且有长度上限的动态详情；无详情时为 null。 */
+  readonly detail: string | null;
+}
+
 /** 一次 invoke 期间的流活跃事实（心跳行与事件行的数据来源）。 */
 export interface ClaudeStreamActivity {
   /** 已累计接收的 stdout 字节数（UTF-8 解码前）。 */
@@ -60,11 +82,10 @@ export interface ClaudeStreamActivity {
   /** 最近一个完整 stream-json 事件行的 `type`；未解析到时为 null。 */
   readonly lastEventType: string | null;
   /**
-   * 最近一个可摘要事件的单行人类可读摘要（思考、文本、工具调用、工具
-   * 结果等）；事件不可摘要时保持上一已知值，初始为 null。只做进度
-   * 展示，绝不参与 §7.2 的结果判定。
+   * 最近一个可展示事件。收集器对同一 stdout chunk 内的每个完整事件分别
+   * 回调，因此不会再因操作系统合并 chunk 而只留下最后一条摘要。
    */
-  readonly lastEventSummary: string | null;
+  readonly displayEvent: ClaudeStreamDisplayEvent | null;
   /**
    * 从 system/init 事件尽力提取的模型标识（首个非空值）；尚未见到时
    * 为 null。只做进度展示，持久化事实仍以 §7.2 结果评估为准。

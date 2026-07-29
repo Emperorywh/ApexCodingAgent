@@ -44,15 +44,18 @@ describe('e2e debug logging', () => {
       expect(events).toContain('driver.task_completed');
       expect(events).toContain('driver.run_completed');
 
-      // 会话阶段行（用户可见进度）
+      /*
+       * 默认控制台只保留稳定的阶段、模型与结果摘要。
+       * 全量结构化事件继续由上面的 apex-debug.log 断言负责，避免把调试日志和用户进度混为一层。
+       */
       const progress = harness.outputLines;
-      expect(progress.some((line) => line.includes('session') && line.includes('planning started'))).toBe(true);
-      expect(progress.some((line) => line.includes('finished in') && line.includes('exit 0'))).toBe(true);
+      expect(progress.some((line) => line.includes('◆ 规划') && line.includes('会话'))).toBe(true);
+      expect(progress.some((line) => line.includes('✓ 规划完成') && line.includes('用时'))).toBe(true);
 
       // 启动横幅先输出 Apex 自身版本；探测后输出 Claude 版本行；init 元数据到达后输出模型行
-      expect(progress.some((line) => line.includes(`ApexCodingAgent version: ${E2E_AGENT_VERSION}`))).toBe(true);
-      expect(progress.some((line) => line.includes(`claude version: ${FAKE_VERSION}`))).toBe(true);
-      expect(progress.some((line) => line.includes('using model fake-model'))).toBe(true);
+      expect(progress.some((line) => line.includes(`ApexCodingAgent ${E2E_AGENT_VERSION}`))).toBe(true);
+      expect(progress.some((line) => line.includes(`Claude Code ${FAKE_VERSION}`))).toBe(true);
+      expect(progress.some((line) => line.includes('模型 fake-model'))).toBe(true);
 
       // 默认 verbose=false：调试 JSON 行不镜像到控制台
       expect(progress.some((line) => line.includes('"event":"run.created"'))).toBe(false);

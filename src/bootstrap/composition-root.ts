@@ -137,7 +137,11 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
       redaction,
       logPath: `${stateDir}/logs/apex-debug.log`,
       mirror: verbose ? (line) => options.stderr(line) : null,
-      onWriteFailure: (detail) => options.stderr(`[apex] ${detail}`),
+      /*
+       * 调试日志落盘失败属于需要用户立即关注的降级事实。
+       * 统一使用警告语义，不再恢复已经移除的重复产品前缀。
+       */
+      onWriteFailure: (detail) => options.stderr(`⚠ 调试日志写入失败 · ${detail}`),
     });
 
   const startRun = createStartRun({

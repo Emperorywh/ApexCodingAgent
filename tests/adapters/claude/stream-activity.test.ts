@@ -3,7 +3,11 @@
  * 摘要只用于前台进度展示：无法摘要的事件返回 null，字段缺失不得抛错。
  */
 import { describe, expect, it } from 'vitest';
-import { summarizeStreamEvent } from '../../../src/adapters/claude/stream-parser.js';
+import {
+  createClaudeStreamCollector,
+  describeStreamEvent,
+  summarizeStreamEvent,
+} from '../../../src/adapters/claude/stream-parser.js';
 
 describe('summarizeStreamEvent', () => {
   it('assistant 思考块摘要为 thinking 行', () => {
@@ -112,5 +116,54 @@ describe('summarizeStreamEvent', () => {
     expect(summary).not.toBeNull();
     expect(summary!.endsWith('…')).toBe(true);
     expect(summary!.length).toBeLessThanOrEqual(201);
+  });
+
+  it('结构化事件保留工具类别、名称与详情', () => {
+    expect(
+      describeStreamEvent({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'docs/SPEC.md' } }],
+        },
+      }),
+    ).toEqual([{ kind: 'tool', label: 'Read', detail: 'docs/SPEC.md' }]);
+  });
+
+  it('同一 stdout chunk 内的多个完整事件逐个上报', () => {
+    const activities: string[] = [];
+    const collector = createClaudeStreamCollector({
+      sessionId: 'session-1',
+      onActivity: (activity) => {
+        const event = activity.displayEvent;
+        if (event !== null) activities.push(`${event.sequence}:${event.detail ?? event.label}`);
+      },
+    });
+    /*
+     * 操作系统可以把多行合并为一个 chunk。该用例锁定“事件粒度回调”
+     * 契约，防止终端再次只显示 chunk 中的最后一个动作。
+     */
+    collector.push(
+      new TextEncoder().encode(
+        `${JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', name: 'Read', input: { path: 'a.ts' } }] },
+        })}\n${JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', name: 'Read', input: { path: 'b.ts' } }] },
+        })}\n`,
+      ),
+    );
+
+    expect(activities).toEqual(['1:a.ts', '2:b.ts']);
+  });
+
+  it('展示摘要会移除外部 ANSI 控制序列', () => {
+    const [event] = describeStreamEvent({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', name: '\u001B[1mRead\u001B[0m', input: { path: 'a.ts' } }],
+      },
+    });
+    expect(event).toEqual({ kind: 'tool', label: 'Read', detail: 'a.ts' });
   });
 });

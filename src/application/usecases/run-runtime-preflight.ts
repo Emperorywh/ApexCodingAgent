@@ -13,6 +13,11 @@ import type { FileSystemPort } from '../ports/file-system.js';
 import type { LoggerPort } from '../ports/logger.js';
 import type { OutputPort } from '../ports/output.js';
 import type { RedactionPort } from '../ports/redaction.js';
+import {
+  renderAgentBanner,
+  renderClaudeProbeCompleted,
+  renderClaudeProbeStarted,
+} from '../presentation/progress.js';
 
 /** 前台 Run 命令的环境事实，由 Composition Root 采集并显式注入。 */
 export interface EnvironmentFacts {
@@ -90,7 +95,11 @@ export function reportApexVersion(
   redaction: RedactionPort,
   agentVersion: string,
 ): void {
-  output.writeLine(redaction.redactText(`[apex] ApexCodingAgent version: ${agentVersion}`));
+  /*
+   * 横幅建立一次性的产品身份，后续进度行不再重复 `[apex]` 前缀。
+   * 空行由首个阶段标题自然形成层级，不在应用层输出终端控制序列。
+   */
+  output.writeLine(redaction.redactText(renderAgentBanner(agentVersion)));
 }
 
 /** 有界探测 Claude 版本与九项命令能力，并记录统一诊断事件。 */
@@ -102,7 +111,7 @@ export async function probeClaudeCapabilities(
   eventPrefix: 'startup' | 'resume',
   claudeCliPath: string | null,
 ): Promise<ClaudeCapabilityReport> {
-  output.writeLine('[apex] probing claude CLI capabilities (bounded 30s x2)...');
+  output.writeLine(renderClaudeProbeStarted());
   logger.log('debug', `${eventPrefix}.probe.begin`, {
     claudePath: claudeCliPath ?? 'claude',
   });
@@ -110,7 +119,7 @@ export async function probeClaudeCapabilities(
   // 版本来自 `claude --version` 输出，属动态内容，打印前过统一脱敏边界。
   output.writeLine(
     redaction.redactText(
-      `[apex] claude version: ${report.version} (${report.capabilities.length} capabilities confirmed)`,
+      renderClaudeProbeCompleted(report.version, report.capabilities.length),
     ),
   );
   logger.log('debug', `${eventPrefix}.probe.end`, {

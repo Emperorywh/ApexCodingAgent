@@ -24,11 +24,38 @@ export const CLI_EXIT = {
 } as const;
 
 function printError(runtime: CliRuntime, error: ApexError): void {
-  runtime.stderr(
-    runtime.redaction.redactText(
-      `[apex] error ${error.errorCode} (${error.errorClass}, stage ${error.stage}): ${error.message}`,
-    ),
-  );
+  /*
+   * 错误摘要按“结论 → 分类 → 原因”分层输出。
+   * 稳定 errorCode 保持在首行便于搜索，动态详情逐行脱敏，避免单个超长句
+   * 同时承担用户提示和机器诊断两种职责。
+   */
+  for (const line of [
+    `✗ 命令失败 · ${error.errorCode}`,
+    `  类型 ${error.errorClass} · 阶段 ${error.stage}`,
+    `  原因 ${error.message}`,
+  ]) {
+    runtime.stderr(runtime.redaction.redactText(line));
+  }
+}
+
+/**
+ * start/resume 的统一终态失败摘要。
+ *
+ * 入参只依赖 ErrorRecord 与 ApexError 共有的稳定字段，避免 CLI 为了打印
+ * 已持久化事实而反向构造异常对象。
+ */
+function printRunFailed(
+  runtime: CliRuntime,
+  runId: string,
+  error: Pick<ApexError, 'errorCode' | 'stage' | 'message'> | null,
+): void {
+  const errorCode = error?.errorCode ?? 'unknown';
+  runtime.stderr(runtime.redaction.redactText(`✗ Run ${runId} 失败 · ${errorCode}`));
+  if (error !== null) {
+    runtime.stderr(
+      runtime.redaction.redactText(`  阶段 ${error.stage} · 原因 ${error.message}`),
+    );
+  }
 }
 
 /**
@@ -70,29 +97,19 @@ async function runStart(
       environment: runtime.environment,
     });
     if (result.kind === 'completed') {
-      runtime.stdout(
-        runtime.redaction.redactText(
-          `[apex] run ${result.run.runId} completed (report ${result.run.reportPath ?? 'report.md'})`,
-        ),
-      );
+      /*
+       * RunDriver 已在最终状态提交后输出唯一成功摘要。
+       * CLI 这里只映射退出码，避免同一个完成事实连续打印两次。
+       */
       return CLI_EXIT.ok;
     }
     if (result.kind === 'failed') {
       const lastError = result.run.lastError;
-      runtime.stderr(
-        runtime.redaction.redactText(
-          `[apex] run ${result.run.runId} failed` +
-            (lastError === null
-              ? ''
-              : ` ${lastError.errorCode} (${lastError.stage}): ${lastError.message}`),
-        ),
-      );
+      printRunFailed(runtime, result.run.runId, lastError);
       // §17：中断导致 Run 持久化为 failed 时退出码 130，优先于 1。
       if (lastError?.errorCode === 'RUN_INTERRUPTED') {
-        runtime.stdout(
-          runtime.redaction.redactText(
-            `[apex] run ${result.run.runId} 记录了恢复点；使用 "ApexCodingAgent resume" 从断点继续`,
-          ),
+        runtime.stderr(
+          runtime.redaction.redactText('  恢复 ApexCodingAgent resume'),
         );
         return CLI_EXIT.interrupted;
       }
@@ -136,28 +153,14 @@ async function runResume(
       environment: runtime.environment,
     });
     if (result.kind === 'completed') {
-      runtime.stdout(
-        runtime.redaction.redactText(
-          `[apex] run ${result.run.runId} completed (report ${result.run.reportPath ?? 'report.md'})`,
-        ),
-      );
       return CLI_EXIT.ok;
     }
     if (result.kind === 'failed') {
       const lastError = result.run.lastError;
-      runtime.stderr(
-        runtime.redaction.redactText(
-          `[apex] run ${result.run.runId} failed` +
-            (lastError === null
-              ? ''
-              : ` ${lastError.errorCode} (${lastError.stage}): ${lastError.message}`),
-        ),
-      );
+      printRunFailed(runtime, result.run.runId, lastError);
       if (lastError?.errorCode === 'RUN_INTERRUPTED') {
-        runtime.stdout(
-          runtime.redaction.redactText(
-            `[apex] run ${result.run.runId} 记录了恢复点；可再次使用 "ApexCodingAgent resume" 从断点继续`,
-          ),
+        runtime.stderr(
+          runtime.redaction.redactText('  恢复 ApexCodingAgent resume'),
         );
         return CLI_EXIT.interrupted;
       }
@@ -219,7 +222,7 @@ async function runStatus(runtime: CliRuntime): Promise<number> {
 async function runReport(runtime: CliRuntime): Promise<number> {
   try {
     const result = await runtime.report.execute();
-    runtime.stdout(runtime.redaction.redactText(`[apex] report written: ${result.reportPath}`));
+    runtime.stdout(runtime.redaction.redactText(`✓ 报告已生成 · ${result.reportPath}`));
     return CLI_EXIT.ok;
   } catch (error) {
     printError(runtime, asCommandError('report', error, 'REPORT_COMMAND_FAILED'));
@@ -234,7 +237,7 @@ async function runAbandon(
   try {
     const result = await runtime.abandon.execute({ force: command.force });
     runtime.stdout(
-      runtime.redaction.redactText(`[apex] run ${result.run.runId} -> abandoned`),
+      runtime.redaction.redactText(`✓ Run ${result.run.runId} 已放弃`),
     );
     return CLI_EXIT.ok;
   } catch (error) {

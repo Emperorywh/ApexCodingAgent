@@ -145,11 +145,13 @@ describe('cli process: start exit codes', () => {
         90_000,
       );
       expect(started.code).toBe(0);
-      // 每次状态迁移一行进度摘要（§17 start 语义）
-      expect(started.stdout).toContain('planning -> running');
-      expect(started.stdout).toContain('final_review -> completed');
-      // 会话阶段行；默认不把调试 JSON 行镜像到 stderr
-      expect(started.stdout).toContain('planning started');
+      /*
+       * 控制台使用面向用户的阶段摘要，内部状态迁移仍只进入结构化调试日志。
+       * 默认模式不得把 JSON 调试行镜像到 stderr。
+       */
+      expect(started.stdout).toContain('规划完成');
+      expect(started.stdout).toContain('Run ');
+      expect(started.stdout).toContain('◆ 规划');
       expect(started.stderr).not.toContain('"event":"');
 
       const status = await awaitOutcome(
@@ -166,7 +168,7 @@ describe('cli process: start exit codes', () => {
         15_000,
       );
       expect(report.code).toBe(0);
-      expect(report.stdout).toContain('report written: report.md');
+      expect(report.stdout).toContain('报告已生成 · report.md');
     } finally {
       await cleanupFixture(fixture);
     }

@@ -3,14 +3,18 @@
  * - Session 开始/结束各一行阶段行（类型、Revision、Task、耗时、结果）；
  * - Session 运行期间按 sessionHeartbeatMs 产出心跳行（已耗时、最近事件、
  *   已接收字节），settle 后不再产出；
- * - 每个可摘要的 stream-json 事件即时产出一行事件行（思考、工具调用等），
- *   相同摘要不重复输出；
+ * - 默认只即时输出关键工具动作，思考、系统事件与成功结果留在完整日志；
+ * - 结构化事件通过 sequence 去重，避免底层 stdout 分块导致重复展示；
  * - 失败行携带稳定 errorCode。
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createInterruptController } from '../../src/application/interrupt.js';
 import { createNullLogger } from '../../src/application/ports/logger.js';
-import { ClaudeInvocationError, type ClaudeInvocationFact } from '../../src/application/ports/ClaudeRuntimePort.js';
+import {
+  ClaudeInvocationError,
+  type ClaudeInvocationFact,
+  type ClaudeStreamActivity,
+} from '../../src/application/ports/ClaudeRuntimePort.js';
 import {
   invokeSession,
   type ActiveSessionHandle,
@@ -105,20 +109,15 @@ describe('invokeSession 用户反馈', () => {
     const fact = await invokeSession(deps, handle, input);
 
     expect(fact.model).toBe('fake-model');
-    expect(lines[0]).toBe('[apex] session 123e4567 planning started (plan revision 1)');
+    expect(lines[0]).toBe('◆ 规划 · 计划版本 1 · 会话 123e4567');
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain('[apex] session 123e4567 planning finished in 0s');
-    expect(lines[1]).toContain('model fake-model');
-    expect(lines[1]).toContain('exit 0');
+    expect(lines[1]).toContain('✓ 规划完成 · 用时 0s');
+    expect(lines[1]).toContain('模型 fake-model');
   });
 
   it('会话运行期间输出心跳行（已耗时 + 流活跃事实），settle 后不再输出', async () => {
     let capturedRequest: {
-      onStreamActivity?: (activity: {
-        receivedStdoutBytes: number;
-        lastEventType: string | null;
-        lastEventSummary: string | null;
-      }) => void;
+      onStreamActivity?: (activity: ClaudeStreamActivity) => void;
     } | null = null;
     let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
     const { deps, lines, waitResolvers, clock } = createDeps(
@@ -136,17 +135,20 @@ describe('invokeSession 用户反馈', () => {
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 512,
       lastEventType: 'assistant',
-      lastEventSummary: null,
+      displayEvent: null,
+      model: null,
+      provider: null,
     });
     clock.nowMs += 15_000;
     waitResolvers[0]!();
     await settleMicrotasks();
 
     const heartbeats = lines.filter((line) => line.includes(' running '));
-    expect(heartbeats).toHaveLength(1);
-    expect(heartbeats[0]).toContain('[apex] session 123e4567 planning running 15s');
-    expect(heartbeats[0]).toContain('last event assistant');
-    expect(heartbeats[0]).toContain('received 512 bytes');
+    const compactHeartbeats = lines.filter((line) => line.includes('Claude 仍在工作'));
+    expect(heartbeats).toHaveLength(0);
+    expect(compactHeartbeats).toHaveLength(1);
+    expect(compactHeartbeats[0]).toContain('已运行 15s');
+    expect(compactHeartbeats[0]).toContain('已接收 512 B');
     expect(waitResolvers.length).toBeGreaterThanOrEqual(2);
 
     // 会话 settle 后：结束行出现，后续 wait 到期也不再产出心跳
@@ -155,8 +157,8 @@ describe('invokeSession 用户反馈', () => {
     expect(fact.exitCode).toBe(0);
     for (const resolve of waitResolvers.splice(0)) resolve();
     await settleMicrotasks();
-    expect(lines.filter((line) => line.includes(' running '))).toHaveLength(1);
-    expect(lines.some((line) => line.includes('finished in 15s'))).toBe(true);
+    expect(lines.filter((line) => line.includes('Claude 仍在工作'))).toHaveLength(1);
+    expect(lines.some((line) => line.includes('用时 15s'))).toBe(true);
   });
 
   it('调用失败时输出带稳定 errorCode 的失败行', async () => {
@@ -175,17 +177,13 @@ describe('invokeSession 用户反馈', () => {
 
     await expect(invokeSession(deps, handle, input)).rejects.toBe(failure);
 
-    expect(lines[0]).toContain('started');
-    expect(lines[1]).toContain('[apex] session 123e4567 planning failed after 0s (CLAUDE_EXIT_NONZERO)');
+    expect(lines[0]).toContain('◆ 规划');
+    expect(lines[1]).toContain('✗ 规划失败 · 用时 0s · CLAUDE_EXIT_NONZERO');
   });
 
-  it('每个新的事件摘要即时输出一行事件行（按内容去重）', async () => {
+  it('默认只打印工具动作，隐藏 thinking 与其他低信噪比事件', async () => {
     let capturedRequest: {
-      onStreamActivity?: (activity: {
-        receivedStdoutBytes: number;
-        lastEventType: string | null;
-        lastEventSummary: string | null;
-      }) => void;
+      onStreamActivity?: (activity: ClaudeStreamActivity) => void;
     } | null = null;
     let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
     const { deps, lines } = createDeps(
@@ -201,44 +199,48 @@ describe('invokeSession 用户反馈', () => {
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 100,
       lastEventType: 'assistant',
-      lastEventSummary: 'thinking: 先读 SPEC',
+      displayEvent: { sequence: 1, kind: 'thinking', label: '思考', detail: '先读 SPEC' },
+      model: null,
+      provider: null,
     });
-    // 同一摘要因 stdout 分块重复上报：不得重复输出。
+    /*
+     * 同一结构化事件快照因 stdout 分块重复上报时不得重复输出。
+     * sequence 是事件身份，不能退化为比较可能重复出现的展示字符串。
+     */
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 100,
       lastEventType: 'assistant',
-      lastEventSummary: 'thinking: 先读 SPEC',
+      displayEvent: { sequence: 1, kind: 'thinking', label: '思考', detail: '先读 SPEC' },
+      model: null,
+      provider: null,
     });
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 260,
       lastEventType: 'assistant',
-      lastEventSummary: 'tool: Read — docs/SPEC.md',
+      displayEvent: { sequence: 2, kind: 'tool', label: 'Read', detail: 'C:/repo/docs/SPEC.md' },
+      model: null,
+      provider: null,
     });
     // 无可摘要事件：不输出事件行。
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 300,
       lastEventType: 'assistant',
-      lastEventSummary: null,
+      displayEvent: null,
+      model: null,
+      provider: null,
     });
 
     resolveInvoke!(makeFact());
     await pending;
 
-    const eventLines = lines.filter((line) => line.includes(' › '));
-    expect(eventLines).toHaveLength(2);
-    expect(eventLines[0]).toBe('[apex] session 123e4567 planning › thinking: 先读 SPEC');
-    expect(eventLines[1]).toBe('[apex] session 123e4567 planning › tool: Read — docs/SPEC.md');
+    const eventLines = lines.filter((line) => line.includes('→'));
+    expect(eventLines).toEqual(['  → 读取  ./docs/SPEC.md']);
+    expect(lines.some((line) => line.includes('先读 SPEC'))).toBe(false);
   });
 
   it('init 元数据首次非空时输出一行模型信息，且不重复输出', async () => {
     let capturedRequest: {
-      onStreamActivity?: (activity: {
-        receivedStdoutBytes: number;
-        lastEventType: string | null;
-        lastEventSummary: string | null;
-        model: string | null;
-        provider: string | null;
-      }) => void;
+      onStreamActivity?: (activity: ClaudeStreamActivity) => void;
     } | null = null;
     let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
     const { deps, lines } = createDeps(
@@ -255,16 +257,16 @@ describe('invokeSession 用户反馈', () => {
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 10,
       lastEventType: null,
-      lastEventSummary: null,
+      displayEvent: null,
       model: null,
       provider: null,
     });
-    expect(lines.some((line) => line.includes('using model'))).toBe(false);
+    expect(lines.some((line) => line.includes('模型 '))).toBe(false);
 
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 80,
       lastEventType: 'system',
-      lastEventSummary: 'system: init',
+      displayEvent: { sequence: 1, kind: 'system', label: 'init', detail: null },
       model: 'claude-fake-model-1',
       provider: 'fake-provider',
     });
@@ -272,7 +274,7 @@ describe('invokeSession 用户反馈', () => {
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 90,
       lastEventType: 'system',
-      lastEventSummary: 'system: init',
+      displayEvent: { sequence: 1, kind: 'system', label: 'init', detail: null },
       model: 'claude-fake-model-1',
       provider: 'fake-provider',
     });
@@ -280,22 +282,16 @@ describe('invokeSession 用户反馈', () => {
     resolveInvoke!(makeFact());
     await pending;
 
-    const modelLines = lines.filter((line) => line.includes('using model'));
+    const modelLines = lines.filter((line) => line.includes('模型 claude-fake-model-1'));
     expect(modelLines).toHaveLength(1);
     expect(modelLines[0]).toBe(
-      '[apex] session 123e4567 planning using model claude-fake-model-1, provider fake-provider',
+      '  模型 claude-fake-model-1 · Provider fake-provider',
     );
   });
 
   it('provider 缺失时模型行只携带 model', async () => {
     let capturedRequest: {
-      onStreamActivity?: (activity: {
-        receivedStdoutBytes: number;
-        lastEventType: string | null;
-        lastEventSummary: string | null;
-        model: string | null;
-        provider: string | null;
-      }) => void;
+      onStreamActivity?: (activity: ClaudeStreamActivity) => void;
     } | null = null;
     let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
     const { deps, lines } = createDeps(
@@ -310,7 +306,7 @@ describe('invokeSession 用户反馈', () => {
     capturedRequest!.onStreamActivity?.({
       receivedStdoutBytes: 80,
       lastEventType: 'system',
-      lastEventSummary: 'system: init',
+      displayEvent: { sequence: 1, kind: 'system', label: 'init', detail: null },
       model: 'claude-fake-model-1',
       provider: null,
     });
@@ -318,8 +314,8 @@ describe('invokeSession 用户反馈', () => {
     resolveInvoke!(makeFact());
     await pending;
 
-    const modelLines = lines.filter((line) => line.includes('using model'));
+    const modelLines = lines.filter((line) => line.includes('模型 claude-fake-model-1'));
     expect(modelLines).toHaveLength(1);
-    expect(modelLines[0]).toBe('[apex] session 123e4567 planning using model claude-fake-model-1');
+    expect(modelLines[0]).toBe('  模型 claude-fake-model-1');
   });
 });

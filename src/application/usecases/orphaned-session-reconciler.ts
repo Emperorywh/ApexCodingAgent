@@ -71,7 +71,7 @@ export async function reconcileOrphanedSessionFacts(
         const detail = writeError instanceof Error ? writeError.message : String(writeError);
         deps.output.writeLine(
           deps.redaction.redactText(
-            `state_error: 失败 Session Record 无法写入（session ${active.sessionId}），仅输出诊断: ${detail}`,
+            `! 状态写入失败 · Session ${active.sessionId} 的失败记录 · ${detail}`,
           ),
         );
       }

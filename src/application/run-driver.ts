@@ -16,6 +16,14 @@ import { isTerminalRunStatus } from '../domain/run-state.js';
 import { formatRfc3339Utc } from '../domain/time.js';
 import type { PlanRevisionTrigger } from '../domain/schemas/plan-revision-snapshot.js';
 import type { ResumePoint, RunJson } from '../domain/schemas/run-json.js';
+import {
+  renderFinalReviewStarted,
+  renderPlanCommitted,
+  renderReplanRequested,
+  renderRunCompleted,
+  renderSpecReplanning,
+  renderTaskCompleted,
+} from './presentation/progress.js';
 import type { UseCaseDeps } from './usecase-deps.js';
 import { createExecuteNextTask, type ExecutionResumeHint } from './usecases/execute-next-task.js';
 import { createGeneratePlanRevision } from './usecases/generate-plan-revision.js';
@@ -69,7 +77,11 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
     resumePoint?.fromStatus === 'final_review' ? resumePoint.sessionId : null;
 
   function progress(line: string): void {
-    deps.output.writeLine(deps.redaction.redactText(`[apex] ${line}`));
+    /*
+     * 阶段摘要已经由 presentation 模块携带统一符号与层级。
+     * 这里仅执行脱敏和端口转发，不再自行拼接产品前缀或英文状态机文本。
+     */
+    deps.output.writeLine(deps.redaction.redactText(line));
   }
 
   /** 意外失败兜底：尽力把当前 Run 收尾为 failed（state_error 仅输出诊断）。 */
@@ -136,7 +148,6 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
           deps.redaction,
         );
         await persistRunBestEffort(deps, terminal);
-        progress(`run ${run.runId} ${run.status} -> failed (RUN_INTERRUPTED)`);
         return terminal;
       }
 
@@ -169,18 +180,20 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
                 planRevision: result.run.planRevision,
               });
               progress(
-                `run ${run.runId} planning -> running (plan revision ${result.run.planRevision} committed)`,
+                renderPlanCommitted(
+                  result.run.planRevision,
+                  Object.keys(result.run.tasks).length,
+                ),
               );
               trigger = INITIAL_TRIGGER;
             } else if (result.kind === 'spec-changed') {
-              progress(`run ${run.runId} SPEC changed during planning; replanning`);
+              progress(renderSpecReplanning());
             } else {
               deps.logger.log('error', 'driver.run_failed', {
                 runId: run.runId,
                 status: 'planning',
                 errorCode: result.run.lastError?.errorCode ?? 'unknown',
               });
-              progress(`run ${run.runId} planning -> failed (${result.run.lastError?.errorCode ?? 'unknown'})`);
               return result.run;
             }
             break;
@@ -197,7 +210,7 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
                 taskId: result.taskId,
                 checkpoint,
               });
-              progress(`task ${result.taskId} -> completed (checkpoint ${checkpoint.slice(0, 12)})`);
+              progress(renderTaskCompleted(result.taskId, checkpoint));
             } else if (result.kind === 'replan-needed') {
               trigger = result.trigger;
               deps.logger.log('debug', 'driver.replan', {
@@ -206,16 +219,15 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
                 trigger: result.trigger.type,
                 reason: result.trigger.reason,
               });
-              progress(`run ${run.runId} running -> planning (${result.trigger.type})`);
+              progress(renderReplanRequested(result.trigger.type));
             } else if (result.kind === 'final-review') {
-              progress(`run ${run.runId} running -> final_review (all tasks completed)`);
+              progress(renderFinalReviewStarted());
             } else {
               deps.logger.log('error', 'driver.run_failed', {
                 runId: run.runId,
                 status: 'running',
                 errorCode: result.run.lastError?.errorCode ?? 'unknown',
               });
-              progress(`run ${run.runId} running -> failed (${result.run.lastError?.errorCode ?? 'unknown'})`);
               return result.run;
             }
             break;
@@ -232,7 +244,12 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
                 runId: run.runId,
                 reportPath: result.run.reportPath ?? 'report.md',
               });
-              progress(`run ${run.runId} final_review -> completed (report ${result.run.reportPath ?? 'report.md'})`);
+              progress(
+                renderRunCompleted(
+                  run.runId,
+                  result.run.reportPath ?? 'report.md',
+                ),
+              );
               return result.run;
             }
             if (result.kind === 'replan-needed') {
@@ -243,14 +260,13 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
                 trigger: result.trigger.type,
                 reason: result.trigger.reason,
               });
-              progress(`run ${run.runId} final_review -> planning (${result.trigger.type})`);
+              progress(renderReplanRequested(result.trigger.type));
             } else {
               deps.logger.log('error', 'driver.run_failed', {
                 runId: run.runId,
                 status: 'final_review',
                 errorCode: result.run.lastError?.errorCode ?? 'unknown',
               });
-              progress(`run ${run.runId} final_review -> failed (${result.run.lastError?.errorCode ?? 'unknown'})`);
               return result.run;
             }
             break;

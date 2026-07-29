@@ -167,7 +167,8 @@ export function createStartRun(deps: RunCommandDeps): {
         // §16：bypassPermissions 只能显式启用且必须显示风险提示。
         deps.output.writeLine(
           deps.redaction.redactText(
-            '风险提示：已显式启用 bypassPermissions（--full-access）；Claude 将在无权限确认下直接修改仓库，请确保 SPEC 来源可信。',
+            '⚠ 风险提示 · 已启用 bypassPermissions（--full-access）· ' +
+              'Claude 将不再请求权限确认，请确保 SPEC 来源可信。',
           ),
         );
       }

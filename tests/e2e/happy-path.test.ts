@@ -136,11 +136,18 @@ describe('e2e happy path', () => {
         const tracked = await harness.repo.git('ls-files');
         expect(tracked).not.toContain('.apex-coding-agent');
 
-        // ---- 进度摘要行 ----
-        expect(harness.outputLines.some((line) => line.includes('planning -> running'))).toBe(true);
-        expect(harness.outputLines.some((line) => line.includes('TASK-001 -> completed'))).toBe(true);
-        expect(harness.outputLines.some((line) => line.includes('running -> final_review'))).toBe(true);
-        expect(harness.outputLines.some((line) => line.includes('final_review -> completed'))).toBe(true);
+        /*
+         * 进度输出采用用户语义，不暴露内部状态机迁移字符串。
+         * Run ID、任务 ID 与终态仍必须保留，便于从控制台定位持久化状态和调试日志。
+         */
+        expect(harness.outputLines.some((line) => line.includes('规划完成') && line.includes('2 个任务'))).toBe(true);
+        expect(harness.outputLines.some((line) => line.includes('TASK-001 完成'))).toBe(true);
+        expect(harness.outputLines.some((line) => line.includes('最终复核'))).toBe(true);
+        expect(
+          harness.outputLines.some(
+            (line) => line.includes(`Run ${run.runId} 完成`),
+          ),
+        ).toBe(true);
 
         // ---- 参数数组：planning=plan，execution/final_review=auto ----
         const invocations = await harness.readRecords();

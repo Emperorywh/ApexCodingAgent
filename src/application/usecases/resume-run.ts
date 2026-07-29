@@ -337,7 +337,7 @@ export function createResumeRun(deps: RunCommandDeps): {
     heartbeat.start();
     deps.output.writeLine(
       deps.redaction.redactText(
-        `[apex] run ${run.runId} resumed (${run.status} -> ${classification.point.fromStatus})`,
+        `↻ Run ${run.runId} 已恢复 · ${run.status} → ${classification.point.fromStatus}`,
       ),
     );
     logger.log('debug', 'resume.reopened', {

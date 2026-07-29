@@ -164,7 +164,11 @@ describe('runCli exit codes (§17)', () => {
     expect(code).toBe(CLI_EXIT.ok);
     expect(received!.force).toBe(true);
     expect(received!.fullAccess).toBe(true);
-    expect(stdout.join('\n')).toContain(run.runId);
+    /*
+     * 成功摘要由 RunDriver 在真实执行链中唯一输出。
+     * CLI 命令层只映射退出码，避免同一 Run 完成信息打印两次。
+     */
+    expect(stdout).toEqual([]);
   });
 
   it('resume interrupted failure exits 130, resumable failure exits 1', async () => {
@@ -228,7 +232,11 @@ describe('runCli exit codes (§17)', () => {
     });
     const code = await runCli(['start'], runtime);
     expect(code).toBe(CLI_EXIT.ok);
-    expect(stdout.join('\n')).toContain(run.runId);
+    /*
+     * 此处使用的是绕过 RunDriver 的 stub，因此 stdout 应为空。
+     * 真实进程测试会覆盖 RunDriver 产生的唯一完成摘要。
+     */
+    expect(stdout).toEqual([]);
   });
 
   it('start run failed exits 1 and surfaces the stable error code', async () => {

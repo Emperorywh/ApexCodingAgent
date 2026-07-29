@@ -191,8 +191,13 @@ describe('e2e resume (§17)', () => {
           }),
         ).toBe('completed');
 
-        // 前台能看到回退事实。
-        expect(harness.outputLines.join('\n')).toContain('resume unavailable');
+        /*
+         * 前台保留稳定错误码和明确的回退动作。
+         * 不再依赖 Adapter 的英文诊断短语，避免用户呈现反向耦合底层文案。
+         */
+        const progress = harness.outputLines.join('\n');
+        expect(progress).toContain('CLAUDE_RESUME_UNAVAILABLE');
+        expect(progress).toContain('将使用完整提示创建新会话');
 
         // 回退接力：第一趟带 --resume 失败，第二趟不带 --resume 成功。
         const records = await harness.readRecords();
@@ -247,7 +252,7 @@ describe('e2e resume (§17)', () => {
         expect(resumed.kind).toBe('failed');
         if (resumed.kind !== 'failed') return;
         expect(resumed.run.lastError?.errorCode).toBe('CLAUDE_EXIT_NONZERO');
-        expect(harness.outputLines.join('\n')).not.toContain('resume unavailable');
+        expect(harness.outputLines.join('\n')).not.toContain('CLAUDE_RESUME_UNAVAILABLE');
 
         /**
          * resume 自身会执行 version/help 两次探测，但业务 Session 只能有

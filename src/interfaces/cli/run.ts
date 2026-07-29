@@ -1,10 +1,10 @@
 /**
  * CLI 命令分发与退出码映射（SPEC §17、§15.2 command_error、§2.4）。
  *
- * 退出码：0 成功；1 start 的 Run 正常持久化为 failed；2 用法错误
- * （CLI_USAGE_INVALID）；3 启动前置校验失败（未创建新 Run）；4
- * status/report/abandon 命令失败；130 第一次中断已处理并结束 start
- * （中断导致 Run failed 时优先于 1）。
+ * 退出码：0 成功；1 start/resume 的 Run 正常持久化为 failed；2 用法错误
+ * （CLI_USAGE_INVALID）；3 启动前置校验失败（未创建或修改 Run）；4
+ * status/report/abandon/resume 命令级失败；130 第一次中断已处理并结束
+ * start/resume（中断导致 Run failed 时优先于 1）。
  *
  * CLI 失败同时输出稳定 errorCode（经脱敏），绝不透传工具原始退出码。
  */
@@ -88,9 +88,15 @@ async function runStart(
         ),
       );
       // §17：中断导致 Run 持久化为 failed 时退出码 130，优先于 1。
-      return lastError?.errorCode === 'RUN_INTERRUPTED'
-        ? CLI_EXIT.interrupted
-        : CLI_EXIT.runFailed;
+      if (lastError?.errorCode === 'RUN_INTERRUPTED') {
+        runtime.stdout(
+          runtime.redaction.redactText(
+            `[apex] run ${result.run.runId} 记录了恢复点；使用 "ApexCodingAgent resume" 从断点继续`,
+          ),
+        );
+        return CLI_EXIT.interrupted;
+      }
+      return CLI_EXIT.runFailed;
     }
     printError(runtime, result.error);
     return CLI_EXIT.startup;
@@ -106,6 +112,72 @@ async function runStart(
         });
     printError(runtime, apex);
     return apex.errorClass === 'startup_validation' ? CLI_EXIT.startup : CLI_EXIT.runFailed;
+  } finally {
+    disposeSignals();
+  }
+}
+
+async function runResume(
+  command: Extract<CliCommand, { kind: 'resume' }>,
+  runtime: CliRuntime,
+): Promise<number> {
+  // §2.4 中断语义对 resume 同样生效：第一次中断转发给中断控制器。
+  const disposeSignals = runtime.installSignals({
+    onFirstInterrupt: () => runtime.interrupt.request(),
+  });
+  try {
+    const result = await runtime.resume.execute({
+      cwd: runtime.cwd,
+      fullAccess: command.fullAccess,
+      force: command.force,
+      claudeCliPath: command.claudeCliPath,
+      gitCliPath: command.gitCliPath,
+      verbose: command.verbose,
+      environment: runtime.environment,
+    });
+    if (result.kind === 'completed') {
+      runtime.stdout(
+        runtime.redaction.redactText(
+          `[apex] run ${result.run.runId} completed (report ${result.run.reportPath ?? 'report.md'})`,
+        ),
+      );
+      return CLI_EXIT.ok;
+    }
+    if (result.kind === 'failed') {
+      const lastError = result.run.lastError;
+      runtime.stderr(
+        runtime.redaction.redactText(
+          `[apex] run ${result.run.runId} failed` +
+            (lastError === null
+              ? ''
+              : ` ${lastError.errorCode} (${lastError.stage}): ${lastError.message}`),
+        ),
+      );
+      if (lastError?.errorCode === 'RUN_INTERRUPTED') {
+        runtime.stdout(
+          runtime.redaction.redactText(
+            `[apex] run ${result.run.runId} 记录了恢复点；可再次使用 "ApexCodingAgent resume" 从断点继续`,
+          ),
+        );
+        return CLI_EXIT.interrupted;
+      }
+      return CLI_EXIT.runFailed;
+    }
+    printError(runtime, result.error);
+    if (result.kind === 'startup-failed') return CLI_EXIT.startup;
+    // command-failed：按错误类别映射（startup_validation 视为前置校验失败）。
+    return result.error.errorClass === 'startup_validation' ? CLI_EXIT.startup : CLI_EXIT.command;
+  } catch (error) {
+    const apex = isApexError(error)
+      ? error
+      : new ApexError({
+          code: 'COMMAND_STATE_INVALID',
+          stage: 'resume',
+          message: error instanceof Error ? error.message : String(error),
+          cause: error,
+        });
+    printError(runtime, apex);
+    return CLI_EXIT.command;
   } finally {
     disposeSignals();
   }
@@ -197,6 +269,8 @@ export async function runCli(argv: readonly string[], runtime: CliRuntime): Prom
       return CLI_EXIT.ok;
     case 'start':
       return runStart(command, runtime);
+    case 'resume':
+      return runResume(command, runtime);
     case 'status':
       return runStatus(runtime);
     case 'report':

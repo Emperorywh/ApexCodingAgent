@@ -3,8 +3,10 @@
  * AC-025 / FR-019 / NFR-008 禁用项扫描（G6）。
  *
  * 1. 源码扫描：src/ 全部 .ts（剥离注释后）不得出现 Mutex、Named Pipe、
- *    Job Object、PID 追踪/恢复、Journal、Session Resume、Pause/Stop 类
- *    实现痕迹，也不得加载 .node 原生扩展（dlopen/napi/node-gyp 等）。
+ *    Job Object、PID 追踪/恢复、Journal、Pause/Stop 类实现痕迹，也不得
+ *    加载 .node 原生扩展（dlopen/napi/node-gyp 等）。Session Resume 自
+ *    SPEC v4.2 起成为受支持特性（`resume` 命令经 Claude CLI 的
+ *    `--resume --fork-session` 实现），不再属于禁用实现痕迹。
  * 2. 依赖扫描：按 package-lock.json 的真实安装路径遍历生产依赖闭包
  *    （含 optional/peer 边），不得包含 .node 原生模块或禁用包名；
  *    package.json 不得有 postinstall。
@@ -40,7 +42,6 @@ const FORBIDDEN_SOURCE_PATTERNS = [
   [/\\\\\.\\pipe\\/i, 'Windows Named Pipe path'],
   [/\bjob[-_ ]?object\b/i, 'Job Object'],
   [/\bjournal/i, 'Journal'],
-  [/\bresume\b/i, 'Session Resume'],
   [/\bpaus(e|ed|ing)\b/i, 'Pause 状态/协议'],
   [/\bstop(?:ped|ping)?\b/i, 'Stop 状态/协议'],
   [/\bcancel(?:led|ling|ed|ing)?\b/i, 'Cancel 状态/协议'],

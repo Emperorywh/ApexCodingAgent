@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildPlanningPrompt,
+  buildPlanningResumePrompt,
   type CompletedTaskSummary,
   type PlanningPromptInput,
   type SkippedTaskSummary,
@@ -16,6 +17,7 @@ import {
 } from '../../src/application/prompts/execution.js';
 import {
   buildFinalReviewPrompt,
+  buildFinalReviewResumePrompt,
   type CompletedTaskReviewSummary,
   type FinalReviewPromptInput,
 } from '../../src/application/prompts/final-review.js';
@@ -192,6 +194,20 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
   });
 });
 
+describe('buildPlanningResumePrompt（Planning 断点续接）', () => {
+  it('要求基于原上下文继续并重申 Planning 只读与结果契约', () => {
+    const prompt = buildPlanningResumePrompt();
+    /**
+     * 恢复提示不重复整份 SPEC，而是明确使用 transcript 中已有上下文，
+     * 同时保留最重要的只读边界与完整结构化结果要求。
+     */
+    expect(prompt).toContain('从原对话断点继续');
+    expect(prompt).toContain('只读边界');
+    expect(prompt).toContain('完整 TaskPlanDraft');
+    expect(prompt).not.toContain(REPOSITORY_ROOT);
+  });
+});
+
 describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
   const input: ExecutionPromptInput = {
     repositoryRoot: REPOSITORY_ROOT,
@@ -351,5 +367,19 @@ describe('buildFinalReviewPrompt（SPEC §26 + §14.1）', () => {
     expect(prompt).toContain('FINAL_REVIEW_RESULT_FORMAT');
     expect(prompt).toContain('reviewedTaskIds');
     expect(prompt).toContain('replanReason');
+  });
+});
+
+describe('buildFinalReviewResumePrompt（Final Review 断点续接）', () => {
+  it('要求保留中断前修改并继续完成整体复核', () => {
+    const prompt = buildFinalReviewResumePrompt();
+    /**
+     * Final Review 是可写会话，恢复提示必须显式保留当前仓库事实，避免
+     * 模型把中断前已经产生但尚未收尾的复核修改当作应回滚内容。
+     */
+    expect(prompt).toContain('从原对话断点继续');
+    expect(prompt).toContain('不要推倒重来');
+    expect(prompt).toContain('完成整体复核');
+    expect(prompt).toContain('FinalReviewResult');
   });
 });

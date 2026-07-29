@@ -40,7 +40,9 @@ export type TaskTransitionReason =
   /** Foreground interrupt. */
   | 'run_interrupted'
   /** User abandoned the Run. */
-  | 'run_abandoned';
+  | 'run_abandoned'
+  /** The resume command reopens an interrupted/crashed Run. */
+  | 'run_resumed';
 
 /** transition key form: `<from>-><to>` */
 export const TASK_TRANSITION_REASONS: Readonly<
@@ -48,7 +50,7 @@ export const TASK_TRANSITION_REASONS: Readonly<
 > = {
   'pending->running': ['orchestrator_selected'],
   'pending->skipped': ['plan_revision_omitted'],
-  'running->pending': ['replan_required', 'spec_changed'],
+  'running->pending': ['replan_required', 'spec_changed', 'run_resumed'],
   'running->completed': ['completed_and_checkpointed'],
   'running->failed': [
     'claude_call_failed',
@@ -58,13 +60,16 @@ export const TASK_TRANSITION_REASONS: Readonly<
     'run_interrupted',
     'run_abandoned',
   ],
+  // 仅 resume 命令：被中断（failed 且 failure 为 RUN_INTERRUPTED）的 Task
+  // 复位后重新参与调度。
+  'failed->pending': ['run_resumed'],
 };
 
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   pending: ['running', 'skipped'],
   running: ['pending', 'completed', 'failed'],
   completed: [],
-  failed: [],
+  failed: ['pending'],
   skipped: [],
 };
 

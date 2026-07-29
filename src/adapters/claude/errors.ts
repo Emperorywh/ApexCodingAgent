@@ -1,7 +1,8 @@
 /**
  * Claude CLI 外部失败到稳定错误码的唯一映射点。其他模块不得解释进程
  * 结果、原始流事件或能力探测输出；Provider、鉴权、网络、代理和额度
- * 失败统一收敛为 CLAUDE_EXIT_NONZERO，并保留脱敏后的可读诊断。
+ * 失败统一收敛为 CLAUDE_EXIT_NONZERO。只有续接尚未开始时的明确
+ * transcript 缺失诊断映射为 CLAUDE_RESUME_UNAVAILABLE。
  */
 import type { ApexErrorInit } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
@@ -87,6 +88,31 @@ export function claudeExitNonZero(
     ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
     facts: { processExitCode: exitCode, claudeVersion: options.claudeVersion ?? null },
   });
+}
+
+/**
+ * Claude CLI 明确表示目标 transcript 不存在或无法加载。
+ *
+ * 该错误只由适配器在“续接尚未开始执行”的诊断边界产生，Application
+ * 因而可以安全地区分 transcript 缺失与鉴权、网络、额度及运行中失败。
+ */
+export function claudeResumeUnavailable(
+  stage: SessionType,
+  exitCode: number,
+  stderr: string,
+  redact: (text: string) => string,
+  options: { readonly sessionId?: string; readonly claudeVersion?: string | null },
+): ClaudeInvocationError {
+  return invocationError(
+    'CLAUDE_RESUME_UNAVAILABLE',
+    'claude could not load the requested session transcript',
+    {
+      stage,
+      toolSummary: summarizeStderr(stderr, redact),
+      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+      facts: { processExitCode: exitCode, claudeVersion: options.claudeVersion ?? null },
+    },
+  );
 }
 
 /** stdout 不满足逐行 JSON 对象契约，或管道发生不可恢复错误。 */

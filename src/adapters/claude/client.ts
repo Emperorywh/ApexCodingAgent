@@ -6,7 +6,10 @@
  *
  * 子进程原样继承当前用户环境，不读取或缓存凭据，不调用 CC Switch 私有
  * API，也不创建隔离配置目录。本模块不记录 PID、不接管旧 Session、
- * 不恢复 Session，也不自动重启失败进程。
+ * 不自动重启失败进程。唯一的续接例外服务于 resume 命令：请求携带
+ * resumeFromSessionId 时以 `--resume <旧ID> --fork-session
+ * --session-id <新ID>` 启动，续接被中断会话的对话上下文，同时保持
+ * 一次调用一个新 Session ID 的事实模型。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -25,6 +28,7 @@ import { createCapabilityProbe, type CapabilityProbe, type ProbeRunResult } from
 import { resolveWindowsCommand, type WindowsCommandEnvironment } from './windows-command.js';
 import {
   claudeLogWriteFailed,
+  claudeResumeUnavailable,
   claudeStartFailed,
   claudeStreamFailed,
   summarizeStderr,
@@ -305,6 +309,33 @@ function createStreamActivityTracker(
   };
 }
 
+/**
+ * Claude CLI 的 transcript 查找失败没有结构化错误通道，只能在 Adapter
+ * 边界识别其官方诊断。必须同时满足“续接调用、尚无 stdout 事件、数字
+ * 非零退出、明确 transcript 诊断”，避免把已经执行过工具的失败误判成
+ * 可以安全回退。
+ */
+function isResumeTranscriptUnavailable(
+  request: ClaudeInvocationRequest,
+  stdout: string,
+  stderr: string,
+  exitCode: number | null,
+): exitCode is number {
+  if (
+    request.resumeFromSessionId === null ||
+    request.resumeFromSessionId === undefined ||
+    typeof exitCode !== 'number' ||
+    exitCode === 0 ||
+    stdout.trim() !== ''
+  ) {
+    return false;
+  }
+  return (
+    /no conversation found(?: (?:with|for))? session id/i.test(stderr) ||
+    /failed to resume the conversation/i.test(stderr)
+  );
+}
+
 /** 从进程环境读取 Windows 命令解析事实；PATH/PATHEXT 键名大小写不敏感。 */
 function systemWindowsCommandEnvironment(): WindowsCommandEnvironment {
   const readVariable = (name: string): string | undefined => {
@@ -402,10 +433,21 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
 
     const claudeVersion = request.capabilityReport.version;
     const resultSchema = RESULT_SCHEMA_BY_SESSION_TYPE[request.type];
+    // resume 续接（§17 resume）：--resume 旧会话 + --fork-session 保证本次
+    // 调用仍独占一个新 Session ID（§6.3 顺序铁律不受影响）。
+    const sessionArgs =
+      request.resumeFromSessionId !== null && request.resumeFromSessionId !== undefined
+        ? [
+            '--resume',
+            request.resumeFromSessionId,
+            '--fork-session',
+            '--session-id',
+            request.sessionId,
+          ]
+        : ['--session-id', request.sessionId];
     const args = [
       '-p',
-      '--session-id',
-      request.sessionId,
+      ...sessionArgs,
       '--permission-mode',
       request.permissionMode,
       '--output-format',
@@ -462,6 +504,23 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
             facts: { processExitCode: outcome.code, claudeVersion },
             toolSummary: summarizeStderr(outcome.stderr, (text) => redaction.redactText(text)),
           },
+        );
+      }
+
+      if (
+        isResumeTranscriptUnavailable(
+          request,
+          outcome.stdout,
+          outcome.stderr,
+          outcome.code,
+        )
+      ) {
+        throw claudeResumeUnavailable(
+          request.type,
+          outcome.code,
+          outcome.stderr,
+          (text) => redaction.redactText(text),
+          { sessionId: request.sessionId, claudeVersion },
         );
       }
 

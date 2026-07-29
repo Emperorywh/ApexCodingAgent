@@ -152,6 +152,7 @@ export function mkRun(overrides: Partial<RunJson> = {}): RunJson {
     lastError: null,
     finalCommit: null,
     reportPath: null,
+    resumePoint: null,
     createdAt: T0,
     updatedAt: T0,
     terminalAt: null,

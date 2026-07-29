@@ -137,6 +137,7 @@ async function fabricateInterruptedRun(
     lastError: null,
     finalCommit: null,
     reportPath: null,
+    resumePoint: null,
     createdAt: NOW,
     updatedAt: NOW,
     terminalAt: null,

@@ -71,6 +71,17 @@ export interface SessionStartFact {
   readonly planningSnapshot: PlanningSnapshot | null;
 }
 
+/**
+ * 恢复前只读校验得到的仓库断点。
+ *
+ * 当中断发生在可修改仓库的 Session 内时，HEAD 可以是 expectedHead 的
+ * 安全后继；调用方必须把 currentHead 写回新的运行断点后才能启动会话。
+ */
+export interface ResumePositionFact {
+  readonly currentHead: string;
+  readonly advancedFromExpectedHead: boolean;
+}
+
 /** Checkpoint outcome facts; the Application layer persists them (episodes, run.json). */
 export interface CheckpointOutcome {
   /** HEAD after the checkpoint flow — the OID recorded as the checkpoint. */
@@ -208,6 +219,20 @@ export interface GitPort {
     facts: SessionGitFacts,
     options?: { readonly planning?: boolean },
   ): Promise<SessionStartFact>;
+
+  /**
+   * resume 首次状态写入前的完整只读校验：Run Branch、Base Branch、
+   * completed Checkpoint、状态目录和 SPEC 保护规则全部成立。
+   *
+   * `allowAdvancedHead=true` 仅用于被中断的 Execution/Final Review
+   * Session；此时 current HEAD 必须是 expectedHead 的后继，且新增提交
+   * 不得包含 SPEC 或 `.apex-coding-agent/`。其余恢复点要求 HEAD 精确相等。
+   */
+  assertResumePosition(
+    root: string,
+    facts: SessionGitFacts,
+    options: { readonly allowAdvancedHead: boolean },
+  ): Promise<ResumePositionFact>;
 
   /**
    * SPEC §8.3 post-session invariants: same branch/Base/ancestor/tracked/

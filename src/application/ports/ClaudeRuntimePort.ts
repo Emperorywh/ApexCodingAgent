@@ -8,7 +8,10 @@
  * - 一次 invoke 只启动一个 Claude Session 子进程；
  * - 成功要求退出码为 0，且恰好存在一个通过对应内置 Schema 的 result；
  * - decision 为 failed 仍是合法结果，由后续 Application 用例解释；
- * - 不记录 PID、不恢复 Session、不自动重启，并原样继承用户环境。
+ * - 不记录 PID、不自动重启，并原样继承用户环境；
+ * - Session 续接仅服务于 resume 命令：`resumeFromSessionId` 非空时用
+ *   `--resume <旧ID> --fork-session --session-id <新ID>` 续接被中断的
+ *   对话，一次调用仍只对应一个（新的）Session ID。
  */
 import { ApexError, type ApexErrorInit } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
@@ -41,6 +44,13 @@ interface ClaudeInvocationRequestBase {
    * 与结果语义。
    */
   readonly onStreamActivity?: (activity: ClaudeStreamActivity) => void;
+  /**
+   * 可选的会话续接来源（SPEC §17 resume）：非空时本调用以
+   * `--resume <该ID> --fork-session --session-id <sessionId>` 启动，
+   * 续接被中断会话的对话上下文，同时保持一次调用一个新 Session ID 的
+   * §6.3 顺序铁律。resume 命令重开的三类 Session 均可使用。
+   */
+  readonly resumeFromSessionId?: string | null;
 }
 
 /** 一次 invoke 期间的流活跃事实（心跳行与事件行的数据来源）。 */

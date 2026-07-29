@@ -5,7 +5,7 @@
  * 只输出诊断的 state_error 语义（§15.3：状态无法写入时仅输出诊断），以及
  * 未结束 Episode 的 session_error 关闭。纯函数不读时钟、不读环境。
  */
-import { applyRunEvent } from '../../domain/run-state.js';
+import { applyRunEvent, isTerminalRunStatus } from '../../domain/run-state.js';
 import {
   closeExecutionEpisode,
   closeFinalReviewEpisode,
@@ -23,9 +23,14 @@ function redactedSummary(error: ApexError, redaction: RedactionPort): string {
 }
 
 /**
- * 组装终态 failed Run（纯函数）：applyRunEvent RUN_ERROR、清
+ * 组装终态 failed Run（纯函数段）：applyRunEvent RUN_ERROR、清
  * activeSession/currentTaskId、lastError、terminalAt=updatedAt=at、
  * stateRevision+1。
+ *
+ * RUN_INTERRUPTED 时在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：
+ * 中断前状态、被中断 Task 与 Claude Session ID，供 resume 命令重开 Run
+ * 并续接被中断的 Planning、Execution 或 Final Review 会话；其余错误
+ * 一律 resumePoint=null。
  */
 export function toTerminalFailedRun(
   run: RunJson,
@@ -42,6 +47,14 @@ export function toTerminalFailedRun(
     terminalAt: at,
     updatedAt: at,
     stateRevision: run.stateRevision + 1,
+    resumePoint:
+      error.errorCode === 'RUN_INTERRUPTED' && !isTerminalRunStatus(run.status)
+        ? {
+            fromStatus: run.status,
+            taskId: run.currentTaskId,
+            sessionId: run.activeSession === null ? null : run.activeSession.sessionId,
+          }
+        : null,
   };
 }
 

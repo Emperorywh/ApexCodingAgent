@@ -15,9 +15,9 @@ import { ApexError, isApexError } from '../domain/errors.js';
 import { isTerminalRunStatus } from '../domain/run-state.js';
 import { formatRfc3339Utc } from '../domain/time.js';
 import type { PlanRevisionTrigger } from '../domain/schemas/plan-revision-snapshot.js';
-import type { RunJson } from '../domain/schemas/run-json.js';
+import type { ResumePoint, RunJson } from '../domain/schemas/run-json.js';
 import type { UseCaseDeps } from './usecase-deps.js';
-import { createExecuteNextTask } from './usecases/execute-next-task.js';
+import { createExecuteNextTask, type ExecutionResumeHint } from './usecases/execute-next-task.js';
 import { createGeneratePlanRevision } from './usecases/generate-plan-revision.js';
 import { createRunFinalReview } from './usecases/run-final-review.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './usecases/run-transitions.js';
@@ -29,16 +29,44 @@ export interface RunDriver {
   requestInterrupt(): void;
 }
 
+export interface RunDriverOptions {
+  /**
+   * resume 命令重开 Run 时传入的恢复点（SPEC §17 resume）：
+   * - fromStatus 为 planning：首个 Revision 保持 initial，已有 Revision
+   *   时首个 Planning 使用 run_resumed；存在 Session ID 时续接原对话；
+   * - fromStatus 为 running 且 taskId/sessionId 非空：首个 Execution 会话
+   *   携带续接 hint（由 ExecuteNextTask 校验 Task 匹配后消费或丢弃）；
+   * - fromStatus 为 final_review：首个 Final Review 会话续接原对话；
+   * - 会话之间的恢复点没有 Session ID，按正常新会话继续。
+   */
+  readonly resume?: ResumePoint;
+}
+
 const INITIAL_TRIGGER: PlanRevisionTrigger = {
   type: 'initial',
   reason: '初始计划',
   sourceSessionId: null,
 };
 
-export function createRunDriver(deps: UseCaseDeps): RunDriver {
+export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): RunDriver {
   const generatePlanRevision = createGeneratePlanRevision(deps);
   const executeNextTask = createExecuteNextTask(deps);
   const runFinalReview = createRunFinalReview(deps);
+
+  /** resume 恢复点：首次进入对应分支时消费一次，随后失效。 */
+  const resumePoint = options?.resume ?? null;
+  let planningResumeSessionId =
+    resumePoint?.fromStatus === 'planning' ? resumePoint.sessionId : null;
+  let planningResumePending = resumePoint?.fromStatus === 'planning';
+  let executionResumeHint: ExecutionResumeHint | null =
+    resumePoint !== null &&
+    resumePoint.fromStatus === 'running' &&
+    resumePoint.taskId !== null &&
+    resumePoint.sessionId !== null
+      ? { sessionId: resumePoint.sessionId, taskId: resumePoint.taskId }
+      : null;
+  let finalReviewResumeSessionId =
+    resumePoint?.fromStatus === 'final_review' ? resumePoint.sessionId : null;
 
   function progress(line: string): void {
     deps.output.writeLine(deps.redaction.redactText(`[apex] ${line}`));
@@ -75,7 +103,7 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
   }
 
   async function driveToTerminal(): Promise<RunJson> {
-    let trigger = INITIAL_TRIGGER;
+    let trigger: PlanRevisionTrigger = INITIAL_TRIGGER;
     for (;;) {
       const run = await deps.stateStore.readRun();
       if (run === null) {
@@ -115,7 +143,26 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
       try {
         switch (run.status) {
           case 'planning': {
-            const result = await generatePlanRevision.execute(trigger);
+            /**
+             * 首个 Revision 的领域不变量要求 trigger=initial；中断只改变
+             * 会话执行方式，不改变“这是初始计划”的业务事实。已有 Revision
+             * 后恢复 Planning 才使用 run_resumed 记录本次触发来源。
+             */
+            if (
+              resumePoint !== null &&
+              resumePoint.fromStatus === 'planning' &&
+              planningResumePending
+            ) {
+              trigger = runPlanningResumeTrigger(resumePoint, run.planRevision);
+            }
+            const result = await generatePlanRevision.execute(
+              trigger,
+              planningResumeSessionId === null
+                ? undefined
+                : { resumeFromSessionId: planningResumeSessionId },
+            );
+            planningResumeSessionId = null;
+            planningResumePending = false;
             if (result.kind === 'committed') {
               deps.logger.log('debug', 'driver.plan_committed', {
                 runId: run.runId,
@@ -139,7 +186,10 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
             break;
           }
           case 'running': {
-            const result = await executeNextTask.execute();
+            const result = await executeNextTask.execute(
+              executionResumeHint === null ? undefined : { resume: executionResumeHint },
+            );
+            executionResumeHint = null;
             if (result.kind === 'task-completed') {
               const checkpoint = result.run.tasks[result.taskId]?.finalCheckpoint ?? '';
               deps.logger.log('debug', 'driver.task_completed', {
@@ -171,7 +221,12 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
             break;
           }
           case 'final_review': {
-            const result = await runFinalReview.execute();
+            const result = await runFinalReview.execute(
+              finalReviewResumeSessionId === null
+                ? undefined
+                : { resumeFromSessionId: finalReviewResumeSessionId },
+            );
+            finalReviewResumeSessionId = null;
             if (result.kind === 'completed') {
               deps.logger.log('debug', 'driver.run_completed', {
                 runId: run.runId,
@@ -213,4 +268,23 @@ export function createRunDriver(deps: UseCaseDeps): RunDriver {
       deps.interrupt.request();
     },
   };
+}
+
+/**
+ * Planning 恢复的 Revision trigger 由已提交 Revision 数决定。
+ *
+ * 该纯函数把“初始计划被中断”和“重规划被中断”明确分开，避免以恢复命令
+ * 覆盖首个 Revision 必须保留的 initial 领域事实。
+ */
+function runPlanningResumeTrigger(
+  resumePoint: ResumePoint,
+  currentPlanRevision: number,
+): PlanRevisionTrigger {
+  return currentPlanRevision === 0
+    ? INITIAL_TRIGGER
+    : {
+        type: 'run_resumed',
+        reason: 'planning resumed after interrupt',
+        sourceSessionId: resumePoint.sessionId,
+      };
 }

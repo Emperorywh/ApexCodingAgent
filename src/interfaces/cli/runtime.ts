@@ -11,11 +11,12 @@ import type {
   AbandonRunResult,
 } from '../../application/usecases/abandon-run.js';
 import type { GenerateReportResult } from '../../application/usecases/generate-report.js';
+import type { StartRunInput, StartRunResult } from '../../application/usecases/start-run.js';
+import type { EnvironmentFacts } from '../../application/usecases/run-runtime-preflight.js';
 import type {
-  EnvironmentFacts,
-  StartRunInput,
-  StartRunResult,
-} from '../../application/usecases/start-run.js';
+  ResumeRunInput,
+  ResumeRunResult,
+} from '../../application/usecases/resume-run.js';
 
 /**
  * `status` 命令的已提交读取结果。
@@ -43,6 +44,7 @@ export interface CliRuntime {
   readonly redaction: RedactionPort;
   readonly interrupt: InterruptController;
   readonly startRun: { execute(input: StartRunInput): Promise<StartRunResult> };
+  readonly resume: { execute(input: ResumeRunInput): Promise<ResumeRunResult> };
   /**
    * CLI 仅依赖命令级接口。
    *
@@ -53,7 +55,7 @@ export interface CliRuntime {
   readonly report: { execute(): Promise<GenerateReportResult> };
   readonly abandon: { execute(input: AbandonRunInput): Promise<AbandonRunResult> };
   /**
-   * 安装前台中断信号处理（仅 start 使用，§2.4）；返回解除函数。
+   * 安装前台中断信号处理（仅 start/resume 使用，§2.4）；返回解除函数。
    * 第二次信号的立即退出语义由安装方（bootstrap/signals）实现。
    */
   readonly installSignals: (handlers: SignalHandlerSpec) => () => void;

@@ -15,6 +15,7 @@ import {
 import { readSpecFact, resolveSpecFact, isSpecStaged } from './spec-discovery.js';
 import { ensureStateDirectoryExcluded } from './exclude.js';
 import {
+  assertResumePositionFacts,
   assertSessionEndFacts,
   assertSessionStartFacts,
   assertStateDirectoryUntrackedAtStartup,
@@ -54,6 +55,8 @@ export function createGitAdapter(options: GitAdapterOptions = {}): GitPort {
     createRunBranch: (root, runId) => createRunBranch(git, root, runId),
     assertSessionStart: (root, facts, options) =>
       assertSessionStartFacts(git, root, facts, options?.planning === true),
+    assertResumePosition: (root, facts, options) =>
+      assertResumePositionFacts(git, root, facts, options.allowAdvancedHead),
     assertSessionEnd: (root, facts, start) => assertSessionEndFacts(git, root, facts, start),
     createTaskCheckpoint: (root, input) => createTaskCheckpoint(git, root, input),
     createIntermediateCheckpoint: (root, input) => createIntermediateCheckpoint(git, root, input),

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInterruptController } from '../../../src/application/interrupt.js';
 import type { StartRunInput, StartRunResult } from '../../../src/application/usecases/start-run.js';
+import type { ResumeRunInput } from '../../../src/application/usecases/resume-run.js';
 import { createCliRuntime } from '../../../src/bootstrap/composition-root.js';
 import { collectEnvironmentFacts } from '../../../src/bootstrap/environment.js';
 import { ApexError } from '../../../src/domain/errors.js';
@@ -59,6 +60,7 @@ function makeRunJson(overrides: Partial<RunJson> = {}): RunJson {
     lastError: null,
     finalCommit: null,
     reportPath: null,
+    resumePoint: null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     terminalAt: null,
@@ -91,6 +93,11 @@ function makeRuntime(overrides: Partial<CliRuntime> = {}): FakeRuntime {
     startRun: {
       execute: () => {
         throw new Error('startRun.execute not stubbed');
+      },
+    },
+    resume: {
+      execute: () => {
+        throw new Error('resume.execute not stubbed');
       },
     },
     status: {
@@ -132,9 +139,81 @@ describe('runCli exit codes (§17)', () => {
 
   it('usage errors exit 2 with CLI_USAGE_INVALID and help on stderr', async () => {
     const { runtime, stderr } = makeRuntime();
-    const code = await runCli(['resume'], runtime);
+    const code = await runCli(['frobnicate'], runtime);
     expect(code).toBe(CLI_EXIT.usage);
     expect(stderr.join('\n')).toContain('CLI_USAGE_INVALID');
+  });
+
+  it('resume completed exits 0 and passes --force/--full-access through', async () => {
+    const run = makeRunJson({ status: 'completed', terminalAt: '2026-01-01T01:00:00Z' });
+    let received: ResumeRunInput | null = null;
+    const { runtime, stdout } = makeRuntime({
+      resume: {
+        execute: async (input: ResumeRunInput) => {
+          received = input;
+          return { kind: 'completed', run };
+        },
+      },
+    });
+    const code = await runCli(['resume', '--force', '--full-access'], runtime);
+    expect(code).toBe(CLI_EXIT.ok);
+    expect(received!.force).toBe(true);
+    expect(received!.fullAccess).toBe(true);
+    expect(stdout.join('\n')).toContain(run.runId);
+  });
+
+  it('resume interrupted failure exits 130, resumable failure exits 1', async () => {
+    const interruptedRun = makeRunJson({
+      status: 'failed',
+      terminalAt: '2026-01-01T01:00:00Z',
+      lastError: makeErrorRecord('RUN_INTERRUPTED'),
+    });
+    const interrupted = makeRuntime({
+      resume: { execute: async () => ({ kind: 'failed', run: interruptedRun }) },
+    });
+    expect(await runCli(['resume'], interrupted.runtime)).toBe(CLI_EXIT.interrupted);
+
+    const plainRun = makeRunJson({
+      status: 'failed',
+      terminalAt: '2026-01-01T01:00:00Z',
+      lastError: makeErrorRecord('CLAUDE_EXIT_NONZERO'),
+    });
+    const plain = makeRuntime({
+      resume: { execute: async () => ({ kind: 'failed', run: plainRun }) },
+    });
+    expect(await runCli(['resume'], plain.runtime)).toBe(CLI_EXIT.runFailed);
+  });
+
+  it('resume command failures exit 4, startup validation failures exit 3', async () => {
+    const notResumable = makeRuntime({
+      resume: {
+        execute: async () => ({
+          kind: 'command-failed',
+          error: new ApexError({
+            code: 'RUN_NOT_RESUMABLE',
+            stage: 'resume',
+            message: 'run is completed; nothing to resume',
+          }),
+        }),
+      },
+    });
+    const code = await runCli(['resume'], notResumable.runtime);
+    expect(code).toBe(CLI_EXIT.command);
+    expect(notResumable.stderr.join('\n')).toContain('RUN_NOT_RESUMABLE');
+
+    const settingsInvalid = makeRuntime({
+      resume: {
+        execute: async () => ({
+          kind: 'command-failed',
+          error: new ApexError({
+            code: 'SETTINGS_INVALID',
+            stage: 'resume',
+            message: 'pass --full-access explicitly',
+          }),
+        }),
+      },
+    });
+    expect(await runCli(['resume'], settingsInvalid.runtime)).toBe(CLI_EXIT.startup);
   });
 
   it('start completed exits 0', async () => {

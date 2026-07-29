@@ -24,13 +24,14 @@ import { applyRunEvent } from '../../domain/run-state.js';
 import { formatRfc3339Utc } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
-import { buildFinalReviewPrompt } from '../prompts/final-review.js';
+import {
+  buildFinalReviewPrompt,
+  buildFinalReviewResumePrompt,
+} from '../prompts/final-review.js';
 import type { CheckpointOutcome } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import {
-  beginSession,
   ensureFailedSessionRecord,
-  invokeSession,
   sessionGitFacts,
   writeCompletedSessionRecord,
   type ActiveSessionHandle,
@@ -42,6 +43,7 @@ import {
 } from './run-transitions.js';
 import { toErrorRecord } from './error-record.js';
 import { readCompletePlanRevisionHistory } from './plan-revision-history.js';
+import { invokeResumableSession } from './resumable-session.js';
 
 export type RunFinalReviewResult =
   /** Run 已持久化为 completed（含 report.md 与 Final Commit）。 */
@@ -55,8 +57,13 @@ export type RunFinalReviewResult =
   /** Run 已持久化为 failed。 */
   | { readonly kind: 'failed'; readonly run: RunJson };
 
+export interface RunFinalReviewOptions {
+  /** resume 命令传入的被中断 Final Review Session ID，仅消费一次。 */
+  readonly resumeFromSessionId?: string;
+}
+
 export function createRunFinalReview(deps: UseCaseDeps): {
-  execute(): Promise<RunFinalReviewResult>;
+  execute(options?: RunFinalReviewOptions): Promise<RunFinalReviewResult>;
 } {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
 
@@ -212,7 +219,7 @@ export function createRunFinalReview(deps: UseCaseDeps): {
     };
   }
 
-  async function execute(): Promise<RunFinalReviewResult> {
+  async function execute(options?: RunFinalReviewOptions): Promise<RunFinalReviewResult> {
     const run = await deps.stateStore.readRun();
     if (run === null || run.status !== 'final_review') {
       throw new ApexError({
@@ -281,24 +288,39 @@ export function createRunFinalReview(deps: UseCaseDeps): {
       intermediateCheckpoints: run.intermediateCheckpoints,
     });
 
-    // §6.3：写 activeSession + 未结束 FR Episode，保存后启动进程。
-    const sessionInput = {
+    const sessionBase = {
       type: 'final_review' as const,
       taskId: null,
       planRevision: run.planRevision,
       specSha256: specBefore.sha256,
-      prompt,
       permissionMode: run.runSettings.executionPermissionMode,
       repositoryRoot: root,
     };
-    const handle = await beginSession(deps, run, sessionInput);
-
-    let fact;
-    try {
-      fact = await invokeSession(deps, handle, sessionInput);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
+    const invocation = await invokeResumableSession(deps, {
+      run,
+      session: sessionBase,
+      freshPrompt: prompt,
+      resume:
+        options?.resumeFromSessionId === undefined
+          ? null
+          : {
+              sessionId: options.resumeFromSessionId,
+              prompt: buildFinalReviewResumePrompt(),
+            },
+      closeResumeAttempt: (handle, error) =>
+        closeFinalReviewEpisodeAsSessionError(
+          handle.run,
+          handle.sessionId,
+          error,
+          now(),
+          handle.specSha256,
+          deps.redaction,
+        ),
+    });
+    if (invocation.kind === 'failed') {
+      return failWithSession(invocation.handle, invocation.error);
     }
+    const { handle, fact } = invocation;
 
     /**
      * Session Record 写入与结束后的 SPEC 重读共同属于 Final Review Session

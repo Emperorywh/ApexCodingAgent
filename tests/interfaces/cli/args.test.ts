@@ -66,6 +66,22 @@ describe('parseCliArgs (§17)', () => {
     expect(parseCliArgs(['report'])).toEqual({ kind: 'report' });
     expect(parseCliArgs(['abandon', '--force'])).toEqual({ kind: 'abandon', force: true });
     expect(parseCliArgs(['abandon'])).toEqual({ kind: 'abandon', force: false });
+    expect(parseCliArgs(['resume'])).toEqual({
+      kind: 'resume',
+      fullAccess: false,
+      force: false,
+      claudeCliPath: null,
+      gitCliPath: null,
+      verbose: false,
+    });
+    expect(parseCliArgs(['resume', '--force', '--full-access', '-v'])).toEqual({
+      kind: 'resume',
+      fullAccess: true,
+      force: true,
+      claudeCliPath: null,
+      gitCliPath: null,
+      verbose: true,
+    });
   });
 
   it('maps every help form to the help command', () => {
@@ -80,10 +96,11 @@ describe('parseCliArgs (§17)', () => {
   it('rejects usage errors with CLI_USAGE_INVALID', () => {
     expectUsageInvalid([]);
     expectUsageInvalid(['frobnicate']);
-    expectUsageInvalid(['resume']); // 本版本没有 resume（§17 明确不提供）
     expectUsageInvalid(['pause']);
     expectUsageInvalid(['stop']);
     expectUsageInvalid(['init']);
+    expectUsageInvalid(['resume', 'SPEC.md']); // resume 不接受位置参数
+    expectUsageInvalid(['resume', '--nope']);
     expectUsageInvalid(['start', '--nope']);
     expectUsageInvalid(['start', 'a', 'b']); // 最多一个 [spec-path]
     expectUsageInvalid(['start', '--claude-cli-path']); // 缺值

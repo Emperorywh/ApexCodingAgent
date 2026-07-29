@@ -55,6 +55,7 @@ export const ERROR_CODE_TO_CLASS = {
   CLAUDE_START_FAILED: 'claude_error',
   CLAUDE_EXIT_NONZERO: 'claude_error',
   CLAUDE_STREAM_FAILED: 'claude_error',
+  CLAUDE_RESUME_UNAVAILABLE: 'claude_error',
   CLAUDE_RESULT_INVALID: 'claude_error',
   CLAUDE_REPORTED_FAILURE: 'claude_error',
   FINAL_REVIEW_RESULT_INVALID: 'claude_error',
@@ -82,6 +83,8 @@ export const ERROR_CODE_TO_CLASS = {
   STATE_SNAPSHOT_BUSY: 'command_error',
   RUN_NOT_ABANDONABLE: 'command_error',
   ABANDON_REQUIRES_FORCE: 'command_error',
+  RUN_NOT_RESUMABLE: 'command_error',
+  RESUME_REQUIRES_FORCE: 'command_error',
 } as const satisfies Record<string, ErrorClass>;
 
 export type ErrorCode = keyof typeof ERROR_CODE_TO_CLASS;

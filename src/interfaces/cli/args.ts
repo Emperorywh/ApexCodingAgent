@@ -18,6 +18,14 @@ export type CliCommand =
       readonly gitCliPath: string | null;
       readonly verbose: boolean;
     }
+  | {
+      readonly kind: 'resume';
+      readonly fullAccess: boolean;
+      readonly force: boolean;
+      readonly claudeCliPath: string | null;
+      readonly gitCliPath: string | null;
+      readonly verbose: boolean;
+    }
   | { readonly kind: 'status' }
   | { readonly kind: 'report' }
   | { readonly kind: 'abandon'; readonly force: boolean };
@@ -55,7 +63,7 @@ function parseStrict(
 export function parseCliArgs(argv: readonly string[]): CliCommand {
   const [command, ...rest] = argv;
   if (command === undefined) {
-    throw usageInvalid('missing command; expected start, status, report or abandon');
+    throw usageInvalid('missing command; expected start, resume, status, report or abandon');
   }
   if (command === '--help' || command === '-h' || command === 'help') {
     return { kind: 'help' };
@@ -88,6 +96,33 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
         verbose: values['verbose'] === true,
       };
     }
+    case 'resume': {
+      const { values, positionals } = parseStrict(
+        command,
+        rest,
+        {
+          'full-access': { type: 'boolean', default: false },
+          force: { type: 'boolean', default: false },
+          'claude-cli-path': { type: 'string' },
+          'git-cli-path': { type: 'string' },
+          verbose: { type: 'boolean', short: 'v', default: false },
+          help: HELP_OPTION,
+        },
+        true,
+      );
+      if (values['help'] === true) return { kind: 'help' };
+      if (positionals.length > 0) {
+        throw usageInvalid(`resume: unexpected positional argument ${positionals[0]}`);
+      }
+      return {
+        kind: 'resume',
+        fullAccess: values['full-access'] === true,
+        force: values['force'] === true,
+        claudeCliPath: typeof values['claude-cli-path'] === 'string' ? values['claude-cli-path'] : null,
+        gitCliPath: typeof values['git-cli-path'] === 'string' ? values['git-cli-path'] : null,
+        verbose: values['verbose'] === true,
+      };
+    }
     case 'status':
     case 'report': {
       const { values } = parseStrict(command, rest, { help: HELP_OPTION }, false);
@@ -106,7 +141,7 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     }
     default:
       throw usageInvalid(
-        `unknown command "${command}"; expected start, status, report or abandon`,
+        `unknown command "${command}"; expected start, resume, status, report or abandon`,
       );
   }
 }

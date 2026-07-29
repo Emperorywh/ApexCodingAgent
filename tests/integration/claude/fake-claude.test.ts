@@ -125,6 +125,98 @@ describe('argument array contract (SPEC §7.2)', () => {
     const records = await harness.readRecords();
     expect(records[0]!.argv).toContain('bypassPermissions');
   }, TEST_TIMEOUT);
+
+  it('builds the resume invocation with --resume, --fork-session and the new session id', async () => {
+    const resumedFrom = '123e4567-e89b-42d3-a456-426614174999';
+    await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('execution') });
+    const fact = await runtime.invoke(mkRequest(harness, { resumeFromSessionId: resumedFrom }));
+    expect(fact.exitCode).toBe(0);
+    expect(fact.sessionId).toBe(SESSION_ID);
+
+    const records = await harness.readRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]!.argv).toEqual([
+      '-p',
+      '--resume',
+      resumedFrom,
+      '--fork-session',
+      '--session-id',
+      SESSION_ID,
+      '--permission-mode',
+      'auto',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--json-schema',
+      JSON.stringify(getSchemaJson('TaskExecutionResult')),
+      'Implement the task',
+    ]);
+  }, TEST_TIMEOUT);
+
+  it('maps an explicit missing transcript diagnosis to CLAUDE_RESUME_UNAVAILABLE', async () => {
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      exitCode: 1,
+      stderrText: 'No conversation found with session ID: missing',
+    });
+    const error = await expectApexErrorAsync(
+      () =>
+        runtime.invoke(
+          mkRequest(harness, {
+            resumeFromSessionId: '123e4567-e89b-42d3-a456-426614174999',
+          }),
+        ),
+      'CLAUDE_RESUME_UNAVAILABLE',
+    );
+    expect(error).toBeInstanceOf(ClaudeInvocationError);
+    expect((error as ClaudeInvocationError).processExitCode).toBe(1);
+  }, TEST_TIMEOUT);
+
+  it('does not classify ordinary resume failures as transcript unavailable', async () => {
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      exitCode: 1,
+      stderrText: 'authentication failed: quota unavailable',
+    });
+    await expectApexErrorAsync(
+      () =>
+        runtime.invoke(
+          mkRequest(harness, {
+            resumeFromSessionId: '123e4567-e89b-42d3-a456-426614174999',
+          }),
+        ),
+      'CLAUDE_EXIT_NONZERO',
+    );
+  }, TEST_TIMEOUT);
+
+  it('does not fall back after the resumed process has emitted any stream event', async () => {
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: SESSION_ID,
+          model: 'fake-model',
+        },
+      ],
+      exitCode: 1,
+      stderrText: 'No conversation found for session ID after partial execution',
+    });
+    /**
+     * 即使 stderr 含 transcript 关键词，只要 stdout 已产生事件，就不能
+     * 假定会话尚未执行；适配器必须保留普通非零退出语义，禁止自动重试。
+     */
+    await expectApexErrorAsync(
+      () =>
+        runtime.invoke(
+          mkRequest(harness, {
+            resumeFromSessionId: '123e4567-e89b-42d3-a456-426614174999',
+          }),
+        ),
+      'CLAUDE_EXIT_NONZERO',
+    );
+  }, TEST_TIMEOUT);
 });
 
 describe('session type × outcome matrix (SPEC §22.2)', () => {
@@ -341,7 +433,7 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
     const report = await runtime.probeCapabilities();
     expect(report.version).toBe(FAKE_VERSION);
-    expect(report.capabilities).toHaveLength(7);
+    expect(report.capabilities).toHaveLength(9);
   }, TEST_TIMEOUT);
 
   it('lists missing capabilities with the actual version', async () => {
@@ -380,7 +472,7 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
       });
       const report = await shimmedRuntime.probeCapabilities();
       expect(report.version).toBe(FAKE_VERSION);
-      expect(report.capabilities).toHaveLength(7);
+      expect(report.capabilities).toHaveLength(9);
     } finally {
       if (savedPath === undefined) delete process.env[pathKey];
       else process.env[pathKey] = savedPath;

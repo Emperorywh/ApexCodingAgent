@@ -104,8 +104,8 @@ describe('cli process: help & usage (§17)', () => {
     expect(outcome.stdout).toContain('默认 auto');
     expect(outcome.stdout).toContain('10 秒');
     // 本版本不提供的命令不得出现在帮助中
-    expect(outcome.stdout).not.toContain('resume');
     expect(outcome.stdout).not.toContain('pause');
+    expect(outcome.stdout).not.toContain('stop');
     expect(outcome.stdout).toMatchSnapshot();
   }, 30_000);
 
@@ -114,7 +114,7 @@ describe('cli process: help & usage (§17)', () => {
     const cases: readonly string[][] = [
       [],
       ['frobnicate'],
-      ['resume'],
+      ['resume', 'SPEC.md'],
       ['start', '--nope'],
       ['start', 'a', 'b'],
       ['status', 'extra'],

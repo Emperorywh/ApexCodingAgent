@@ -33,6 +33,8 @@ interface CapabilityCheck {
 /**
  * 只解析真实的长选项声明行，并把紧随其后的缩进续行并入描述。相同别名
  * 出现多次会标记为含糊，后续能力检查按缺失处理。
+ * 值占位符同时接受必选 `<value>` 与可选 `[value]` 两种语法（真实 CLI
+ * 的 `-r, --resume [value]` 使用后者）。
  */
 function parseHelpOptions(helpText: string): HelpOptionCatalog {
   const catalog = new Map<string, ParsedHelpOption | null>();
@@ -40,7 +42,7 @@ function parseHelpOptions(helpText: string): HelpOptionCatalog {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
     const match =
-      /^\s*((?:-[A-Za-z0-9],\s*)?--[A-Za-z0-9-]+(?:\s+<[^>\r\n]+>)?)(?:\s{2,}|\t+)(.*)$/.exec(
+      /^\s*((?:-[A-Za-z0-9],\s*)?--[A-Za-z0-9-]+(?:\s+<[^>\r\n]+>|\s+\[[^\]\r\n]+\])?)(?:\s{2,}|\t+)(.*)$/.exec(
         line,
       );
     if (match === null) continue;
@@ -79,7 +81,7 @@ function optionExplicitlyContains(
   return new RegExp(`\\b${value}\\b`).test(option.declarationAndDescription);
 }
 
-/** SPEC §8.1 第 5 项要求的七项能力。 */
+/** SPEC §8.1 第 5 项要求的九项能力（含 resume 命令依赖的续接两项）。 */
 export const REQUIRED_CAPABILITIES: readonly CapabilityCheck[] = [
   {
     id: 'print-mode',
@@ -100,6 +102,17 @@ export const REQUIRED_CAPABILITIES: readonly CapabilityCheck[] = [
     id: 'session-id',
     present: (catalog) => {
       const option = catalog.get('--session-id');
+      return option !== undefined && option !== null;
+    },
+  },
+  {
+    id: 'session-resume',
+    present: (catalog) => catalog.get('--resume')?.aliases.has('-r') === true,
+  },
+  {
+    id: 'fork-session',
+    present: (catalog) => {
+      const option = catalog.get('--fork-session');
       return option !== undefined && option !== null;
     },
   },

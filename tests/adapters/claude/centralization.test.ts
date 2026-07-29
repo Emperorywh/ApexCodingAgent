@@ -50,28 +50,35 @@ describe('claude contract centralization', () => {
     }
   });
 
-  it('no source file references --resume or process ids', () => {
+  it('--resume is referenced only inside adapters/claude; no source file references process ids', () => {
+    // resume 命令的续接参数只能由 Claude 适配器构造（SPEC §5.2 集中化）；
+    // PID 追踪/恢复仍然全禁。
     const files = offenders(
-      (file) => file.code.includes('--resume') || /process\.pid\b/.test(file.code),
+      (file) =>
+        (file.code.includes('--resume') && !file.path.startsWith(CLAUDE_ADAPTER_PREFIX)) ||
+        /process\.pid\b/.test(file.code),
     );
     expect(files).toEqual([]);
   });
 
   it('external claude failures are mapped to stable codes only inside adapters/claude', () => {
     /**
-     * 适配器之外只允许错误码注册表、已验证结果的 Domain 语义门禁，以及
-     * Session Record 不变量引用这些稳定错误码；这些模块都不得解析进程
-     * 或原始流输出。
+     * 适配器之外只允许错误码注册表、已验证结果的 Domain 语义门禁、
+     * Session Record 不变量，以及三类 Session 共用的 resume 回退协调器
+     * 引用这些稳定错误码；这些模块都不得解析进程或原始流输出。
      */
     const allowed = new Set([
       'domain/errors.ts',
       'domain/results.ts',
       'domain/invariants.ts',
+      'application/usecases/execute-next-task.ts',
+      'application/usecases/resumable-session.ts',
     ]);
     const claudeCodes = [
       'CLAUDE_START_FAILED',
       'CLAUDE_EXIT_NONZERO',
       'CLAUDE_STREAM_FAILED',
+      'CLAUDE_RESUME_UNAVAILABLE',
       'CLAUDE_RESULT_INVALID',
       'FINAL_REVIEW_RESULT_INVALID',
       'CLAUDE_CAPABILITY_MISSING',

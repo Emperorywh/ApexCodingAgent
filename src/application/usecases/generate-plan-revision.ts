@@ -18,17 +18,21 @@ import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-sna
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
-import { buildPlanningPrompt, type CompletedTaskSummary, type SkippedTaskSummary } from '../prompts/planning.js';
+import {
+  buildPlanningPrompt,
+  buildPlanningResumePrompt,
+  type CompletedTaskSummary,
+  type SkippedTaskSummary,
+} from '../prompts/planning.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import { applyPlanRevision } from './apply-plan-revision.js';
 import {
-  beginSession,
   ensureFailedSessionRecord,
-  invokeSession,
   sessionGitFacts,
   writeCompletedSessionRecord,
   type ActiveSessionHandle,
 } from './claude-session.js';
+import { invokeResumableSession } from './resumable-session.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 
 export type GeneratePlanRevisionResult =
@@ -38,6 +42,11 @@ export type GeneratePlanRevisionResult =
   | { readonly kind: 'spec-changed'; readonly run: RunJson }
   /** Run 已持久化为 failed。 */
   | { readonly kind: 'failed'; readonly run: RunJson };
+
+export interface GeneratePlanRevisionOptions {
+  /** resume 命令传入的被中断 Planning Session ID，仅消费一次。 */
+  readonly resumeFromSessionId?: string;
+}
 
 function completedTaskSummaries(run: RunJson, tasks: TasksJson | null): CompletedTaskSummary[] {
   if (tasks === null) return [];
@@ -63,7 +72,10 @@ function skippedTaskSummaries(run: RunJson): SkippedTaskSummary[] {
 }
 
 export function createGeneratePlanRevision(deps: UseCaseDeps): {
-  execute(trigger: PlanRevisionTrigger): Promise<GeneratePlanRevisionResult>;
+  execute(
+    trigger: PlanRevisionTrigger,
+    options?: GeneratePlanRevisionOptions,
+  ): Promise<GeneratePlanRevisionResult>;
 } {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
 
@@ -88,7 +100,10 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     return failTerminal(handle.run, error);
   }
 
-  async function execute(trigger: PlanRevisionTrigger): Promise<GeneratePlanRevisionResult> {
+  async function execute(
+    trigger: PlanRevisionTrigger,
+    options?: GeneratePlanRevisionOptions,
+  ): Promise<GeneratePlanRevisionResult> {
     const run = await deps.stateStore.readRun();
     if (run === null || run.status !== 'planning') {
       throw new ApexError({
@@ -137,31 +152,33 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       }),
     });
 
-    // §6.3 第 1–4 步：先保存 activeSession 事实，再启动进程。
-    const handle = await beginSession(deps, run, {
+    const sessionBase = {
       type: 'planning',
       taskId: null,
       planRevision: run.planRevision + 1,
       specSha256: specBefore.sha256,
-      prompt,
       permissionMode: 'plan',
       repositoryRoot: root,
+    } as const;
+    const invocation = await invokeResumableSession(deps, {
+      run,
+      session: sessionBase,
+      freshPrompt: prompt,
+      resume:
+        options?.resumeFromSessionId === undefined
+          ? null
+          : {
+              sessionId: options.resumeFromSessionId,
+              prompt: buildPlanningResumePrompt(),
+            },
+      // Planning 没有 Episode；失败 Record 已由协调器保存，新 activeSession
+      // 会在同一个 run.json 提交点直接接管旧槽位。
+      closeResumeAttempt: (handle) => handle.run,
     });
-
-    let fact;
-    try {
-      fact = await invokeSession(deps, handle, {
-        type: 'planning',
-        taskId: null,
-        planRevision: run.planRevision + 1,
-        specSha256: specBefore.sha256,
-        prompt,
-        permissionMode: 'plan',
-        repositoryRoot: root,
-      });
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
+    if (invocation.kind === 'failed') {
+      return failWithSession(invocation.handle, invocation.error);
     }
+    const { handle, fact } = invocation;
 
     // §6.3 第 5 步：先写 completed Session Record，再提交业务结果。
     try {

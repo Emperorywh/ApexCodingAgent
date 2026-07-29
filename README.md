@@ -151,6 +151,8 @@ ApexCodingAgent start --verbose
 | `ApexCodingAgent start` | 使用当前目录及子目录内的 `SPEC.md` 开始任务 |
 | `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
 | `ApexCodingAgent start --verbose` | 开始任务，并把调试日志同步输出到终端 |
+| `ApexCodingAgent resume` | 从中断点继续一个被中断的任务（不重做已完成步骤） |
+| `ApexCodingAgent resume --force` | 接管程序异常退出（如终端被关闭）后残留的任务 |
 | `ApexCodingAgent status` | 查看当前进度或失败原因 |
 | `ApexCodingAgent report` | 重新生成最终报告 |
 | `ApexCodingAgent abandon --force` | 放弃一个已经无法继续的任务 |
@@ -161,8 +163,9 @@ ApexCodingAgent start --verbose
 - 开始前请提交或移除与本次任务无关的修改；`SPEC.md` 本身不要暂存。
 - 每次运行都会在单独的 Git 分支中进行，并自动创建本地 Git 提交。
 - Claude Code、网络或额度出现问题时，任务会停止。使用 `ApexCodingAgent status` 查看原因，解决问题后重新运行 `ApexCodingAgent start`。
-- ApexCodingAgent 不支持暂停后继续。按一次 `Ctrl+C` 会安全结束当前任务，并将其标记为失败。
-- 如果程序提示已有任务未结束，请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作，再执行：
+- 按一次 `Ctrl+C` 会安全结束当前任务并将其标记为失败，但会记录恢复点：之后运行 `ApexCodingAgent resume` 可以从中断的步骤继续，已经完成的步骤不会重做；Planning、Execution 或 Final Review 中断时都会尽量续接原来的 Claude 对话。只有 Claude Code 明确确认原对话记录不存在时，才自动改用一趟全新会话；认证、网络、额度或普通执行失败不会自动重试。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
+- 如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），残留的任务需要用 `resume --force` 接管；执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
+- 如果确定任务无法继续，可以放弃它并重新开始：
 
 ```powershell
 ApexCodingAgent abandon --force

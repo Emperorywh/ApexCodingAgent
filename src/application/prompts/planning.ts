@@ -215,3 +215,17 @@ export function buildPlanningPrompt(input: PlanningPromptInput): string {
   }
   return sections.join('\n\n');
 }
+
+/**
+ * Planning 会话续接提示词。
+ *
+ * 原 transcript 已包含完整 SPEC、仓库事实与规划契约；恢复时只要求模型
+ * 从被中断位置继续并重新核对当前只读事实，避免重复注入整份上下文。
+ */
+export function buildPlanningResumePrompt(): string {
+  return `此前的 Planning 会话被前台中断，本会话从原对话断点继续。
+
+请先核对当前 SPEC 与仓库只读事实是否仍和原规划上下文一致，然后继续完成尚未完成的规划工作。Planning 的只读边界、Task 拆分规则、依赖约束、Checkpoint 接管规则和 TaskPlanDraft 结构化结果契约全部继续有效。
+
+返回完整 TaskPlanDraft。不要返回 Markdown，不要在结构化结果之外输出解释。`;
+}

@@ -173,6 +173,109 @@ describe('run.json conditional rules (§11.3)', () => {
   });
 });
 
+describe('resumePoint rules (§2.4/§17 resume)', () => {
+  const interruptedFailure = mkErrorRecord({
+    errorCode: 'RUN_INTERRUPTED',
+    errorClass: 'run_error',
+    message: 'foreground interrupt requested',
+  });
+
+  const failedWithPoint = (overrides: Partial<RunJson> = {}): RunJson =>
+    mkRun({
+      status: 'failed',
+      terminalAt: T1,
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      lastError: interruptedFailure,
+      resumePoint: { fromStatus: 'running', taskId: 'TASK-001', sessionId: UUID_1 },
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'failed', { failure: interruptedFailure }),
+      },
+      ...overrides,
+    });
+
+  it('accepts a resumePoint on a RUN_INTERRUPTED failed run', () => {
+    expect(() => assertRunJsonRules(failedWithPoint())).not.toThrow();
+    expect(() => assertRunInvariants(failedWithPoint(), { tasks: [mkTask('TASK-001')] })).not.toThrow();
+  });
+
+  it('rejects resumePoint on non-failed or differently-failed runs', () => {
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          mkRun({
+            status: 'running',
+            planRevision: 1,
+            tasksSha256: SHA256_A,
+            resumePoint: { fromStatus: 'running', taskId: null, sessionId: null },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({ lastError: mkErrorRecord() }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('rejects resumePoint whose task is not the interrupted failed task', () => {
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            tasks: { 'TASK-001': mkTaskState('TASK-001', 'pending') },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            resumePoint: { fromStatus: 'running', taskId: 'TASK-002', sessionId: UUID_1 },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('rejects resumePoint fields that contradict the interrupted Run phase', () => {
+    /**
+     * Execution 的 Task / Session 是同一 activeSession 事实，不能只保留
+     * 一半；Planning 与 Final Review 则从不携带 Task ID。
+     */
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            resumePoint: {
+              fromStatus: 'running',
+              taskId: 'TASK-001',
+              sessionId: null,
+            },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            resumePoint: {
+              fromStatus: 'planning',
+              taskId: 'TASK-001',
+              sessionId: UUID_1,
+            },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+});
+
 describe('Active Session rules (§11.3/§6.6)', () => {
   const base: ActiveSession = {
     sessionId: UUID_1,

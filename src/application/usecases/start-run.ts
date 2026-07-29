@@ -16,29 +16,21 @@ import { ApexError, isApexError } from '../../domain/errors.js';
 import { formatRfc3339Utc } from '../../domain/time.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { ExecutionPermissionMode } from '../../domain/schemas/settings-json.js';
-import type { InterruptController } from '../interrupt.js';
-import type { ClaudeCapabilityReport, ClaudeRuntimePort } from '../ports/ClaudeRuntimePort.js';
-import type { ClockPort } from '../ports/clock.js';
-import type { FileSystemPort } from '../ports/file-system.js';
+import type { ClaudeRuntimePort } from '../ports/ClaudeRuntimePort.js';
 import type { GitPort } from '../ports/GitPort.js';
 import type { LoggerPort } from '../ports/logger.js';
-import type { OutputPort } from '../ports/output.js';
-import type { RedactionPort } from '../ports/redaction.js';
+import type { RunCommandDeps } from '../run-command-deps.js';
 import { createRunDriver } from '../run-driver.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import { loadSettings } from './settings.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 import { createNullLogger } from '../ports/logger.js';
-
-/** 启动环境事实，由 Composition Root 从进程采集（便于测试替换）。 */
-export interface EnvironmentFacts {
-  /** Node `process.platform`，Windows 为 `win32`。 */
-  readonly platform: string;
-  /** Node `os.release()`，如 `10.0.22631`。 */
-  readonly release: string;
-  /** Node `process.version`，如 `v22.11.0`。 */
-  readonly nodeVersion: string;
-}
+import {
+  assertEnvironmentSupported,
+  assertStateDirectoryWritable,
+  probeClaudeCapabilities,
+  type EnvironmentFacts,
+} from './run-runtime-preflight.js';
 
 export interface StartRunInput {
   /** 命令调用目录。 */
@@ -63,63 +55,9 @@ export type StartRunResult =
   /** 启动前置校验失败，未创建新 Run。 */
   | { readonly kind: 'startup-failed'; readonly error: ApexError };
 
-export interface StartRunDeps {
-  readonly fileSystem: FileSystemPort;
-  readonly clock: ClockPort;
-  readonly redaction: RedactionPort;
-  readonly output: OutputPort;
-  readonly interrupt: InterruptController;
-  readonly wait: (ms: number) => Promise<void>;
-  readonly interruptWaitMs: number;
-  /** 按最终生效路径构造 Git 适配器（CLI 参数 > settings > 默认）。 */
-  readonly makeGitPort: (gitCliPath: string | null) => GitPort;
-  /** 按最终生效路径构造 Claude 适配器。 */
-  readonly makeClaudePort: (claudeCliPath: string | null) => ClaudeRuntimePort;
-  /**
-   * 构造调试日志口（stateDir 确定后调用）。实现须保证写失败不影响 Run；
-   * 注意上一终态 Run 的归档会清空 logs/，归档前写入的行随旧 Run 归档。
-   */
-  readonly makeLogger: (input: { readonly stateDir: string; readonly verbose: boolean }) => LoggerPort;
-  /** 绑定最终端口与状态目录组装 UseCaseDeps。 */
-  readonly makeBoundDeps: (input: {
-    readonly stateDir: string;
-    readonly git: GitPort;
-    readonly claude: ClaudeRuntimePort;
-    readonly capabilityReport: ClaudeCapabilityReport;
-    readonly logger: LoggerPort;
-  }) => UseCaseDeps;
-}
-
 const STATE_DIR_NAME = '.apex-coding-agent';
 
-/** §8.1 第 1、3 项：Windows 版本与 Node Runtime 受支持（§5.1 engines）。 */
-function assertEnvironmentSupported(environment: EnvironmentFacts): void {
-  if (environment.platform !== 'win32') {
-    throw new ApexError({
-      code: 'ENVIRONMENT_UNSUPPORTED',
-      stage: 'startup',
-      message: `unsupported platform ${environment.platform}; only Windows is supported`,
-    });
-  }
-  const releaseMajor = Number.parseInt(environment.release.split('.')[0] ?? '', 10);
-  if (!Number.isInteger(releaseMajor) || releaseMajor < 10) {
-    throw new ApexError({
-      code: 'ENVIRONMENT_UNSUPPORTED',
-      stage: 'startup',
-      message: `unsupported Windows release ${environment.release}; Windows 10 or later is required`,
-    });
-  }
-  const nodeMajor = Number.parseInt(environment.nodeVersion.replace(/^v/, '').split('.')[0] ?? '', 10);
-  if (nodeMajor !== 22 && nodeMajor !== 24) {
-    throw new ApexError({
-      code: 'ENVIRONMENT_UNSUPPORTED',
-      stage: 'startup',
-      message: `unsupported Node.js version ${environment.nodeVersion}; requires >=22 <23 || >=24 <25`,
-    });
-  }
-}
-
-export function createStartRun(deps: StartRunDeps): {
+export function createStartRun(deps: RunCommandDeps): {
   execute(input: StartRunInput): Promise<StartRunResult>;
 } {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
@@ -193,13 +131,13 @@ export function createStartRun(deps: StartRunDeps): {
       const claude = deps.makeClaudePort(claudeCliPath);
 
       // §8.1 第 4–5 项：版本与能力探测，缺失即停止，不走降级路径。
-      deps.output.writeLine('[apex] probing claude CLI capabilities (bounded 30s x2)...');
-      logger.log('debug', 'startup.probe.begin', { claudePath: claudeCliPath ?? 'claude' });
-      const capabilityReport = await claude.probeCapabilities();
-      logger.log('debug', 'startup.probe.end', {
-        version: capabilityReport.version,
-        capabilities: capabilityReport.capabilities.join(','),
-      });
+      const capabilityReport = await probeClaudeCapabilities(
+        claude,
+        deps.output,
+        logger,
+        'startup',
+        claudeCliPath,
+      );
 
       // §8.1 第 2、9–11 项：SPEC 唯一可读非空、状态目录未跟踪、SPEC 未
       // staged、工作区干净（仅 SPEC 例外）。
@@ -232,7 +170,7 @@ export function createStartRun(deps: StartRunDeps): {
           stage: 'startup',
           message:
             `run ${existing.runId} is ${existing.status}; inspect old processes and ` +
-            'use abandon --force before starting a new run',
+            'use resume --force to continue it or abandon --force before starting a new run',
         });
       }
 
@@ -240,19 +178,7 @@ export function createStartRun(deps: StartRunDeps): {
       await git.ensureStateDirectoryExcluded(root);
 
       // §8.2 步骤 2 + §8.1 第 13 项：创建运行目录并探测可写。
-      try {
-        await deps.fileSystem.mkdir(stateDir, { recursive: true });
-        const probe = `${stateDir}/.write-probe-${globalThis.crypto.randomUUID()}`;
-        await deps.fileSystem.writeFile(probe, new Uint8Array(0));
-        await deps.fileSystem.unlink(probe);
-      } catch (error) {
-        throw new ApexError({
-          code: 'STATE_DIRECTORY_UNWRITABLE',
-          stage: 'startup',
-          message: `state directory ${stateDir} is not creatable/writable`,
-          cause: error,
-        });
-      }
+      await assertStateDirectoryWritable(deps.fileSystem, stateDir);
 
       // §8.2 步骤 3：最近 Run 已终态时先归档（失败即停止，不暴露半个新 Run）。
       if (existing !== null) {
@@ -291,6 +217,7 @@ export function createStartRun(deps: StartRunDeps): {
         lastError: null,
         finalCommit: null,
         reportPath: null,
+        resumePoint: null,
         createdAt: now(),
         updatedAt: now(),
         terminalAt: null,

@@ -2,8 +2,8 @@
  * Composition Root（SPEC §5.3 依赖方向、§17 CLI）：创建全部适配器并注入
  * 用例，不含任何业务规则。
  *
- * - start：组装 StartRunDeps（Git/Claude 路径按 §16 优先级在用例内解析，
- *   本层只提供"按最终生效路径构造端口"的工厂）；
+ * - start/resume：组装 RunCommandDeps（Git/Claude 路径按 §16 优先级在用例内
+ *   解析，本层只提供"按最终生效路径构造端口"的工厂，两个用例共用一份）；
  * - status/report/abandon：从调用目录经 Git 确定 repositoryRoot（§17），
  *   用默认 `git` 入口解析（这三个命令没有 CLI 路径选项），再组装只读后端；
  * - 中断信号：第一次转发中断控制器，第二次立即退出（bootstrap/signals）。
@@ -24,14 +24,13 @@ import type { OutputPort } from '../application/ports/output.js';
 import type { RedactionPort } from '../application/ports/redaction.js';
 import type { ReporterPort } from '../application/ports/ReporterPort.js';
 import type { StateStorePort } from '../application/ports/state-store.js';
+import type { RunCommandDeps } from '../application/run-command-deps.js';
 import type { UseCaseDeps } from '../application/usecase-deps.js';
 import { createAbandonRun } from '../application/usecases/abandon-run.js';
 import { createGenerateReport } from '../application/usecases/generate-report.js';
-import {
-  createStartRun,
-  type EnvironmentFacts,
-  type StartRunDeps,
-} from '../application/usecases/start-run.js';
+import { createStartRun } from '../application/usecases/start-run.js';
+import type { EnvironmentFacts } from '../application/usecases/run-runtime-preflight.js';
+import { createResumeRun } from '../application/usecases/resume-run.js';
 import type { CliRuntime, SignalHandlerSpec } from '../interfaces/cli/runtime.js';
 import { installInterruptSignals } from './signals.js';
 
@@ -77,15 +76,17 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
       setTimeout(resolve, ms).unref();
     });
 
-  const makeGitPort: StartRunDeps['makeGitPort'] = (gitCliPath) =>
+  const makeGitPort: RunCommandDeps['makeGitPort'] = (gitCliPath) =>
     createGitAdapter(gitCliPath === null ? {} : { gitPath: gitCliPath });
-  const makeClaudePort: StartRunDeps['makeClaudePort'] = (claudeCliPath) =>
+  const makeClaudePort: RunCommandDeps['makeClaudePort'] = (claudeCliPath) =>
     createClaudeRuntime({
       ...(claudeCliPath === null ? {} : { claudePath: claudeCliPath }),
       fileSystem,
       redaction,
     });
-  const makeBoundDeps: StartRunDeps['makeBoundDeps'] = ({
+  const makeStateStore: RunCommandDeps['makeStateStore'] = (stateDir) =>
+    createJsonStateStore({ stateDir, fs: fileSystem });
+  const makeBoundDeps: RunCommandDeps['makeBoundDeps'] = ({
     stateDir,
     git,
     claude,
@@ -109,7 +110,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     sessionHeartbeatMs: SESSION_HEARTBEAT_MS,
     capabilityReport,
   });
-  const makeLogger: StartRunDeps['makeLogger'] = ({ stateDir, verbose }) =>
+  const makeLogger: RunCommandDeps['makeLogger'] = ({ stateDir, verbose }) =>
     createDebugLogger({
       fileSystem,
       clock,
@@ -129,6 +130,23 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     interruptWaitMs: INTERRUPT_WAIT_MS,
     makeGitPort,
     makeClaudePort,
+    makeStateStore,
+    makeBoundDeps,
+    makeLogger,
+  });
+
+  // resume 复用 start 的端口工厂与绑定装配（同一份 §16 优先级与 UseCaseDeps）。
+  const resume = createResumeRun({
+    fileSystem,
+    clock,
+    redaction,
+    output,
+    interrupt,
+    wait,
+    interruptWaitMs: INTERRUPT_WAIT_MS,
+    makeGitPort,
+    makeClaudePort,
+    makeStateStore,
     makeBoundDeps,
     makeLogger,
   });
@@ -203,6 +221,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     redaction,
     interrupt,
     startRun,
+    resume,
     status,
     report,
     abandon,

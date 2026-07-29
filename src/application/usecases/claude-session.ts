@@ -37,6 +37,12 @@ export interface BeginSessionInput<T extends SessionType> {
   readonly prompt: string;
   readonly permissionMode: ClaudePermissionModeFor<T>;
   readonly repositoryRoot: string;
+  /**
+   * 可选的会话续接来源（SPEC §17 resume）：非空时 Claude 以
+   * `--resume --fork-session` 续接该被中断会话；三类 Session 的首次
+   * 恢复调用都通过统一续接协调器传入。
+   */
+  readonly resumeFromSessionId?: string | null;
 }
 
 export interface ActiveSessionHandle<T extends SessionType = SessionType> {
@@ -66,8 +72,9 @@ export function sessionGitFacts(run: RunJson): SessionGitFacts {
 
 export interface BeginSessionOptions {
   /**
-   * 结果修复接力：Task 已因上一个会话处于 running，不再执行
+   * Execution 接力：Task 已因上一个会话处于 running，不再执行
    * pending->running 迁移，只追加新的未结束 Episode 并接管 activeSession。
+   * 结果修复与 resume 不可用后的全新会话共用这一显式事实。
    */
   readonly keepTaskRunning?: boolean;
 }
@@ -116,7 +123,7 @@ export async function beginSession<T extends SessionType>(
           code: 'STATE_VALIDATION_FAILED',
           stage: 'execution',
           message:
-            `result-repair session requires task ${taskId} to be the running task, ` +
+            `relay session requires task ${taskId} to be the running task, ` +
             `got status ${task.status} and currentTaskId ${run.currentTaskId ?? 'null'}`,
         });
       }
@@ -260,6 +267,7 @@ export async function invokeSession<T extends SessionType>(
     capabilityReport: deps.capabilityReport,
     type: input.type,
     permissionMode: input.permissionMode,
+    resumeFromSessionId: input.resumeFromSessionId ?? null,
     onStreamActivity: (next) => {
       activity = next;
       // §17 进度语义：每个可摘要的 stream-json 事件输出一行（思考、

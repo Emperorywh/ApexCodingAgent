@@ -4,10 +4,14 @@
  *
  * 单趟执行：选择 Ready Task → §6.3 会话生命周期 → 按 decision 提交业务结果。
  * 所有失败路径都先把可获得的事实（Session Record、Episode、Git 事实）落盘，
- * 再把 Task 与 Run 转 failed；进程级失败不自动重试、不恢复旧 Session。
- * 唯一例外：进程正常结束但结构化结果未过契约校验（Schema 或 §9.4 字段
- * 规则）时，以一次有界的结果修复会话接力——修复会话只重新返回合法结果，
- * 仍不合法才按原路径转 failed，避免已完成的工作因格式瑕疵整体报废。
+ * 再把 Task 与 Run 转 failed；进程级失败不自动重试。唯二例外：
+ * 1. 进程正常结束但结构化结果未过契约校验（Schema 或 §9.4 字段规则）时，
+ *    以一次有界的结果修复会话接力——修复会话只重新返回合法结果，仍不合法
+ *    才按原路径转 failed，避免已完成的工作因格式瑕疵整体报废；
+ * 2. resume 命令重开 Run 后的第一趟会话（resume hint）：以
+ *    `--resume --fork-session` 续接被中断的 Claude 会话；续接本身失败时
+ *    仅在 Adapter 明确确认 transcript 不可用时，有界回退一趟全新会话
+ *    （标准完整 prompt）；其他失败不自动重试。
  *
  * SPEC SHA-256 边界（§3.2）：Task 启动前（变化则转 planning 触发新 Revision）、
  * Session 正常结束后提交结果前（变化走六步变化流程）。
@@ -33,18 +37,17 @@ import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-sna
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
-import { buildExecutionPrompt, buildExecutionResultRepairPrompt } from '../prompts/execution.js';
+import { buildExecutionPrompt, buildExecutionResultRepairPrompt, buildExecutionResumePrompt } from '../prompts/execution.js';
 import type { SessionStartFact, SpecFact } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import {
-  beginSession,
   ensureFailedSessionRecord,
-  invokeSession,
   sessionGitFacts,
   writeCompletedSessionRecord,
   type ActiveSessionHandle,
 } from './claude-session.js';
 import { toErrorRecord } from './error-record.js';
+import { invokeResumableSession } from './resumable-session.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 
 export type ExecuteNextTaskResult =
@@ -77,8 +80,21 @@ type SessionLoopOutcome =
     }
   | { readonly kind: 'settled'; readonly settled: ExecuteNextTaskResult };
 
+/**
+ * resume 命令重开 Run 后由驱动器传入的续接提示：被中断 Execution 会话的
+ * Claude Session ID 与 Task ID。仅在本次选中的 Task 与 hint 一致时生效。
+ */
+export interface ExecutionResumeHint {
+  readonly sessionId: string;
+  readonly taskId: string;
+}
+
+export interface ExecuteNextTaskOptions {
+  readonly resume?: ExecutionResumeHint;
+}
+
 export function createExecuteNextTask(deps: UseCaseDeps): {
-  execute(): Promise<ExecuteNextTaskResult>;
+  execute(options?: ExecuteNextTaskOptions): Promise<ExecuteNextTaskResult>;
 } {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
 
@@ -167,7 +183,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     return failTerminal(next, error);
   }
 
-  async function execute(): Promise<ExecuteNextTaskResult> {
+  async function execute(options?: ExecuteNextTaskOptions): Promise<ExecuteNextTaskResult> {
     const run = await deps.stateStore.readRun();
     if (run === null || run.status !== 'running') {
       throw new ApexError({
@@ -274,12 +290,30 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     });
 
     /**
-     * 结果未过契约校验时的接力收尾：关闭当前 Episode 为 session_error
-     * （Task 保持 running，由修复会话接管 activeSession 后追加新 Episode）。
+     * resume hint（§17 resume）只在本次选中的 Task 与被中断 Task 一致时
+     * 生效；不一致说明调度已偏离断点，丢弃 hint 并记调试日志，不影响
+     * 正常执行。
      */
-    const closeEpisodeForRepair = (
+    const resumeHint: ExecutionResumeHint | null =
+      options?.resume !== undefined && options.resume.taskId === readyTaskId
+        ? options.resume
+        : null;
+    if (options?.resume !== undefined && resumeHint === null) {
+      deps.logger.log('debug', 'execution.resume_hint_dropped', {
+        hintTaskId: options.resume.taskId,
+        selectedTaskId: readyTaskId,
+      });
+    }
+
+    /**
+     * 接力收尾（结果修复 / resume 回退共用）：关闭当前 Episode 为
+     * session_error（Task 保持 running，由接力会话接管 activeSession 后
+     * 追加新 Episode）。
+     */
+    const closeEpisodeForRelay = (
       handle: ActiveSessionHandle<'execution'>,
       error: ApexError,
+      checkpointReason: string,
     ): RunJson =>
       closeEpisode(
         handle.run,
@@ -291,7 +325,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
           acceptanceEvidence: [],
           finalCheckpoint: null,
           intermediateCheckpoint: null,
-          checkpointReason: `error: result failed contract validation (${error.errorCode})`,
+          checkpointReason,
           error: toErrorRecord(error, now(), deps.redaction),
         },
         handle.specSha256,
@@ -333,41 +367,59 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
      * §6.3 顺序对每趟会话独立成立：先持久化 activeSession 与未结束
      * Episode 再启动进程；接续会话复用 running Task（keepTaskRunning），
      * 被接替的 Episode 已先关闭为 session_error。
+     *
+     * resume hint 存在时首趟为续接会话（--resume --fork-session）；
+     * transcript 明确不可用时由共享协调器回退一趟标准完整 prompt。
+     * 鉴权、网络、额度、普通非零退出和流失败都不自动重试。
      */
     const invokeUntilValidResult = async (
-      initialPrompt: string,
+      resumePrompt: string | null,
+      resumeFromSessionId: string | null,
     ): Promise<SessionLoopOutcome> => {
-      let sessionPrompt = initialPrompt;
+      let sessionPrompt = prompt;
       let repairAttempt = 0;
       let sessionRun = run;
       for (;;) {
-        // §6.3 第 1–4 步：写 activeSession + Task running + 未结束 Episode，保存后启动。
-        const sessionInput = {
+        const sessionBase = {
           type: 'execution' as const,
           taskId: readyTaskId,
           planRevision: run.planRevision,
           specSha256: specBefore.sha256,
-          prompt: sessionPrompt,
           permissionMode: run.runSettings.executionPermissionMode,
           repositoryRoot: root,
         };
-        const handle = await beginSession(
-          deps,
-          sessionRun,
-          sessionInput,
-          repairAttempt > 0 ? { keepTaskRunning: true } : undefined,
-        );
-
-        let fact;
-        try {
-          fact = await invokeSession(deps, handle, sessionInput);
-        } catch (error) {
-          const apex = error as ApexError;
+        const invocation = await invokeResumableSession(deps, {
+          run: sessionRun,
+          session: sessionBase,
+          freshPrompt: sessionPrompt,
+          resume:
+            repairAttempt === 0 &&
+            resumeFromSessionId !== null &&
+            resumePrompt !== null
+              ? { sessionId: resumeFromSessionId, prompt: resumePrompt }
+              : null,
+          ...(repairAttempt > 0
+            ? { initialBeginOptions: { keepTaskRunning: true } }
+            : {}),
+          fallbackBeginOptions: { keepTaskRunning: true },
+          closeResumeAttempt: (handle, error) =>
+            closeEpisodeForRelay(
+              handle,
+              error,
+              `error: claude session resume failed (${error.errorCode})`,
+            ),
+        });
+        if (invocation.kind === 'failed') {
+          const { handle, error: apex } = invocation;
           if (isClaudeResultInvalid(apex) && repairAttempt < MAX_RESULT_REPAIR_ATTEMPTS) {
             // 结构 Schema 未过：补失败 Record、关 Episode，接力结果修复会话。
             await ensureFailedSessionRecord(deps, handle, apex);
             repairAttempt += 1;
-            sessionRun = closeEpisodeForRepair(handle, apex);
+            sessionRun = closeEpisodeForRelay(
+              handle,
+              apex,
+              `error: result failed contract validation (${apex.errorCode})`,
+            );
             sessionPrompt = buildRepairPrompt(apex, null);
             progressResultRepair(handle, apex, repairAttempt);
             continue;
@@ -379,6 +431,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
           );
           return { kind: 'settled', settled };
         }
+        const { handle, fact } = invocation;
 
         /**
          * §6.3 第 5 步与 §3.2 结束边界属于同一个 Session 收尾阶段。
@@ -493,7 +546,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
           const apex = error as ApexError;
           if (repairAttempt < MAX_RESULT_REPAIR_ATTEMPTS) {
             repairAttempt += 1;
-            sessionRun = closeEpisodeForRepair(handle, apex);
+            sessionRun = closeEpisodeForRelay(
+              handle,
+              apex,
+              `error: result failed contract validation (${apex.errorCode})`,
+            );
             sessionPrompt = buildRepairPrompt(apex, result);
             progressResultRepair(handle, apex, repairAttempt);
             continue;
@@ -506,7 +563,10 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       }
     };
 
-    const sessionOutcome = await invokeUntilValidResult(prompt);
+    const sessionOutcome = await invokeUntilValidResult(
+      resumeHint === null ? null : buildExecutionResumePrompt({ task: taskDef }),
+      resumeHint === null ? null : resumeHint.sessionId,
+    );
     if (sessionOutcome.kind === 'settled') return sessionOutcome.settled;
     const { handle, result, specAfter } = sessionOutcome;
 

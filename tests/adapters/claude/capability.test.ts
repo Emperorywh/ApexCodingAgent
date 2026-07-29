@@ -61,6 +61,8 @@ describe('parseCapabilityHelp fixtures', () => {
     const parse = parseCapabilityHelp(misleadingHelp);
     expect(parse.missing).toEqual([
       'stream-json',
+      'session-resume',
+      'fork-session',
       'permission-mode auto',
       'permission-mode bypassPermissions',
     ]);

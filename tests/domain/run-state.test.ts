@@ -38,6 +38,10 @@ const LEGAL_TRANSITIONS: ReadonlyArray<readonly [RunStatus, RunStatus]> = [
   ['final_review', 'completed'],
   ['final_review', 'failed'],
   ['final_review', 'abandoned'],
+  // resume 命令专用出口（RUN_INTERRUPTED 恢复点重开）；域事件仍无法离开终态。
+  ['failed', 'planning'],
+  ['failed', 'running'],
+  ['failed', 'final_review'],
 ];
 
 const EVENT_CASES: ReadonlyArray<readonly [RunEvent, RunStatus, RunStatus]> = [
@@ -105,10 +109,15 @@ describe('Run state machine (§6.1)', () => {
 
   it('terminal statuses accept no event at all (including RUN_ERROR/RUN_ABANDONED)', () => {
     for (const terminal of TERMINAL_RUN_STATUSES) {
-      expect(RUN_TRANSITIONS[terminal]).toEqual([]);
       for (const event of ALL_EVENTS) {
         expectApexError(() => applyRunEvent(terminal, event), 'STATE_VALIDATION_FAILED');
       }
     }
+  });
+
+  it('failed 仅有 resume 重开出口；completed/abandoned 无任何出口', () => {
+    expect(RUN_TRANSITIONS.completed).toEqual([]);
+    expect(RUN_TRANSITIONS.abandoned).toEqual([]);
+    expect(RUN_TRANSITIONS.failed).toEqual(['planning', 'running', 'final_review']);
   });
 });

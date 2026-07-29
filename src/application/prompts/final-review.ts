@@ -148,3 +148,17 @@ function buildContextSection(input: FinalReviewPromptInput): string {
 export function buildFinalReviewPrompt(input: FinalReviewPromptInput): string {
   return [FINAL_REVIEW_BASELINE, buildContextSection(input)].join('\n\n');
 }
+
+/**
+ * Final Review 会话续接提示词。
+ *
+ * 原 transcript 已包含全部 Task 证据与 Review 契约；仓库可能保留中断前
+ * 的复核修改，因此恢复后必须基于当前文件继续，而不是重新开始或撤销。
+ */
+export function buildFinalReviewResumePrompt(): string {
+  return `此前的 Final Review 会话被前台中断，本会话从原对话断点继续。
+
+仓库可能保留中断前的复核修改：先核对当前文件与 Git 状态，在此基础上继续完成整体复核，不要推倒重来。原安全边界、验收证据核对、测试要求、replan_required 规则和 FinalReviewResult 结构化结果契约全部继续有效。
+
+返回 FinalReviewResult。不要返回 Markdown，不要在结构化结果之外输出解释。`;
+}

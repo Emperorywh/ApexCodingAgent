@@ -20,7 +20,7 @@ import { expectApexError, mkTask, mkTaskState } from './fixtures.js';
 const LEGAL: ReadonlyArray<readonly [TaskStatus, TaskStatus, readonly TaskTransitionReason[]]> = [
   ['pending', 'running', ['orchestrator_selected']],
   ['pending', 'skipped', ['plan_revision_omitted']],
-  ['running', 'pending', ['replan_required', 'spec_changed']],
+  ['running', 'pending', ['replan_required', 'spec_changed', 'run_resumed']],
   ['running', 'completed', ['completed_and_checkpointed']],
   [
     'running',
@@ -34,6 +34,8 @@ const LEGAL: ReadonlyArray<readonly [TaskStatus, TaskStatus, readonly TaskTransi
       'run_abandoned',
     ],
   ],
+  // resume 命令专用：被中断/崩溃接管的 Task 复位后重新参与调度。
+  ['failed', 'pending', ['run_resumed']],
 ];
 
 const ALL_REASONS: TaskTransitionReason[] = [
@@ -48,6 +50,7 @@ const ALL_REASONS: TaskTransitionReason[] = [
   'checkpoint_failed',
   'run_interrupted',
   'run_abandoned',
+  'run_resumed',
 ];
 
 describe('Task state machine (§6.2)', () => {
@@ -64,11 +67,12 @@ describe('Task state machine (§6.2)', () => {
     }
   });
 
-  it('rejects transitions out of terminal statuses', () => {
+  it('rejects transitions out of terminal statuses (failed 仅有 resume 复位出口)', () => {
     for (const from of TERMINAL_TASK_STATUSES) {
-      expect(TASK_TRANSITIONS[from]).toEqual([]);
+      const expected: readonly TaskStatus[] = from === 'failed' ? ['pending'] : [];
+      expect(TASK_TRANSITIONS[from]).toEqual(expected);
       for (const to of TASK_STATUSES) {
-        expect(canTaskTransition(from, to)).toBe(false);
+        expect(canTaskTransition(from, to)).toBe(expected.includes(to));
       }
     }
   });
@@ -80,7 +84,9 @@ describe('Task state machine (§6.2)', () => {
       ['running', 'skipped'],
       ['completed', 'pending'],
       ['skipped', 'pending'],
-      ['failed', 'pending'],
+      ['failed', 'running'],
+      ['failed', 'completed'],
+      ['failed', 'skipped'],
     ];
     for (const [from, to] of illegal) {
       for (const reason of ALL_REASONS) {
@@ -99,6 +105,9 @@ describe('Task state machine (§6.2)', () => {
       ['running', 'completed', 'spec_changed'],
       ['running', 'failed', 'completed_and_checkpointed'],
       ['running', 'failed', 'plan_revision_omitted'],
+      ['running', 'pending', 'run_interrupted'],
+      ['failed', 'pending', 'run_interrupted'],
+      ['failed', 'pending', 'claude_call_failed'],
     ];
     for (const [from, to, reason] of wrongReasonCases) {
       expectApexError(() => assertTaskTransition(from, to, reason), 'STATE_VALIDATION_FAILED');

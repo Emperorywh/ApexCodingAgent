@@ -406,6 +406,49 @@ export function assertRunJsonRules(run: RunJson): void {
     }
   }
   if (run.lastError !== null) assertErrorRecordRules(run.lastError);
+
+  /**
+   * resumePoint（SPEC §2.4/§17 resume）：只允许出现在 RUN_INTERRUPTED
+   * 终态失败的 Run 上；fromStatus 必为非终态；taskId 非空时该 Task 必须
+   * 正因同一中断处于 failed（RUN_INTERRUPTED），保证 resume 的复位目标
+   * 唯一且可解释。
+   */
+  if (run.resumePoint !== null) {
+    assertCondition(
+      run.status === 'failed',
+      `resumePoint requires status failed, got ${run.status}`,
+    );
+    assertCondition(
+      run.lastError !== null && run.lastError.errorCode === 'RUN_INTERRUPTED',
+      'resumePoint requires lastError RUN_INTERRUPTED',
+    );
+    /**
+     * fromStatus 同时决定被中断 Session 的业务形态：只有 running 对应
+     * Execution 并携带 Task，且 Task / Session 必须同时存在或同时为空；
+     * Planning 与 Final Review 永远不能伪造 Task 恢复目标。
+     */
+    if (run.resumePoint.fromStatus === 'running') {
+      assertCondition(
+        (run.resumePoint.taskId === null) === (run.resumePoint.sessionId === null),
+        'running resumePoint requires taskId and sessionId to be both present or both null',
+      );
+    } else {
+      assertCondition(
+        run.resumePoint.taskId === null,
+        `${run.resumePoint.fromStatus} resumePoint must keep taskId null`,
+      );
+    }
+    if (run.resumePoint.taskId !== null) {
+      const interrupted = run.tasks[run.resumePoint.taskId];
+      assertCondition(
+        interrupted !== undefined &&
+          interrupted.status === 'failed' &&
+          interrupted.failure !== null &&
+          interrupted.failure.errorCode === 'RUN_INTERRUPTED',
+        `resumePoint task ${run.resumePoint.taskId} must be failed with RUN_INTERRUPTED`,
+      );
+    }
+  }
 }
 
 /**

@@ -15,7 +15,12 @@
  * stashes, merges, cleans or switches branches (SPEC §12.5/§12.6).
  */
 import { ApexError } from '../../domain/errors.js';
-import type { PlanningSnapshot, SessionGitFacts, SessionStartFact } from '../../application/ports/GitPort.js';
+import type {
+  PlanningSnapshot,
+  ResumePositionFact,
+  SessionGitFacts,
+  SessionStartFact,
+} from '../../application/ports/GitPort.js';
 import { gitCommandFailed, type GitRunner } from './cli.js';
 import { isSpecStaged } from './spec-discovery.js';
 
@@ -353,6 +358,39 @@ export async function assertSessionStartFacts(
     ? await capturePlanningSnapshot(git, root, facts.specGitPath)
     : null;
   return { head, planningSnapshot };
+}
+
+/**
+ * 恢复命令的完整 Git 预检。
+ *
+ * 与普通 Session 启动不同，被中断的可写会话可能已经创建安全提交；该
+ * 路径允许 expectedHead..HEAD 的单向后继，同时复用受保护提交检查。
+ * 所有校验均为只读，调用方可以在失败时保留原恢复点供用户修复后重试。
+ */
+export async function assertResumePositionFacts(
+  git: GitRunner,
+  root: string,
+  facts: SessionGitFacts,
+  allowAdvancedHead: boolean,
+): Promise<ResumePositionFact> {
+  const currentHead = await assertHeadOnRunBranch(git, root, facts.runBranch);
+  await assertBaseRefPinned(git, root, facts.baseBranchRef, facts.baseCommit);
+  await assertCheckpointsAreAncestors(git, root, facts.completedCheckpoints);
+  await assertStateDirectoryUntrackedInRun(git, root);
+  await assertSpecNotStagedInRun(git, root, facts.specGitPath);
+
+  if (currentHead === facts.expectedHead) {
+    return { currentHead, advancedFromExpectedHead: false };
+  }
+  if (!allowAdvancedHead) {
+    throw gitFactConflict(
+      `resume HEAD ${currentHead} does not equal run.json expectedHead ${facts.expectedHead}`,
+    );
+  }
+
+  const inFlightCommits = await listSessionCommits(git, root, facts.expectedHead);
+  await assertSessionCommitsClean(git, root, inFlightCommits, facts.specGitPath);
+  return { currentHead, advancedFromExpectedHead: true };
 }
 
 /** Post-session invariants, including protected paths and Planning side effects. */

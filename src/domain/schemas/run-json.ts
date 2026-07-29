@@ -3,7 +3,7 @@
  * status. Conditional rules (terminal fields, planRevision/tasksSha256
  * coupling, per-task null rules) are enforced in `src/domain/invariants.ts`.
  */
-import { GIT_OID_PATTERN, RUN_BRANCH_PATTERN, RUN_ID_PATTERN, TASK_ID_PATTERN } from '../ids.js';
+import { GIT_OID_PATTERN, RUN_BRANCH_PATTERN, RUN_ID_PATTERN, TASK_ID_PATTERN, UUID_PATTERN } from '../ids.js';
 import { activeSessionSchema, type ActiveSession } from './active-session.js';
 import { errorRecordSchema, type ErrorRecord } from './error-record.js';
 import {
@@ -51,6 +51,21 @@ export interface RepositoryFact {
   expectedHead: string;
 }
 
+/**
+ * RUN_INTERRUPTED 终态失败时记录的恢复点（SPEC §2.4/§17 resume）：中断前
+ * 的非终态状态、被中断的 Task 与 Claude Session（后者供 resume 命令经
+ * `--resume --fork-session` 续接对话上下文）。仅 `resume` 命令消费；
+ * 其余失败终态恒为 null。
+ */
+export interface ResumePoint {
+  /** 中断发生时的非终态 Run 状态，也是 resume 重开的目标状态。 */
+  fromStatus: 'planning' | 'running' | 'final_review';
+  /** 被中断的 Task；只有中断落在 Execution 会话内时非空。 */
+  taskId: string | null;
+  /** 被中断的 Claude Session ID（中断落在会话内时非空）。 */
+  sessionId: string | null;
+}
+
 export interface RunJson {
   schemaVersion: 1;
   stateRevision: number;
@@ -69,6 +84,7 @@ export interface RunJson {
   lastError: ErrorRecord | null;
   finalCommit: string | null;
   reportPath: string | null;
+  resumePoint: ResumePoint | null;
   createdAt: string;
   updatedAt: string;
   terminalAt: string | null;
@@ -99,6 +115,7 @@ export const runJsonSchema = {
     'lastError',
     'finalCommit',
     'reportPath',
+    'resumePoint',
     'createdAt',
     'updatedAt',
     'terminalAt',
@@ -157,6 +174,25 @@ export const runJsonSchema = {
     finalCommit: nullableGitOid,
     reportPath: {
       anyOf: [{ type: 'null' }, { type: 'string', format: 'git-relative-path' }],
+    },
+    resumePoint: {
+      anyOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['fromStatus', 'taskId', 'sessionId'],
+          properties: {
+            fromStatus: { enum: ['planning', 'running', 'final_review'] },
+            taskId: {
+              anyOf: [{ type: 'null' }, { type: 'string', pattern: TASK_ID_PATTERN.source }],
+            },
+            sessionId: {
+              anyOf: [{ type: 'null' }, { type: 'string', pattern: UUID_PATTERN.source }],
+            },
+          },
+        },
+      ],
     },
     createdAt: { type: 'string', format: 'rfc3339' },
     updatedAt: { type: 'string', format: 'rfc3339' },

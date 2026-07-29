@@ -12,6 +12,8 @@ Options:
   --json-schema <schema>          JSON Schema for structured output validation
   --verbose                       enable verbose logging
   --session-id <uuid>             use a specific session ID (must be a valid UUID)
+  -r, --resume [value]            resume a conversation by session ID
+  --fork-session                  when resuming, create a new session ID
   --permission-mode <mode>        permission mode to use for the session: plan, auto, bypassPermissions (default: "default")
   --model <model>                 model for the current session
   --version                       output the version number

@@ -10,16 +10,12 @@ import { applyRunEvent, isTerminalRunStatus } from '../../domain/run-state.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
 import { formatRfc3339Utc } from '../../domain/time.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
-import type { SessionRecord } from '../../domain/schemas/session-record.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { OutputPort } from '../ports/output.js';
 import type { RedactionPort } from '../ports/redaction.js';
 import type { StateStorePort } from '../ports/state-store.js';
 import { toErrorRecord } from './error-record.js';
-import {
-  closeExecutionEpisodeAsSessionError,
-  closeFinalReviewEpisodeAsSessionError,
-} from './run-transitions.js';
+import { reconcileOrphanedSessionFacts } from './orphaned-session-reconciler.js';
 
 export interface AbandonRunDeps {
   readonly stateStore: StateStorePort;
@@ -97,76 +93,11 @@ export function createAbandonRun(deps: AbandonRunDeps): {
       sessionId: run.activeSession?.sessionId ?? null,
       taskId: run.currentTaskId,
     });
-    let next: RunJson = run;
-
-    // §17 第 5 步：未结束 activeSession 且 Session Record 尚未写入时，补写
-    // exitCode=null 的失败 Record（只表示 Coordinator 放弃接力）；已写入的
-    // Record 保持不可修改。
-    if (run.activeSession !== null) {
-      const active = run.activeSession;
-      const existing = await deps.stateStore.readSessionRecord(active.sessionId);
-      if (existing === null) {
-        const endedAt = now();
-        const record: SessionRecord = {
-          schemaVersion: 1,
-          sessionId: active.sessionId,
-          type: active.type,
-          status: 'failed',
-          runId: run.runId,
-          taskId: active.taskId,
-          planRevision: active.planRevision,
-          specSha256: active.specSha256,
-          startedAt: active.startedAt,
-          endedAt,
-          claude: { version: 'unknown', model: null, provider: null },
-          exitCode: null,
-          structuredResult: null,
-          logPath: `logs/${active.sessionId}.log`,
-          error: toErrorRecord(abandoned, endedAt, deps.redaction),
-        };
-        try {
-          await deps.stateStore.writeSessionRecord(record);
-        } catch (error) {
-          // §11.4：该尝试失败不触发额外恢复协议，只输出诊断。
-          const detail = error instanceof Error ? error.message : String(error);
-          deps.output.writeLine(
-            deps.redaction.redactText(
-              `state_error: 失败 Session Record 无法写入（session ${active.sessionId}），仅输出诊断: ${detail}`,
-            ),
-          );
-        }
-      }
-    }
-
-    // §17 第 6 步：未结束 Episode 结束为 session_error（已结束的不改动）。
-    // abandon 不读取 Git/SPEC，结束 SHA 沿用 Episode 启动前最后确认值。
-    for (const task of Object.values(run.tasks)) {
-      for (const episode of task.executionEpisodes) {
-        if (episode.endedAt === null) {
-          next = closeExecutionEpisodeAsSessionError(
-            next,
-            task.taskId,
-            episode.sessionId,
-            abandoned,
-            now(),
-            episode.specSha256Before,
-            deps.redaction,
-          );
-        }
-      }
-    }
-    for (const episode of run.finalReviewEpisodes) {
-      if (episode.endedAt === null) {
-        next = closeFinalReviewEpisodeAsSessionError(
-          next,
-          episode.sessionId,
-          abandoned,
-          now(),
-          episode.specSha256Before,
-          deps.redaction,
-        );
-      }
-    }
+    /**
+     * §17 第 5–6 步由共享协调器完成：不可变 Session Record 补写与全部
+     * 未结束 Episode 收尾只有一份实现，resume --force 复用同一协议。
+     */
+    let next: RunJson = await reconcileOrphanedSessionFacts(deps, run, abandoned);
 
     // §17 第 7 步：原 running Task 转 failed 并记录 RUN_ABANDONED_BY_USER。
     for (const task of Object.values(next.tasks)) {

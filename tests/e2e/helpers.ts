@@ -24,11 +24,16 @@ import { createDebugLogger } from '../../src/adapters/logging/debug-file-logger.
 import { createNullLogger } from '../../src/application/ports/logger.js';
 import {
   createStartRun,
-  type EnvironmentFacts,
-  type StartRunDeps,
   type StartRunInput,
   type StartRunResult,
 } from '../../src/application/usecases/start-run.js';
+import type { RunCommandDeps } from '../../src/application/run-command-deps.js';
+import type { EnvironmentFacts } from '../../src/application/usecases/run-runtime-preflight.js';
+import {
+  createResumeRun,
+  type ResumeRunInput,
+  type ResumeRunResult,
+} from '../../src/application/usecases/resume-run.js';
 import type { UseCaseDeps } from '../../src/application/usecase-deps.js';
 import type { FileSystemPort } from '../../src/application/ports/file-system.js';
 import type { RunJson } from '../../src/domain/schemas/run-json.js';
@@ -79,10 +84,19 @@ export interface E2EHarness {
   readonly stateDir: string;
   readonly interrupt: InterruptController;
   readonly outputLines: string[];
+  /**
+   * RunCommandDeps 创建 Git / Claude 端口时收到的路径参数。
+   *
+   * 该事实只用于验证 resume 的配置优先级；真实进程仍由生产适配器启动，
+   * 不以测试替身绕过路径解析。
+   */
+  readonly gitPortPaths: Array<string | null>;
+  readonly claudePortPaths: Array<string | null>;
   readonly fileSystem: FileSystemPort;
   writeScenario(scenario: SequenceScenario): Promise<void>;
   readRecords(): Promise<RecordedInvocation[]>;
   start(input?: Partial<StartRunInput>): Promise<StartRunResult>;
+  resume(input?: Partial<ResumeRunInput>): Promise<ResumeRunResult>;
   readRunJson(): Promise<RunJson>;
   readTasksJson(): Promise<TasksJson>;
   readPlanSnapshot(revision: number): Promise<PlanRevisionSnapshot>;
@@ -107,7 +121,11 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   const clock = createSystemClock();
   const redaction = createRedactor();
   const interrupt = createInterruptController();
+  // resume 走独立的控制器：start 的中断是一次性事实，恢复执行不得继承。
+  const resumeInterrupt = createInterruptController();
   const outputLines: string[] = [];
+  const gitPortPaths: Array<string | null> = [];
+  const claudePortPaths: Array<string | null> = [];
   const wait = (ms: number): Promise<void> =>
     new Promise((resolve) => {
       setTimeout(resolve, ms);
@@ -115,51 +133,71 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   const interruptWaitMs = options.interruptWaitMs ?? 10_000;
   const stateDir = `${repo.root.replace(/\\/g, '/')}/.apex-coding-agent`;
 
-  const makeBoundDeps: StartRunDeps['makeBoundDeps'] = ({ stateDir: dir, git, claude, capabilityReport, logger }) => ({
-    stateDir: dir,
-    stateStore: createJsonStateStore({ stateDir: dir, fs: fileSystem }),
-    git,
-    claude,
-    clock,
-    fileSystem,
-    redaction,
-    reporter: createMarkdownReporter({ stateDir: dir, fileSystem, redaction }),
-    archiver: createRunArchiver({ stateDir: dir, fs: fileSystem, clock }),
-    output: { writeLine: (line) => outputLines.push(line) },
-    logger,
-    interrupt,
-    wait,
-    interruptWaitMs,
-    sessionHeartbeatMs: 15_000,
-    capabilityReport,
-  });
+  function makeDepsFor(intCtrl: InterruptController): RunCommandDeps {
+    const makeBoundDeps: RunCommandDeps['makeBoundDeps'] = ({ stateDir: dir, git, claude, capabilityReport, logger }) => ({
+      stateDir: dir,
+      stateStore: createJsonStateStore({ stateDir: dir, fs: fileSystem }),
+      git,
+      claude,
+      clock,
+      fileSystem,
+      redaction,
+      reporter: createMarkdownReporter({ stateDir: dir, fileSystem, redaction }),
+      archiver: createRunArchiver({ stateDir: dir, fs: fileSystem, clock }),
+      output: { writeLine: (line) => outputLines.push(line) },
+      logger,
+      interrupt: intCtrl,
+      wait,
+      interruptWaitMs,
+      sessionHeartbeatMs: 15_000,
+      capabilityReport,
+    });
+    const makeStateStore: RunCommandDeps['makeStateStore'] = (dir) =>
+      createJsonStateStore({ stateDir: dir, fs: fileSystem });
+    return {
+      fileSystem,
+      clock,
+      redaction,
+      output: { writeLine: (line) => outputLines.push(line) },
+      interrupt: intCtrl,
+      wait,
+      interruptWaitMs,
+      makeGitPort: (gitCliPath) => {
+        /*
+         * 与 Claude 路径记录保持同一层级，只观察工厂输入，不替换真实
+         * Git Adapter，确保配置测试仍经过完整仓库校验。
+         */
+        gitPortPaths.push(gitCliPath);
+        return createGitAdapter(gitCliPath === null ? {} : { gitPath: gitCliPath });
+      },
+      makeClaudePort: (claudeCliPath) => {
+        /*
+         * 记录端口工厂的输入，而不是推断最终 argv；这样可以直接证明
+         * resume 在创建运行时之前已按正确优先级解析原 Run 路径快照。
+         */
+        claudePortPaths.push(claudeCliPath);
+        return createClaudeRuntime({
+          claudePath: claudeCliPath ?? FAKE_CLAUDE_PATH,
+          fileSystem,
+          redaction,
+          probeTimeoutMs: 15_000,
+        });
+      },
+      makeStateStore,
+      makeBoundDeps,
+      makeLogger: ({ stateDir: dir, verbose }) =>
+        createDebugLogger({
+          fileSystem,
+          clock,
+          redaction,
+          logPath: `${dir}/logs/apex-debug.log`,
+          mirror: verbose ? (line) => outputLines.push(line) : null,
+        }),
+    };
+  }
 
-  const startDeps: StartRunDeps = {
-    fileSystem,
-    clock,
-    redaction,
-    output: { writeLine: (line) => outputLines.push(line) },
-    interrupt,
-    wait,
-    interruptWaitMs,
-    makeGitPort: (gitCliPath) => createGitAdapter(gitCliPath === null ? {} : { gitPath: gitCliPath }),
-    makeClaudePort: (claudeCliPath) =>
-      createClaudeRuntime({
-        claudePath: claudeCliPath ?? FAKE_CLAUDE_PATH,
-        fileSystem,
-        redaction,
-        probeTimeoutMs: 15_000,
-      }),
-    makeBoundDeps,
-    makeLogger: ({ stateDir: dir, verbose }) =>
-      createDebugLogger({
-        fileSystem,
-        clock,
-        redaction,
-        logPath: `${dir}/logs/apex-debug.log`,
-        mirror: verbose ? (line) => outputLines.push(line) : null,
-      }),
-  };
+  const startDeps = makeDepsFor(interrupt);
+  const resumeDeps = makeDepsFor(resumeInterrupt);
 
   const environment: EnvironmentFacts = {
     platform: process.platform,
@@ -173,6 +211,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   process.env['APEX_FAKE_CLAUDE_RECORD'] = recordPath;
 
   const startRun = createStartRun(startDeps);
+  const resumeRun = createResumeRun(resumeDeps);
 
   return {
     repo,
@@ -180,6 +219,8 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     stateDir,
     interrupt,
     outputLines,
+    gitPortPaths,
+    claudePortPaths,
     fileSystem,
     async writeScenario(scenario) {
       // 每个新场景文件重置序列计数器。
@@ -209,6 +250,19 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         ...input,
       };
       return startRun.execute(base);
+    },
+    resume(input) {
+      const base: ResumeRunInput = {
+        cwd: repo.root,
+        fullAccess: false,
+        force: false,
+        claudeCliPath: null,
+        gitCliPath: null,
+        verbose: false,
+        environment,
+        ...input,
+      };
+      return resumeRun.execute(base);
     },
     async readRunJson() {
       return JSON.parse(await readFile(join(stateDir, 'run.json'), 'utf8')) as RunJson;
@@ -241,7 +295,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       return readFile(join(stateDir, 'report.md'), 'utf8');
     },
     makeBoundDeps() {
-      return makeBoundDeps({
+      return startDeps.makeBoundDeps({
         stateDir,
         git: createGitAdapter({}),
         claude: createClaudeRuntime({

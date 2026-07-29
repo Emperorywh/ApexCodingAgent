@@ -291,6 +291,63 @@ describe('session start/end invariants', () => {
   });
 });
 
+describe('resume position invariants', () => {
+  it('accepts safe in-flight commits only when the caller allows an advanced HEAD', async () => {
+    const facts = await seedWithRunBranch();
+    await repo.writeFile('src/partial.ts', 'export const partial = true;\n');
+    const advancedHead = await repo.commitAll('partial session work');
+
+    const accepted = await port.assertResumePosition(repo.root, facts, {
+      allowAdvancedHead: true,
+    });
+    expect(accepted).toEqual({
+      currentHead: advancedHead,
+      advancedFromExpectedHead: true,
+    });
+    await expectApexErrorAsync(
+      () =>
+        port.assertResumePosition(repo.root, facts, {
+          allowAdvancedHead: false,
+        }),
+      'GIT_FACT_CONFLICT',
+    );
+  });
+
+  it('rejects protected paths in an in-flight commit', async () => {
+    const facts = await seedWithRunBranch();
+    await repo.writeFile('SPEC.md', '# changed by interrupted session\n');
+    await repo.commitAll('invalid partial work');
+    await expectApexErrorAsync(
+      () =>
+        port.assertResumePosition(repo.root, facts, {
+          allowAdvancedHead: true,
+        }),
+      'PROTECTED_PATH_CHANGED',
+    );
+  });
+
+  it('checks the pinned Base Branch before resume can consume state', async () => {
+    const facts = await seedWithRunBranch();
+    const tree = await repo.git('rev-parse', `${facts.expectedHead}^{tree}`);
+    const moved = await repo.git(
+      'commit-tree',
+      tree,
+      '-p',
+      facts.expectedHead,
+      '-m',
+      'moved base',
+    );
+    await repo.git('update-ref', 'refs/heads/main', moved);
+    await expectApexErrorAsync(
+      () =>
+        port.assertResumePosition(repo.root, facts, {
+          allowAdvancedHead: false,
+        }),
+      'GIT_HISTORY_DIVERGED',
+    );
+  });
+});
+
 describe('planning side-effect detection', () => {
   let facts: ReturnType<typeof mkFacts>;
   let start: SessionStartFact;

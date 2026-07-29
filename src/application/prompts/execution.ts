@@ -168,3 +168,28 @@ ${toJson(input.task)}
 
 不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }
+
+/**
+ * Execution 会话续接提示词（SPEC §17 resume）：被中断的 Claude 会话经
+ * `--resume --fork-session` 恢复后，对话上下文中已包含完整基线与 Task
+ * 定义，因此这里只重申断点事实与结果契约。仓库可能保留中断时的半成品
+ * 改动，继续执行而不是推倒重来；完成的判定与结构化结果契约不变。
+ */
+export function buildExecutionResumePrompt(input: {
+  /** 当前 Task 的完整定义。 */
+  readonly task: PlannedTask;
+}): string {
+  return `你是 ApexCodingAgent 当前 Task 的执行 Agent。此前的执行会话被前台中断，本会话从中断点继续。
+
+仓库中可能保留你中断前已完成的半成品改动：先核对当前文件状态，在此基础上继续完成 CURRENT_TASK，不要推倒重来，也不要重复已完成的工作。
+
+CURRENT_TASK（当前 Task 完整定义，JSON）：
+${toJson(input.task)}
+
+继续执行要求：
+1. 原执行要求与安全边界全部继续有效（不修改 SPEC、不触碰 .apex-coding-agent、不执行危险操作）。
+2. 对每一项 acceptanceCriteria 按原索引返回一条 acceptanceEvidence。
+3. 只有全部 acceptanceCriteria 均 satisfied 且不存在 failed test 时才能返回 completed；无法完成时据实返回 failed 或 replan_required。
+
+返回 TaskExecutionResult 结构化结果。不要返回 Markdown，不要在结构化结果之外输出解释。`;
+}

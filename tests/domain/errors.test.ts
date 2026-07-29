@@ -46,6 +46,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'CLAUDE_START_FAILED',
     'CLAUDE_EXIT_NONZERO',
     'CLAUDE_STREAM_FAILED',
+    'CLAUDE_RESUME_UNAVAILABLE',
     'CLAUDE_RESULT_INVALID',
     'CLAUDE_REPORTED_FAILURE',
     'FINAL_REVIEW_RESULT_INVALID',
@@ -69,12 +70,14 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'STATE_SNAPSHOT_BUSY',
     'RUN_NOT_ABANDONABLE',
     'ABANDON_REQUIRES_FORCE',
+    'RUN_NOT_RESUMABLE',
+    'RESUME_REQUIRES_FORCE',
   ],
 };
 
 describe('error model (§15)', () => {
-  it('defines exactly 50 stable error codes and 9 error classes', () => {
-    expect(ERROR_CODES).toHaveLength(50);
+  it('defines exactly 53 stable error codes and 9 error classes', () => {
+    expect(ERROR_CODES).toHaveLength(53);
     expect(ERROR_CLASSES).toHaveLength(9);
   });
 
@@ -89,7 +92,7 @@ describe('error model (§15)', () => {
 
   it('covers every expected code exactly once', () => {
     const allExpected = Object.values(EXPECTED_TABLE).flat();
-    expect(allExpected).toHaveLength(50);
+    expect(allExpected).toHaveLength(53);
     expect([...ERROR_CODES].sort()).toEqual([...allExpected].sort());
   });
 

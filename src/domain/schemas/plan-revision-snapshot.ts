@@ -14,13 +14,15 @@ export type PlanRevisionTriggerType =
   | 'initial'
   | 'execution_replan'
   | 'spec_changed'
-  | 'final_review_replan';
+  | 'final_review_replan'
+  | 'run_resumed';
 
 export const PLAN_REVISION_TRIGGER_TYPES: readonly PlanRevisionTriggerType[] = [
   'initial',
   'execution_replan',
   'spec_changed',
   'final_review_replan',
+  'run_resumed',
 ];
 
 export interface PlanRevisionTrigger {

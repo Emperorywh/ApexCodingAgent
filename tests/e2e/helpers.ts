@@ -320,6 +320,75 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   };
 }
 
+/**
+ * 提取驱动结果的诊断要点：kind、启动错误、终态 Run 状态与 lastError。
+ * 完整 RunJson 太大，直接塞进断言消息会淹没真正的原因。
+ */
+function summarizeDrivingOutcome(outcome: unknown): string {
+  if (outcome instanceof Error) return `${outcome.name}: ${outcome.message}`;
+  if (typeof outcome !== 'object' || outcome === null) return String(outcome);
+  const record = outcome as Record<string, unknown>;
+  const summary: Record<string, unknown> = { kind: record['kind'] };
+  if ('error' in record) summary['error'] = record['error'];
+  const run = record['run'] as { status?: unknown; lastError?: unknown } | undefined;
+  if (run !== undefined) {
+    summary['status'] = run.status;
+    summary['lastError'] = run.lastError ?? null;
+  }
+  return JSON.stringify(summary);
+}
+
+/**
+ * 轮询 run.json 直至 predicate 成立；超时响亮失败。
+ *
+ * 从 start 到首个 Session 落盘要经过多趟子进程接力（preflight 探测、
+ * Planning 会话、Plan Revision 提交、Execution 会话）。Windows 全量并发
+ * 套件中进程创建竞争激烈，这段路程可能比空闲机器慢一个数量级。默认
+ * 预算 60 秒：相对 180 秒的测试超时足够小，又能吸收负载抖动。超时必须
+ * 抛错——静默放行只会让慢机器在后续断言里退化成 undefined 误报。
+ *
+ * 传入 `driving`（start/resume 的 Promise）后，驱动一旦提前结算（例如
+ * 启动校验失败从未创建 run.json），立即带着真实结果失败，而不是空等
+ * 整个预算把 startup-failed 掩盖成莫名其妙的超时。
+ */
+export async function waitForRunFact(
+  harness: E2EHarness,
+  description: string,
+  predicate: (run: RunJson) => boolean,
+  options: { timeoutMs?: number | undefined; driving?: Promise<unknown> | undefined } = {},
+): Promise<void> {
+  const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+  let drivingSettled = false;
+  let drivingOutcome: unknown;
+  options.driving?.then(
+    (result) => {
+      drivingSettled = true;
+      drivingOutcome = result;
+    },
+    (error: unknown) => {
+      drivingSettled = true;
+      drivingOutcome = error;
+    },
+  );
+  for (;;) {
+    try {
+      const run = await harness.readRunJson();
+      if (predicate(run)) return;
+    } catch {
+      // run.json 尚未创建。
+    }
+    if (drivingSettled) {
+      throw new Error(
+        `run drive settled before ${description}: ${summarizeDrivingOutcome(drivingOutcome)}`,
+      );
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for ${description}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 /** 最小 stream-json 事件流：init + 一个 result 终止事件。 */
 export function streamOf(
   structuredOutput: Record<string, unknown>,

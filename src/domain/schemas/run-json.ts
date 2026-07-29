@@ -90,6 +90,24 @@ export interface RunJson {
   terminalAt: string | null;
 }
 
+/**
+ * 读取兼容（schemaVersion 1 内迁移）：resume 功能引入前写入的 run.json
+ * 缺少必需字段 `resumePoint`。读取时在 schema 校验前回填 null（语义：无
+ * 恢复点，旧中断 Run 不可 resume，只能归档或放弃），使升级后的 CLI 能
+ * 校验、归档或放弃旧 Run。写入端不作兼容：新状态必须显式携带该字段。
+ */
+export function migrateRunJsonForRead(parsed: unknown): unknown {
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    !('resumePoint' in parsed)
+  ) {
+    return { ...(parsed as Record<string, unknown>), resumePoint: null };
+  }
+  return parsed;
+}
+
 const nullableGitOid = {
   anyOf: [{ type: 'null' }, { type: 'string', pattern: GIT_OID_PATTERN.source }],
 } as const;

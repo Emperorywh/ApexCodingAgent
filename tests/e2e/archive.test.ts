@@ -149,6 +149,47 @@ describe('e2e archive on next start (§4.4)', () => {
   );
 
   it(
+    'legacy run.json without resumePoint (written before the resume feature) is archived instead of failing ARCHIVE_FAILED',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario(oneTaskSequence());
+        const first = await harness.start();
+        expect(first.kind).toBe('completed');
+        if (first.kind !== 'completed') return;
+        const run1 = first.run;
+
+        // 模拟 resume 功能前的旧 CLI 写入的终态 run.json：缺 resumePoint。
+        const rootRunPath = join(harness.stateDir, 'run.json');
+        const legacyRun = JSON.parse(await readFile(rootRunPath, 'utf8')) as Record<
+          string,
+          unknown
+        >;
+        delete legacyRun.resumePoint;
+        await writeFile(rootRunPath, JSON.stringify(legacyRun, null, 2), 'utf8');
+
+        // 新 start 必须读取兼容旧格式并成功归档，而非 ARCHIVE_FAILED。
+        await harness.writeScenario(oneTaskSequence());
+        const second = await harness.start();
+        expect(second.kind).toBe('completed');
+
+        // 归档字节保持原样（历史事实原样复制，不回填字段）。
+        const archivedRun = JSON.parse(
+          await readFile(join(harness.stateDir, 'history', run1.runId, 'run.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        expect(archivedRun).toEqual(legacyRun);
+        expect(archivedRun).not.toHaveProperty('resumePoint');
+        const manifest = await readManifest(harness, run1.runId);
+        expect(manifest.runId).toBe(run1.runId);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    240_000,
+  );
+
+  it(
     're-archiving with a fully matching manifest is an idempotent success',
     async () => {
       const harness = await createE2EHarness();

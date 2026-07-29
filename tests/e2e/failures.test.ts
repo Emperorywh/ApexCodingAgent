@@ -19,6 +19,7 @@ import {
   finalReviewCompleted,
   planDraft,
   streamOf,
+  waitForRunFact,
 } from './helpers.js';
 import { seedRepo } from '../integration/git/helpers.js';
 
@@ -510,15 +511,12 @@ describe('e2e startup validation (§8.1)', () => {
         );
         const first = harness.start();
         // 等待第一个 Run 进入 Execution（run.json 存在且非终态）。
-        for (let attempt = 0; attempt < 50; attempt += 1) {
-          try {
-            const run = await harness.readRunJson();
-            if (run.status === 'running' && run.activeSession !== null) break;
-          } catch {
-            // run.json 尚未创建
-          }
-          await new Promise((resolve) => setTimeout(resolve, 200));
-        }
+        await waitForRunFact(
+          harness,
+          'execution activeSession in running',
+          (run) => run.status === 'running' && run.activeSession !== null,
+          { driving: first },
+        );
 
         const second = await harness.start();
         expect(second.kind).toBe('startup-failed');

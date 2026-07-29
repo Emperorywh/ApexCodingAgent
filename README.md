@@ -12,9 +12,9 @@ ApexCodingAgent 是一款运行在 Windows 终端中的 Claude Code 长任务助
 
 > ApexCodingAgent 会直接操作你的项目和 Git 仓库。请先备份重要内容，并只在你信任的项目和需求文档中使用。
 
-## 下载
+## 下载安装
 
-### 使用前请先准备
+### 环境准备
 
 - Windows 10 或 Windows 11
 - [Node.js](https://nodejs.org/) 22.x 或 24.x
@@ -29,7 +29,7 @@ git --version
 claude --version
 ```
 
-### 安装 ApexCodingAgent
+### 安装
 
 在 PowerShell 中运行：
 
@@ -128,7 +128,28 @@ ApexCodingAgent status
 ApexCodingAgent report
 ```
 
-### 5. 排查问题
+每次运行结束后，本次运行的完整记录（状态、计划、会话、日志、报告）会自动归档到 `.apex-coding-agent\history\` 下，方便日后查阅。
+
+### 5. 中断与恢复
+
+运行期间按一次 `Ctrl+C` 会安全结束当前任务并将其标记为失败，但会记录恢复点。之后在项目目录中运行：
+
+```powershell
+ApexCodingAgent resume
+```
+
+即可从中断的步骤继续，已经完成的步骤不会重做；计划、执行或最终检查中断时都会尽量续接原来的 Claude 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
+
+如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），残留的任务需要用 `resume --force` 接管；执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
+
+如果确定任务无法继续，可以放弃它并重新开始：
+
+```powershell
+ApexCodingAgent abandon --force
+ApexCodingAgent start
+```
+
+### 6. 排查问题
 
 每次运行都会把详细的调试日志写入下面的文件（随本次任务一同归档到 `history` 目录）：
 
@@ -136,15 +157,15 @@ ApexCodingAgent report
 .apex-coding-agent\logs\apex-debug.log
 ```
 
-日志为 JSON Lines 格式，每行包含时间、级别和事件名，可用于排查 ApexCodingAgent 自身的问题。如果想在运行时同步查看这些日志，可以加 `--verbose`：
+如果想在运行时同步查看这些日志，可以加 `--verbose`：
 
 ```powershell
 ApexCodingAgent start --verbose
 ```
 
-`--verbose` 会把调试日志同时输出到终端的 stderr，不影响任务本身。
+`--verbose` 会把调试日志同时输出到终端，不影响任务本身。
 
-## 常用命令
+## 命令一览
 
 | 命令 | 用途 |
 | --- | --- |
@@ -157,20 +178,15 @@ ApexCodingAgent start --verbose
 | `ApexCodingAgent report` | 重新生成最终报告 |
 | `ApexCodingAgent abandon --force` | 放弃一个已经无法继续的任务 |
 
+`start` 和 `resume` 还支持 `--claude-cli-path <路径>` 与 `--git-cli-path <路径>`，用于指定 Claude 或 Git 命令的位置（默认使用 PATH 中的 `claude` 和 `git`）。
+
 ## 使用时需要注意
 
 - `start` 会一直在前台运行，请不要关闭终端或让电脑休眠。
 - 开始前请提交或移除与本次任务无关的修改；`SPEC.md` 本身不要暂存。
-- 每次运行都会在单独的 Git 分支中进行，并自动创建本地 Git 提交。
+- 每次运行都会在单独的 Git 分支中进行，并自动创建本地 Git 提交，不会改动你原来的分支。
 - Claude Code、网络或额度出现问题时，任务会停止。使用 `ApexCodingAgent status` 查看原因，解决问题后重新运行 `ApexCodingAgent start`。
-- 按一次 `Ctrl+C` 会安全结束当前任务并将其标记为失败，但会记录恢复点：之后运行 `ApexCodingAgent resume` 可以从中断的步骤继续，已经完成的步骤不会重做；Planning、Execution 或 Final Review 中断时都会尽量续接原来的 Claude 对话。只有 Claude Code 明确确认原对话记录不存在时，才自动改用一趟全新会话；认证、网络、额度或普通执行失败不会自动重试。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
-- 如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），残留的任务需要用 `resume --force` 接管；执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
-- 如果确定任务无法继续，可以放弃它并重新开始：
-
-```powershell
-ApexCodingAgent abandon --force
-ApexCodingAgent start
-```
+- 认证、网络、额度或普通执行失败不会自动重试，需要人工处理后重新开始或恢复。
 
 ## 完全权限模式
 

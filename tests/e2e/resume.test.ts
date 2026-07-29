@@ -17,6 +17,7 @@ import {
   finalReviewCompleted,
   planDraft,
   streamOf,
+  waitForRunFact,
   type E2EHarness,
   type ScenarioElement,
 } from './helpers.js';
@@ -32,24 +33,19 @@ async function waitForActiveSession(
   harness: E2EHarness,
   status: 'planning' | 'running' | 'final_review',
   type: 'planning' | 'execution' | 'final_review',
-  predicate: (run: RunJson) => boolean = () => true,
+  options: {
+    readonly predicate?: (run: RunJson) => boolean;
+    /** start/resume 的 Promise；提前结算时立即暴露真实结果而非空等。 */
+    readonly driving?: Promise<unknown> | undefined;
+  } = {},
 ): Promise<void> {
-  for (let attempt = 0; attempt < 150; attempt += 1) {
-    try {
-      const run = await harness.readRunJson();
-      if (
-        run.status === status &&
-        run.activeSession?.type === type &&
-        predicate(run)
-      ) {
-        return;
-      }
-    } catch {
-      // run.json 尚未创建。
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`timed out waiting for ${type} activeSession in ${status}`);
+  const predicate = options.predicate ?? (() => true);
+  await waitForRunFact(
+    harness,
+    `${type} activeSession in ${status}`,
+    (run) => run.status === status && run.activeSession?.type === type && predicate(run),
+    { driving: options.driving },
+  );
 }
 
 /** 起跑并在 Execution 长睡眠期间中断，返回失败 Run 与恢复点事实。 */
@@ -81,7 +77,7 @@ async function startAndInterruptDuringExecution(
   });
 
   const driving = harness.start(options.startInput);
-  await waitForActiveSession(harness, 'running', 'execution');
+  await waitForActiveSession(harness, 'running', 'execution', { driving });
   await options.beforeInterrupt?.();
   harness.interrupt.request();
   const result = await driving;
@@ -302,7 +298,9 @@ describe('e2e resume (§17)', () => {
               stdoutLines: streamOf(executionCompleted()),
             },
             beforeInterrupt: async () => {
-              for (let attempt = 0; attempt < 100; attempt += 1) {
+              // Fake Claude 的会话命令真实执行 git 提交；高负载下进程接力
+              // 可能远超空闲基线，预算与 waitForRunFact 对齐（60 秒）。
+              for (let attempt = 0; attempt < 600; attempt += 1) {
                 if ((await harness.repo.head()) !== baseCommit) return;
                 await new Promise((resolve) => setTimeout(resolve, 100));
               }
@@ -361,7 +359,7 @@ describe('e2e resume (§17)', () => {
           ],
         });
         const driving = harness.start();
-        await waitForActiveSession(harness, 'planning', 'planning');
+        await waitForActiveSession(harness, 'planning', 'planning', { driving });
         harness.interrupt.request();
         const interrupted = await driving;
         expect(interrupted.kind).toBe('failed');
@@ -428,12 +426,10 @@ describe('e2e resume (§17)', () => {
          * 初始 Planning 也会短暂满足类型条件；必须等待 planRevision=1，
          * 才能确认中断落在 Execution 触发的第二轮 Planning。
          */
-        await waitForActiveSession(
-          harness,
-          'planning',
-          'planning',
-          (run) => run.planRevision === 1,
-        );
+        await waitForActiveSession(harness, 'planning', 'planning', {
+          predicate: (run) => run.planRevision === 1,
+          driving,
+        });
         harness.interrupt.request();
         const interrupted = await driving;
         expect(interrupted.kind).toBe('failed');
@@ -484,7 +480,7 @@ describe('e2e resume (§17)', () => {
           ],
         });
         const driving = harness.start();
-        await waitForActiveSession(harness, 'final_review', 'final_review');
+        await waitForActiveSession(harness, 'final_review', 'final_review', { driving });
         harness.interrupt.request();
         const interrupted = await driving;
         expect(interrupted.kind).toBe('failed');

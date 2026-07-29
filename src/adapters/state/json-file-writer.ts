@@ -138,12 +138,16 @@ export interface ReadJsonResult<T> {
  * Reads, parses and schema-validates a JSON state file. Returns `null` when
  * the file does not exist; any other I/O or content failure maps to
  * `STATE_VALIDATION_FAILED` (the state cannot be obtained in valid form).
+ * `normalize` runs between parse and validation for schema-version-internal
+ * read migrations (e.g. backfilling fields added after older files were
+ * written); it must never guess at corrupt content.
  */
 export async function readJsonIfExists<T>(
   fs: FileSystemPort,
   path: string,
   schemaName: SchemaName,
   rules?: (value: T) => void,
+  normalize?: (parsed: unknown) => unknown,
 ): Promise<ReadJsonResult<T> | null> {
   let bytes: Uint8Array;
   try {
@@ -153,8 +157,9 @@ export async function readJsonIfExists<T>(
     throw stateValidationFailed(`failed to read ${path}`, error);
   }
   const parsed = parseStateJson(bytes, path);
-  assertSchemaValid(schemaName, parsed, { code: 'STATE_VALIDATION_FAILED', stage: STATE_STAGE });
-  const value = parsed as T;
+  const migrated = normalize === undefined ? parsed : normalize(parsed);
+  assertSchemaValid(schemaName, migrated, { code: 'STATE_VALIDATION_FAILED', stage: STATE_STAGE });
+  const value = migrated as T;
   rules?.(value);
   return { value, bytes };
 }

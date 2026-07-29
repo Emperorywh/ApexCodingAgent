@@ -14,6 +14,7 @@ import {
   FAKE_VERSION,
   planDraft,
   streamOf,
+  waitForRunFact,
 } from './helpers.js';
 import { seedRepo } from '../integration/git/helpers.js';
 
@@ -34,25 +35,23 @@ describe('e2e foreground interrupt (§2.4)', () => {
           ],
         });
 
-        const startedAt = Date.now();
         const driving = harness.start();
         // 等待进入 Execution（activeSession 已写入）。
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          try {
-            const run = await harness.readRunJson();
-            if (run.status === 'running' && run.activeSession !== null) break;
-          } catch {
-            // run.json 尚未创建
-          }
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
+        await waitForRunFact(
+          harness,
+          'execution activeSession in running',
+          (run) => run.status === 'running' && run.activeSession !== null,
+          { driving },
+        );
 
         harness.interrupt.request();
+        const interruptedAt = Date.now();
         const result = await driving;
-        const elapsedMs = Date.now() - startedAt;
+        const settleMs = Date.now() - interruptedAt;
 
-        // 有界收尾：远小于 10 秒等待上限 + 睡眠时长。
-        expect(elapsedMs).toBeLessThan(60_000);
+        // 有界收尾：远小于 10 秒等待上限 + 睡眠时长。从中断请求起量，
+        // 避免把高负载下的启动耗时误算进收尾窗口。
+        expect(settleMs).toBeLessThan(60_000);
         expect(result.kind).toBe('failed');
         if (result.kind !== 'failed') return;
         const run = result.run;
@@ -99,15 +98,12 @@ describe('e2e foreground interrupt (§2.4)', () => {
         });
 
         const driving = harness.start();
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          try {
-            const run = await harness.readRunJson();
-            if (run.activeSession !== null) break;
-          } catch {
-            // run.json 尚未创建
-          }
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
+        await waitForRunFact(
+          harness,
+          'planning activeSession',
+          (run) => run.activeSession !== null,
+          { driving },
+        );
 
         harness.interrupt.request();
         const result = await driving;

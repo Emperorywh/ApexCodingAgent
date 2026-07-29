@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createJsonStateStore } from '../../../src/adapters/state/json-state-store.js';
 import type { StateStorePort } from '../../../src/application/ports/state-store.js';
+import type { RunJson } from '../../../src/domain/schemas/run-json.js';
 import { mkErrorRecord, mkRun, UUID_2 } from '../../domain/fixtures.js';
 import {
   DEFAULT_PLAN_TASKS,
@@ -154,6 +155,39 @@ describe('write protocol failure mapping (SPEC §11.2)', () => {
     fs.files.set(RUN_PATH, new TextEncoder().encode('not json at all'));
     await expectApexErrorAsync(() => store.readRun(), 'STATE_VALIDATION_FAILED');
     expect(await store.readTasks()).toBeNull();
+  });
+});
+
+describe('run.json read migration (pre-resume state files)', () => {
+  /**
+   * resume 功能引入前写入的 run.json 缺少必需字段 resumePoint。读取端回填
+   * null（schemaVersion 1 内迁移），升级后的 CLI 才能归档/放弃旧 Run；
+   * 写入端不作兼容，新状态必须显式携带该字段。
+   */
+  function legacyRunBytes(): Uint8Array {
+    const legacy = mkRun() as unknown as Record<string, unknown>;
+    delete legacy['resumePoint'];
+    return new TextEncoder().encode(JSON.stringify(legacy, null, 2));
+  }
+
+  it('backfills a missing resumePoint with null on read', async () => {
+    fs.files.set(RUN_PATH, legacyRunBytes());
+
+    const run = await store.readRun();
+    expect(run).toEqual(mkRun());
+    expect(run!.resumePoint).toBeNull();
+    // 一致快照走同一迁移，不因旧格式误报 STATE_SNAPSHOT_BUSY。
+    expect(await store.readConsistentSnapshot()).toEqual({ run, tasks: null });
+  });
+
+  it('still rejects legacy-shaped runs on write before touching the filesystem', async () => {
+    const legacy = JSON.parse(new TextDecoder().decode(legacyRunBytes())) as RunJson;
+    await expectApexErrorAsync(
+      () => store.writeRun(legacy),
+      'STATE_VALIDATION_FAILED',
+    );
+    expect(fs.ops.filter((op) => op.op === 'writeFile' || op.op === 'rename')).toEqual([]);
+    expect(fs.files.has(RUN_PATH)).toBe(false);
   });
 });
 

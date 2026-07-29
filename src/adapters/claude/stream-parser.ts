@@ -54,9 +54,11 @@ export interface ClaudeStreamCollector {
    * 依照进程 stdout 的原始 chunk 顺序增量消费字节。
    *
    * push 只解析已经闭合的行；跨 chunk 的 UTF-8 字符和未完成行由内部
-   * TextDecoder 与行缓冲保存，直到后续 chunk 或 finish 到达。
+   * TextDecoder 与行缓冲保存，直到后续 chunk 或 finish 到达。返回值是
+   * 当前解码文本中已验证 JSON 对象记录结束后的字符偏移，供日志脱敏器
+   * 安全降低输出延迟；首次非法记录之后不再声明任何安全边界。
    */
-  push(chunk: Uint8Array): void;
+  push(chunk: Uint8Array): readonly number[];
   finish(): CollectedClaudeStream;
 }
 
@@ -235,34 +237,42 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
     }
   }
 
-  function consumeLine(rawLine: string): void {
+  function consumeLine(rawLine: string): boolean {
     lineNumber += 1;
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    if (line === '') return;
-    if (parseFailure !== null) return;
+    if (line === '') return false;
+    if (parseFailure !== null) return false;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch {
       parseFailure = { lineNumber, kind: 'invalid-json' };
-      return;
+      return false;
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       parseFailure = { lineNumber, kind: 'non-object' };
-      return;
+      return false;
     }
     consumeEvent(parsed as StreamEvent);
+    return true;
   }
 
-  function consumeText(text: string): void {
+  function consumeText(text: string): readonly number[] {
     if (text.trim() !== '') hasContent = true;
-    lineBuffer += text;
-    let newlineIndex = lineBuffer.indexOf('\n');
+    const safeRecordBoundaryOffsets: number[] = [];
+    let segmentStart = 0;
+    let newlineIndex = text.indexOf('\n');
     while (newlineIndex !== -1) {
-      consumeLine(lineBuffer.slice(0, newlineIndex));
-      lineBuffer = lineBuffer.slice(newlineIndex + 1);
-      newlineIndex = lineBuffer.indexOf('\n');
+      lineBuffer += text.slice(segmentStart, newlineIndex);
+      if (consumeLine(lineBuffer)) {
+        safeRecordBoundaryOffsets.push(newlineIndex + 1);
+      }
+      lineBuffer = '';
+      segmentStart = newlineIndex + 1;
+      newlineIndex = text.indexOf('\n', segmentStart);
     }
+    lineBuffer += text.slice(segmentStart);
+    return safeRecordBoundaryOffsets;
   }
 
   function reportActivity(): void {
@@ -276,11 +286,12 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   }
 
   return {
-    push(chunk): void {
+    push(chunk): readonly number[] {
       if (finished) throw new Error('cannot push to a finished Claude stream collector');
       receivedStdoutBytes += chunk.byteLength;
-      consumeText(decoder.decode(chunk, { stream: true }));
+      const safeRecordBoundaryOffsets = consumeText(decoder.decode(chunk, { stream: true }));
       reportActivity();
+      return safeRecordBoundaryOffsets;
     },
     finish(): CollectedClaudeStream {
       if (finished) throw new Error('Claude stream collector finish called more than once');

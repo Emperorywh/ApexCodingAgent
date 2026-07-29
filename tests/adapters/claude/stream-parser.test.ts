@@ -7,7 +7,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { evaluateStreamOutcome } from '../../../src/adapters/claude/stream-parser.js';
+import {
+  createClaudeStreamCollector,
+  evaluateStreamOutcome,
+} from '../../../src/adapters/claude/stream-parser.js';
 import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import { ClaudeInvocationError } from '../../../src/application/ports/ClaudeRuntimePort.js';
 import type { ErrorCode } from '../../../src/domain/errors.js';
@@ -257,5 +260,26 @@ describe('stream-json inline edge cases', () => {
     expect(invocationError.errorCode).toBe('CLAUDE_RESULT_INVALID');
     expect(invocationError.toolSummary).toContain('[REDACTED]');
     expect(invocationError.toolSummary).not.toContain(token);
+  });
+
+  it('reports only validated JSON object record boundaries for incremental logging', () => {
+    /**
+     * 边界偏移相对于本次解码文本：跨 chunk 的行只在换行到达后确认；一旦
+     * 遇到非法行，后续文本都不能再被声明为可提前排出的安全记录边界。
+     */
+    const collector = createClaudeStreamCollector({ sessionId: UUID_1 });
+    const encoder = new TextEncoder();
+    expect(collector.push(encoder.encode('{"type":'))).toEqual([]);
+
+    const completed = '"unknown"}\n{"type":"unknown"}\ntail';
+    const firstLineEnd = completed.indexOf('\n') + 1;
+    const secondLineEnd = completed.indexOf('\n', firstLineEnd) + 1;
+    expect(collector.push(encoder.encode(completed))).toEqual([
+      firstLineEnd,
+      secondLineEnd,
+    ]);
+
+    expect(collector.push(encoder.encode('\nnot-json\n'))).toEqual([]);
+    expect(collector.push(encoder.encode('{"type":"unknown"}\n'))).toEqual([]);
   });
 });

@@ -23,6 +23,13 @@ export const REDACTED_PLACEHOLDER = '[REDACTED]';
 export interface ChunkRedactor {
   /** Accepts the next chunk; returns the portion now safe to emit. */
   push(chunk: string): string;
+  /**
+   * 通知实现当前位于调用方已经验证的逻辑记录边界。
+   *
+   * 不跨记录的规则可以据此提前排出；仍可能跨记录的多行规则会继续保留
+   * 原始窗口，因此该方法不等同于结束整个输入流。
+   */
+  flushRecordBoundary(): string;
   /** Ends the stream; returns the remaining redacted text. */
   flush(): string;
 }

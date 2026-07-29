@@ -8,6 +8,7 @@ import {
   REDACTED_PLACEHOLDER,
   type ChunkRedactor,
 } from '../../../src/application/ports/redaction.js';
+import { MAX_REDACTION_MATCH_LENGTH } from '../../../src/adapters/redaction/redaction-rules.js';
 import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 
 const redactor = createRedactor();
@@ -225,12 +226,50 @@ describe('chunk redactor', () => {
     }
   });
 
-  it('emits plain text immediately and holds back only a short tail', () => {
+  it('holds a short stream until flush so every possible match stays intact', () => {
     const r = redactor.createChunkRedactor();
-    // Trailing space: no token run at the buffer end, everything is emitted.
-    expect(r.push('hello world. ')).toBe('hello world. ');
-    // "text" ends the buffer: held back as a potential fragment until flush.
-    expect(r.push('more text')).toBe('more ');
-    expect(r.flush()).toBe('text');
+    /**
+     * 短输入无法仅凭当前内容证明其尾部不会在后续 chunk 中扩展成秘密，
+     * 因此在 flush 前保留整个窗口，优先保证任意边界下都不泄漏。
+     */
+    expect(r.push('hello world. ')).toBe('');
+    expect(r.push('more text')).toBe('');
+    expect(r.flush()).toBe('hello world. more text');
+  });
+
+  it('drains bounded safe prefixes from a long stream before flush', () => {
+    /**
+     * 输入超过两个最大匹配窗口后必须排出已证明安全的前缀，避免流式处理
+     * 退化为无界缓存；最终结果仍须与一次性脱敏完全一致。
+     */
+    const prefix = 'ordinary diagnostic line\n'.repeat(MAX_REDACTION_MATCH_LENGTH);
+    const secret = 'https://user:Sup3rSecret@example.com/repo.git';
+    const document = `${prefix}${secret}\nend`;
+    const r = redactor.createChunkRedactor();
+    const emitted = r.push(document);
+
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(emitted.length).toBeLessThan(document.length);
+    expect(emitted + r.flush()).toBe(redactor.redactText(document));
+  });
+
+  it('flushes verified records unless a multi-record private key is still open', () => {
+    /**
+     * 普通记录可立即持久化；私钥起始标记出现后，即使调用方确认当前 JSON
+     * 记录结束，也必须等待后续记录中的结束标记，再整体替换固定占位符。
+     */
+    const ordinary = redactor.createChunkRedactor();
+    expect(ordinary.push('{"type":"result"}\n')).toBe('');
+    expect(ordinary.flushRecordBoundary()).toBe('{"type":"result"}\n');
+
+    const privateKey = redactor.createChunkRedactor();
+    expect(privateKey.push('{"text":"-----BEGIN RSA PRIVATE KEY-----"}\n')).toBe('');
+    expect(privateKey.flushRecordBoundary()).toBe('');
+    expect(
+      privateKey.push('{"text":"MIIEowIBAAKCAQEA7\\n-----END RSA PRIVATE KEY-----"}\n'),
+    ).toBe('');
+    const redacted = privateKey.flushRecordBoundary();
+    expect(redacted).toContain(REDACTED_PLACEHOLDER);
+    expect(redacted).not.toContain('MIIEowIBAAKCAQEA7');
   });
 });

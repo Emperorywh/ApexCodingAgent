@@ -1,24 +1,13 @@
 /**
- * Redaction rule table (SPEC §18.4, NFR-006).
+ * 脱敏规则唯一事实源（SPEC §18.4、NFR-006）。
  *
- * Two pattern families:
- * - {@link REDACTION_RULES}: complete patterns applied to any text. Every
- *   match is replaced with the fixed placeholder (values are never hashed,
- *   encoded or partially echoed); field/header names are kept so diagnostics
- *   stay meaningful.
- * - {@link INCOMPLETE_PATTERNS}: end-of-buffer "danger suffix" patterns used
- *   only by the streaming chunk redactor. Each one matches a proper prefix of
- *   a potential secret sitting at the tail of the pending buffer, so the
- *   streaming redactor holds it back instead of emitting a fragment that a
- *   later chunk would complete into a bypass (SPEC §18.4 overlap window).
+ * 每条规则同时声明完整匹配正则与 `maxMatchLength`。完整文本直接顺序应用
+ * 这些规则；流式实现则从同一份长度上限推导重叠窗口，不再维护容易与完整
+ * 规则漂移的第二套“未完成前缀”正则。
  *
- * All quantifiers are bounded: redaction is a detection mechanism, not an
- * absolute credential-discovery guarantee (SPEC §18.4). `maxMatchLength`
- * documents each rule's bound; corpus secrets must stay within it.
- *
- * NFR-006: every rule here must have at least one regression sample in
- * `tests/fixtures/redaction-corpus/corpus.json`; adding a rule without a
- * sample fails the corpus test.
+ * 所有量词必须显式有界：脱敏是降低意外持久化风险的检测机制，不是绝对的
+ * 凭据发现保证。每条新增规则仍必须在集中语料中添加回归样本，否则
+ * NFR-006 语料测试会失败。
  */
 import { REDACTED_PLACEHOLDER } from '../../application/ports/redaction.js';
 
@@ -27,14 +16,20 @@ export interface RedactionRule {
   /** Global pattern; applied sequentially to the whole text. */
   readonly pattern: RegExp;
   readonly replacement: string | ((...args: string[]) => string);
-  /** Upper bound on a single match length, in characters. */
+  /**
+   * 单次完整匹配的字符数上限。
+   *
+   * 流式实现以全部规则的最大值建立安全重叠窗口，因此该值是正确性契约，
+   * 不能只按语料中的常见长度估算。
+   */
   readonly maxMatchLength: number;
-}
-
-export interface IncompletePattern {
-  readonly name: string;
-  /** Anchored at end-of-buffer (no `m` flag); matches a dangerous tail. */
-  readonly pattern: RegExp;
+  /**
+   * 已应用完整规则后，判断剩余文本是否仍含有可跨逻辑记录继续匹配的起点。
+   *
+   * 仅真正允许跨记录的规则需要提供；该判定与完整正则放在同一规则对象中，
+   * 防止流式边界协议再次形成独立且容易漂移的规则表。
+   */
+  readonly blocksRecordBoundary?: (redactedText: string) => boolean;
 }
 
 /** Replacement for `sensitive-field`: keeps name, separator and quote style. */
@@ -54,6 +49,9 @@ function redactSensitiveFieldValue(
 }
 
 const PRIVATE_KEY_LABEL = '[A-Z0-9 ]{0,64}';
+const PRIVATE_KEY_OPEN_PATTERN = new RegExp(
+  `-----BEGIN ${PRIVATE_KEY_LABEL}PRIVATE KEY-----`,
+);
 
 export const REDACTION_RULES: readonly RedactionRule[] = [
   {
@@ -64,18 +62,19 @@ export const REDACTION_RULES: readonly RedactionRule[] = [
     ),
     replacement: REDACTED_PLACEHOLDER,
     maxMatchLength: 8372,
+    blocksRecordBoundary: (redactedText) => PRIVATE_KEY_OPEN_PATTERN.test(redactedText),
   },
   {
     name: 'authorization-header',
-    pattern: /\b((?:Proxy-)?Authorization[ \t]*:[ \t]*)[^\r\n]{0,2048}/gi,
+    pattern: /\b((?:Proxy-)?Authorization[ \t]{0,64}:[ \t]{0,64})[^\r\n]{0,2048}/gi,
     replacement: `$1${REDACTED_PLACEHOLDER}`,
-    maxMatchLength: 2069,
+    maxMatchLength: 2196,
   },
   {
     name: 'cookie-header',
-    pattern: /\b((?:Set-)?Cookie[ \t]*:[ \t]*)[^\r\n]{0,4096}/gi,
+    pattern: /\b((?:Set-)?Cookie[ \t]{0,64}:[ \t]{0,64})[^\r\n]{0,4096}/gi,
     replacement: `$1${REDACTED_PLACEHOLDER}`,
-    maxMatchLength: 4108,
+    maxMatchLength: 4235,
   },
   {
     name: 'credential-url',
@@ -85,15 +84,15 @@ export const REDACTION_RULES: readonly RedactionRule[] = [
   },
   {
     name: 'bearer-token',
-    pattern: /\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,512}/gi,
+    pattern: /\b(Bearer[ \t]{1,64})[A-Za-z0-9._~+/=-]{8,512}/gi,
     replacement: `$1${REDACTED_PLACEHOLDER}`,
-    maxMatchLength: 519,
+    maxMatchLength: 582,
   },
   {
     name: 'basic-token',
-    pattern: /\b(Basic[ \t]+)[A-Za-z0-9+/=]{16,512}/gi,
+    pattern: /\b(Basic[ \t]{1,64})[A-Za-z0-9+/=]{16,512}/gi,
     replacement: `$1${REDACTED_PLACEHOLDER}`,
-    maxMatchLength: 518,
+    maxMatchLength: 581,
   },
   {
     name: 'jwt',
@@ -145,57 +144,23 @@ export const REDACTION_RULES: readonly RedactionRule[] = [
   },
   {
     name: 'sensitive-field',
-    // Independent optional quotes around the name (not a backreference): in
-    // streaming, the opening quote may already have been emitted before the
-    // field was recognized, so the held-back buffer can start at the name.
+    /**
+     * 字段名两侧引号彼此独立可选，不要求使用反向引用；这样既覆盖 JSON /
+     * YAML / 环境变量形式，也让字段名和分隔符的所有量词保持显式有界。
+     */
     pattern:
-      /(["']?)([A-Za-z0-9_.-]{0,64}(?:token|secret|password|apiKey|authorization)[A-Za-z0-9_.-]{0,64})(["']?)([ \t]*[:=][ \t]*)("[^"]{0,4096}"|'[^']{0,4096}'|(?:Bearer|Basic)[ \t]+[^\s,;&]{1,512}|[^\s,;&]{1,512})/gi,
+      /(["']?)([A-Za-z0-9_.-]{0,64}(?:token|secret|password|apiKey|authorization)[A-Za-z0-9_.-]{0,64})(["']?)([ \t]{0,64}[:=][ \t]{0,64})("[^"]{0,4096}"|'[^']{0,4096}'|(?:Bearer|Basic)[ \t]{1,64}[^\s,;&]{1,512}|[^\s,;&]{1,512})/gi,
     replacement: redactSensitiveFieldValue as (...args: string[]) => string,
-    maxMatchLength: 4234,
+    maxMatchLength: 4370,
   },
 ];
 
-export const INCOMPLETE_PATTERNS: readonly IncompletePattern[] = [
-  {
-    // Any trailing run of token characters: a token that ends exactly at the
-    // buffer end may still grow with the next chunk. Multi-word markers
-    // ("-----BEGIN RSA PRIV") are covered by the private-key-block pattern.
-    name: 'trailing-token-fragment',
-    pattern: /[A-Za-z0-9_.+/=$~-]{1,64}$/,
-  },
-  {
-    name: 'private-key-block',
-    pattern: new RegExp(
-      `-----BEGIN ${PRIVATE_KEY_LABEL}PRIVATE KEY-----[\\s\\S]{0,8192}$|-----BEGIN[A-Z0-9 ]{0,80}$`,
-    ),
-  },
-  {
-    name: 'authorization-header',
-    pattern: /\b(?:Proxy-)?Authorization[ \t]*:[ \t]*[^\r\n]{0,2048}$/i,
-  },
-  {
-    name: 'cookie-header',
-    pattern: /\b(?:Set-)?Cookie[ \t]*:[ \t]*[^\r\n]{0,4096}$/i,
-  },
-  {
-    name: 'credential-url',
-    pattern: /\b[a-z][a-z0-9+.-]{0,32}:\/\/[^/\s@]{0,513}$/i,
-  },
-  {
-    name: 'bearer-token',
-    pattern: /\bBearer(?:[ \t]+[A-Za-z0-9._~+/=-]{0,512})?$/i,
-  },
-  {
-    name: 'basic-token',
-    pattern: /\bBasic(?:[ \t]+[A-Za-z0-9+/=]{0,512})?$/i,
-  },
-  {
-    name: 'jwt',
-    pattern: /\beyJ[A-Za-z0-9_-]{0,1024}(?:\.[A-Za-z0-9_-]{0,1024}){0,2}$/,
-  },
-  {
-    name: 'sensitive-field',
-    pattern:
-      /["']?[A-Za-z0-9_.-]{0,64}(?:token|secret|password|apiKey|authorization)[A-Za-z0-9_.-]{0,64}["']?[ \t]*(?:[:=][ \t]*(?:"[^"]{0,4096}|'[^']{0,4096}|[^\s,;&]{0,512}(?:[ \t]+[^\s,;&]{0,512})?)?)?$/i,
-  },
-];
+/**
+ * 全部规则的最大完整匹配长度。
+ *
+ * 该值由规则表自动推导，是流式重叠窗口的唯一来源；新增或扩大规则时无需
+ * 再同步维护另一张前缀表。
+ */
+export const MAX_REDACTION_MATCH_LENGTH = Math.max(
+  ...REDACTION_RULES.map((rule) => rule.maxMatchLength),
+);

@@ -69,7 +69,10 @@ export interface ClaudeRuntimeOptions {
 }
 
 interface IncrementalSessionLog {
-  readonly pushStdout: (chunk: Uint8Array) => Promise<void>;
+  readonly pushStdout: (
+    chunk: Uint8Array,
+    safeRecordBoundaryOffsets: readonly number[],
+  ) => Promise<void>;
   readonly finish: (stderrSummary: string | null) => Promise<void>;
   readonly failure: () => unknown | null;
 }
@@ -194,10 +197,21 @@ function createIncrementalSessionLog(
   }
 
   return {
-    async pushStdout(chunk): Promise<void> {
+    async pushStdout(chunk, safeRecordBoundaryOffsets): Promise<void> {
       if (finished) throw new Error('cannot write to a finished session log');
       const text = decoder.decode(chunk, { stream: true });
-      await append(chunkRedactor.push(text));
+      /**
+       * stream-json 解析器只为已验证的 JSON 对象行提供边界。每段先进入通用
+       * 流式脱敏器，再尝试按记录排出；若存在尚未闭合的多行私钥，脱敏器会
+       * 跨记录继续保留，不能因日志低延迟需求而牺牲安全性。
+       */
+      let segmentStart = 0;
+      for (const boundaryOffset of safeRecordBoundaryOffsets) {
+        await append(chunkRedactor.push(text.slice(segmentStart, boundaryOffset)));
+        await append(chunkRedactor.flushRecordBoundary());
+        segmentStart = boundaryOffset;
+      }
+      await append(chunkRedactor.push(text.slice(segmentStart)));
     },
     async finish(stderrSummary): Promise<void> {
       if (finished) throw new Error('session log finish called more than once');
@@ -330,8 +344,8 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
           activeProcess = process;
         },
         onStdoutChunk: async (chunk) => {
-          streamCollector.push(chunk);
-          await sessionLog.pushStdout(chunk);
+          const safeRecordBoundaryOffsets = streamCollector.push(chunk);
+          await sessionLog.pushStdout(chunk, safeRecordBoundaryOffsets);
         },
         onStderrChunk: (chunk) => {
           stderrCollector.push(chunk);

@@ -400,6 +400,28 @@ describe('environment inheritance and redaction (SPEC §10.2, §18.4)', () => {
     expect(rawRecords).not.toContain(token);
   }, TEST_TIMEOUT);
 
+  it('does not flush a multi-line private key at JSON record boundaries', async () => {
+    /**
+     * 恶意或损坏的 stdout 可能把私钥拆成多行，不能把换行一概视为安全
+     * 边界。即使本次调用最终因非 JSON 输出失败，已落盘日志仍不得含原文。
+     */
+    const privateKeyBody = 'MIIEowIBAAKCAQEA7';
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: [
+        '-----BEGIN RSA PRIVATE KEY-----',
+        privateKeyBody,
+        '-----END RSA PRIVATE KEY-----',
+      ],
+    });
+
+    await expectApexErrorAsync(() => runtime.invoke(mkRequest(harness)), 'CLAUDE_STREAM_FAILED');
+    const log = await harness.readSessionLog(SESSION_ID);
+    expect(log).toContain('[REDACTED]');
+    expect(log).not.toContain(privateKeyBody);
+    expect(log).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+  }, TEST_TIMEOUT);
+
   it('CC Switch style: environment-only provider configuration works without any private API', async () => {
     const token = 'sk-ant-abcdef1234567890ABCDEF_xyz';
     process.env['ANTHROPIC_BASE_URL'] = 'https://proxy.example.invalid/anthropic';

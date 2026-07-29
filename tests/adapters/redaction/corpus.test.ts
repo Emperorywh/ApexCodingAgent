@@ -13,7 +13,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { REDACTED_PLACEHOLDER } from '../../../src/application/ports/redaction.js';
-import { REDACTION_RULES } from '../../../src/adapters/redaction/redaction-rules.js';
+import {
+  MAX_REDACTION_MATCH_LENGTH,
+  REDACTION_RULES,
+} from '../../../src/adapters/redaction/redaction-rules.js';
 import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import { validate } from '../../../src/domain/schemas/index.js';
 import { mkErrorRecord, mkResult, mkRun } from '../../domain/fixtures.js';
@@ -63,13 +66,22 @@ function chunkRandomly(text: string, seed: number): string[] {
   return chunks;
 }
 
-function redactStreamed(text: string, seed: number): string {
+/**
+ * 使用显式 chunk 序列执行一次完整的流式脱敏。
+ *
+ * 所有边界测试共用这一入口，避免测试辅助逻辑自身出现差异。
+ */
+function redactChunks(chunks: readonly string[]): string {
   const chunkRedactor = redactor.createChunkRedactor();
   let out = '';
-  for (const chunk of chunkRandomly(text, seed)) {
+  for (const chunk of chunks) {
     out += chunkRedactor.push(chunk);
   }
   return out + chunkRedactor.flush();
+}
+
+function redactStreamed(text: string, seed: number): string {
+  return redactChunks(chunkRandomly(text, seed));
 }
 
 const TEXT_SINKS: ReadonlyArray<{ readonly name: string; readonly build: (snippet: string) => string }> = [
@@ -126,6 +138,60 @@ describe('redaction corpus', () => {
     const covered = new Set(corpus.samples.map((sample) => sample.rule));
     for (const rule of REDACTION_RULES) {
       expect(covered.has(rule.name), `rule ${rule.name} has no corpus sample`).toBe(true);
+    }
+  });
+
+  it('matches whole-text redaction at every corpus chunk boundary', () => {
+    /**
+     * 对每条集中语料穷举所有二分边界以及 1～128 字符的固定分块。
+     *
+     * 这直接锁定“同一秘密因 chunk 切分位置不同而绕过脱敏”的缺陷；随机
+     * 分块仍保留在各输出通道测试中，用于覆盖多个秘密与上下文组合。
+     */
+    for (const sample of corpus.samples) {
+      const whole = redactor.redactText(sample.snippet);
+
+      for (let split = 1; split < sample.snippet.length; split += 1) {
+        const streamed = redactChunks([
+          sample.snippet.slice(0, split),
+          sample.snippet.slice(split),
+        ]);
+        expect(streamed, `${sample.id}: split ${split}`).toBe(whole);
+        expect(streamed, `${sample.id}: split ${split}`).not.toContain(sample.secret);
+      }
+
+      const maxChunkSize = Math.min(128, sample.snippet.length);
+      for (let chunkSize = 1; chunkSize <= maxChunkSize; chunkSize += 1) {
+        const chunks: string[] = [];
+        for (let index = 0; index < sample.snippet.length; index += chunkSize) {
+          chunks.push(sample.snippet.slice(index, index + chunkSize));
+        }
+        const streamed = redactChunks(chunks);
+        expect(streamed, `${sample.id}: chunk size ${chunkSize}`).toBe(whole);
+        expect(streamed, `${sample.id}: chunk size ${chunkSize}`).not.toContain(sample.secret);
+      }
+    }
+  });
+
+  it('keeps every corpus secret intact while draining a long stream', () => {
+    /**
+     * 短语料会全部留到 flush，无法单独证明排出安全前缀时仍正确。
+     *
+     * 这里把每个秘密放在首次排水边界附近，并从秘密中间切开输入；若窗口
+     * 长度、切点回退或规则长度契约有误，就会暴露原文片段或偏离整段结果。
+     */
+    const drainThreshold = MAX_REDACTION_MATCH_LENGTH * 2;
+    for (const sample of corpus.samples) {
+      const split = Math.max(1, Math.floor(sample.snippet.length / 2));
+      const safePrefix = `${'x'.repeat(drainThreshold - split)}\n`;
+      const text = `${safePrefix}${sample.snippet}`;
+      const streamed = redactChunks([
+        text.slice(0, safePrefix.length + split),
+        text.slice(safePrefix.length + split),
+      ]);
+
+      expect(streamed, sample.id).toBe(redactor.redactText(text));
+      expect(streamed, sample.id).not.toContain(sample.secret);
     }
   });
 

@@ -42,6 +42,19 @@ export interface PlanRevisionCommit {
   readonly run: Omit<RunJson, 'tasksSha256'>;
 }
 
+/**
+ * 前台属主进程的一次存活信号（SPEC §2.4 崩溃判定的唯一系统依据）。
+ *
+ * 这是轻量运行期事实，不是聚合：不 schema 注册、不参与一致读、不归档。
+ * 文件缺失只表示"没有信号"（旧版本 Run 或信号尚未写入），不表示崩溃。
+ */
+export interface RunHeartbeatFact {
+  /** 发送信号的 Run；只有与当前 run.json 同 runId 的信号才有判定效力。 */
+  readonly runId: string;
+  /** 信号发送时间（RFC 3339 UTC，程序生成）。 */
+  readonly at: string;
+}
+
 export interface StateStorePort {
   readRun(): Promise<RunJson | null>;
   /**
@@ -83,4 +96,18 @@ export interface StateStorePort {
    * Resolves to `null` when no run.json exists.
    */
   readConsistentSnapshot(): Promise<ConsistentSnapshot | null>;
+
+  /**
+   * 写入一次前台属主存活信号（`heartbeat.json`，同目录 temp→rename 原子替换）。
+   *
+   * 与聚合写协议不同：不 schema 校验、不要求 stateRevision，是覆盖式的
+   * 最新值语义；I/O 失败仍映射 STATE_WRITE_FAILED，由调用方降级处理。
+   */
+  writeHeartbeat(fact: RunHeartbeatFact): Promise<void>;
+  /**
+   * 读取最近一次存活信号。返回 `null` 表示文件不存在；返回 `'unreadable'`
+   * 表示文件存在但内容不可解析（写入中途被截断或已损坏）——调用方必须按
+   * "可能有活跃写入者"的保守方向处理，绝不能据此判定属主已消亡。
+   */
+  readHeartbeat(): Promise<RunHeartbeatFact | null | 'unreadable'>;
 }

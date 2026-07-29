@@ -332,8 +332,12 @@ describe('cli process: abandon flow after an interrupted run (§17, AC-027/028)'
         15_000,
       );
       expect(forced.code).toBe(0);
-      // §17 第 3 步：无法判断旧进程是否仍然存在的风险提示
-      expect(forced.stdout + forced.stderr).toContain('系统无法判断');
+      /**
+       * §17 第 3 步风险提示：存活信号判定替代了旧的"无法判断"。被杀掉的
+       * 子进程信号仍新鲜（<30s）时报"仍有存活信号"，更慢的环境下信号
+       * 可能已超时（报"未发送存活信号"）——两种文案都含"存活信号"。
+       */
+      expect(forced.stdout + forced.stderr).toContain('存活信号');
       const abandoned = await readRunJson(fixture.stateDir);
       expect(abandoned.status).toBe('abandoned');
       expect(abandoned.lastError?.errorCode).toBe('RUN_ABANDONED_BY_USER');
@@ -364,6 +368,80 @@ describe('cli process: abandon flow after an interrupted run (§17, AC-027/028)'
       await cleanupFixture(fixture);
     }
   }, 180_000);
+});
+
+describe('cli process: owner heartbeat crash detection (§2.4)', () => {
+  it('resume without --force takes over a killed run once its heartbeat goes stale', async () => {
+    ensureCliBuilt();
+    const fixture = await createFixture();
+    try {
+      await seedRepo(fixture.repo);
+      await fixture.fake.writeScenario(SLEEPING_PLANNING);
+
+      // 模拟操作系统强制关闭：前台进程无条件终止，run.json 停在 planning。
+      const started = spawnCli(['start', '--claude-cli-path', FAKE_CLAUDE_PATH], {
+        cwd: fixture.repo.root,
+        env: fixture.fake.env,
+      });
+      await waitForActiveSession(fixture.stateDir);
+      started.child.kill();
+      await started.outcome;
+
+      // 信号仍新鲜：start 拒绝并指出属主进程仍存活（此刻无法分辨死活）。
+      const fresh = await awaitOutcome(
+        spawnCli(['start', '--claude-cli-path', FAKE_CLAUDE_PATH], {
+          cwd: fixture.repo.root,
+          env: fixture.fake.env,
+        }),
+        30_000,
+      );
+      expect(fresh.code).toBe(3);
+      expect(fresh.stderr).toContain('RUN_ALREADY_ACTIVE_OR_INTERRUPTED');
+      expect(fresh.stderr).toContain('still alive');
+
+      // 信号超时（阈值 30 秒）后，start 的拒绝文案转为崩溃指引。
+      const deadline = Date.now() + 90_000;
+      let stale = fresh;
+      while (!stale.stderr.includes('presumed crashed')) {
+        if (Date.now() > deadline) {
+          throw new Error(`heartbeat never went stale; last stderr: ${stale.stderr}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        stale = await awaitOutcome(
+          spawnCli(['start', '--claude-cli-path', FAKE_CLAUDE_PATH], {
+            cwd: fixture.repo.root,
+            env: fixture.fake.env,
+          }),
+          30_000,
+        );
+      }
+      expect(stale.code).toBe(3);
+      expect(stale.stderr).toContain('no --force needed');
+
+      // 免 --force 接管：resume 判定崩溃离场，续接跑到终态。
+      await fixture.fake.writeScenario({
+        version: FAKE_VERSION,
+        help: COMPLETE_HELP,
+        sequence: [
+          { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
+          { stdoutLines: streamOf(executionCompleted()) },
+          { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+        ],
+      });
+      const resumed = await awaitOutcome(
+        spawnCli(['resume', '--claude-cli-path', FAKE_CLAUDE_PATH], {
+          cwd: fixture.repo.root,
+          env: fixture.fake.env,
+        }),
+        90_000,
+      );
+      expect(resumed.code, resumed.stderr).toBe(0);
+      expect(resumed.stdout).toContain('判定为崩溃离场');
+      expect((await readRunJson(fixture.stateDir)).status).toBe('completed');
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  }, 300_000);
 });
 
 describe('cli process: foreground interrupt signals (§2.4)', () => {

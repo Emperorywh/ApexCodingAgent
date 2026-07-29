@@ -22,6 +22,8 @@ export interface EnvironmentFacts {
   readonly release: string;
   /** Node `process.version`，如 `v22.11.0`。 */
   readonly nodeVersion: string;
+  /** ApexCodingAgent 自身版本，取自安装清单 package.json（读取失败为 `unknown`）。 */
+  readonly agentVersion: string;
 }
 
 /** §8.1 第 1、3 项：Windows 版本与 Node Runtime 受支持。 */
@@ -74,6 +76,21 @@ export async function assertStateDirectoryWritable(
       cause: error,
     });
   }
+}
+
+/**
+ * 启动横幅第一项：ApexCodingAgent 自身版本。
+ *
+ * 在任何前置校验之前输出，即使启动因环境门禁失败，排障时也能拿到
+ * 确切的安装版本。模型与 Provider 属于 Session 事实，只能在首个
+ * Session 的 system/init 事件到达后由 Session 进度行输出，不在此伪造。
+ */
+export function reportApexVersion(
+  output: OutputPort,
+  redaction: RedactionPort,
+  agentVersion: string,
+): void {
+  output.writeLine(redaction.redactText(`[apex] ApexCodingAgent version: ${agentVersion}`));
 }
 
 /** 有界探测 Claude 版本与九项命令能力，并记录统一诊断事件。 */

@@ -140,7 +140,7 @@ ApexCodingAgent resume
 
 即可从中断的步骤继续，已经完成的步骤不会重做；计划、执行或最终检查中断时都会尽量续接原来的 Claude 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
 
-如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），残留的任务需要用 `resume --force` 接管；执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
+如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），任务会停在"正在运行"的状态。前台运行每 5 秒会写入一次存活信号（`heartbeat.json`），进程消失后信号停止更新——超过 30 秒未更新即判定旧进程已崩溃，此时直接运行 `resume` 即可自动接管（无需 `--force`），`start` 也会给出同样的提示；信号仍在更新、缺失或不可读时才需要 `resume --force` 接管，执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
 
 如果确定任务无法继续，可以放弃它并重新开始：
 
@@ -172,8 +172,8 @@ ApexCodingAgent start --verbose
 | `ApexCodingAgent start` | 使用当前目录及子目录内的 `SPEC.md` 开始任务 |
 | `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
 | `ApexCodingAgent start --verbose` | 开始任务，并把调试日志同步输出到终端 |
-| `ApexCodingAgent resume` | 从中断点继续一个被中断的任务（不重做已完成步骤） |
-| `ApexCodingAgent resume --force` | 接管程序异常退出（如终端被关闭）后残留的任务 |
+| `ApexCodingAgent resume` | 从中断点继续一个被中断的任务（不重做已完成步骤）；旧进程已崩溃的残留任务自动接管 |
+| `ApexCodingAgent resume --force` | 旧进程可能仍在运行时，人工确认后接管残留的任务 |
 | `ApexCodingAgent status` | 查看当前进度或失败原因 |
 | `ApexCodingAgent report` | 重新生成最终报告 |
 | `ApexCodingAgent abandon --force` | 放弃一个已经无法继续的任务 |

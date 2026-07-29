@@ -663,6 +663,12 @@ describe('e2e resume (§17)', () => {
           JSON.stringify(crashedRun, null, 2),
           'utf8',
         );
+        /**
+         * 抹掉存活信号：本用例验证的是"系统无法判断"形态的人工确认门槛
+         * （旧版本 Run 没有信号文件，或信号随状态目录一起丢失）。新鲜信号
+         * 的拦截与超时信号的免 --force 接管由 e2e/heartbeat.test.ts 覆盖。
+         */
+        await harness.removeHeartbeat();
 
         await harness.writeScenario({
           version: FAKE_VERSION,

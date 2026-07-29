@@ -29,8 +29,15 @@ import {
   assertEnvironmentSupported,
   assertStateDirectoryWritable,
   probeClaudeCapabilities,
+  reportApexVersion,
   type EnvironmentFacts,
 } from './run-runtime-preflight.js';
+import {
+  createRunHeartbeat,
+  readOwnerLiveness,
+  type OwnerLiveness,
+  type RunHeartbeat,
+} from './run-heartbeat.js';
 import { loadSettings } from './settings.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 
@@ -78,11 +85,42 @@ function asApexError(error: unknown, stage: string): ApexError {
       });
 }
 
+/**
+ * 接管崩溃残留 Run 时的前台提示：有确切崩溃依据时平铺直叙，其余形态
+ * 保持人工确认风险的警告语义（§17 resume、§2.4）。
+ */
+function takeoverWarning(run: RunJson, liveness: OwnerLiveness | null): string {
+  switch (liveness?.kind) {
+    case 'presumed_dead':
+      return (
+        `run ${run.runId} 的属主进程已 ${Math.round(liveness.ageMs / 1000)} 秒未发送存活信号，` +
+        '判定为崩溃离场；按崩溃事实接管并继续。resume 不终止任何进程。'
+      );
+    case 'active':
+      return (
+        `警告：run ${run.runId} 的属主进程在 ${Math.round(liveness.ageMs / 1000)} 秒前仍有存活信号；` +
+        '请确认旧进程已停止，否则两个进程会并发写入仓库。resume 不终止任何进程。'
+      );
+    case 'unreadable':
+      return (
+        `警告：run ${run.runId} 的存活信号文件不可读，系统无法判断旧 Apex/Claude 进程是否仍然存在；` +
+        '请确认旧进程不再写入仓库后再继续。resume 不终止任何进程。'
+      );
+    default:
+      return (
+        `警告：系统无法判断 run ${run.runId} 的旧 Apex/Claude 进程是否仍然存在；` +
+        '请确认旧进程不再写入仓库后再继续。resume 不终止任何进程。'
+      );
+  }
+}
+
 export function createResumeRun(deps: RunCommandDeps): {
   execute(input: ResumeRunInput): Promise<ResumeRunResult>;
 } {
   const now = (): string => formatRfc3339Utc(deps.clock.now());
   let logger: LoggerPort = createNullLogger();
+  /** 接管成功后的前台属主存活信号；进程收尾前停止。 */
+  let heartbeat: RunHeartbeat | null = null;
 
   function commandError(error: ApexError): ResumeRunResult {
     logger.log('error', 'resume.command_failed', {
@@ -111,6 +149,8 @@ export function createResumeRun(deps: RunCommandDeps): {
    * 显式修复已失效的可执行路径。
    */
   async function prepare(input: ResumeRunInput): Promise<PreparedResume | ResumeRunResult> {
+    // 与 start 一致：横幅先行，环境门禁拒绝时也保留版本事实。
+    reportApexVersion(deps.output, deps.redaction, input.environment.agentVersion);
     try {
       assertEnvironmentSupported(input.environment);
     } catch (error) {
@@ -133,7 +173,15 @@ export function createResumeRun(deps: RunCommandDeps): {
 
     let classification: ResumeClassification;
     try {
-      classification = classifyResumeRun(run, input.force);
+      // §2.4：先判定属主存活性，再决定接管是否需要显式 --force。
+      const liveness = await readOwnerLiveness(discovered.stateStore, deps.clock, run.runId);
+      logger.log('debug', 'resume.owner_liveness', {
+        runId: run.runId,
+        status: run.status,
+        liveness: liveness.kind,
+        force: input.force,
+      });
+      classification = classifyResumeRun(run, input.force, liveness);
     } catch (error) {
       return commandError(asApexError(error, 'resume'));
     }
@@ -232,20 +280,41 @@ export function createResumeRun(deps: RunCommandDeps): {
     }
   }
 
-  async function drivePrepared(prepared: PreparedResume): Promise<ResumeRunResult> {
+  async function drivePrepared(
+    prepared: PreparedResume,
+    force: boolean,
+  ): Promise<ResumeRunResult> {
     const { bound, run, classification, validatedHead } = prepared;
     let reconciled = run;
     if (classification.requiresOrphanReconciliation) {
+      /**
+       * 免 --force 接管完全依赖"崩溃离场"判定；判定之后经历了能力探测与
+       * Git 预检（秒级窗口），一个恰好苏醒的旧进程可能已重新发送信号。
+       * 写入任何接管事实前复核一次，发现新鲜/不可读信号立即退回人工确认。
+       * 显式 --force 是用户的人工断言，跳过复核。
+       */
+      if (!force) {
+        const recheck = await readOwnerLiveness(bound.stateStore, deps.clock, run.runId);
+        if (recheck.kind === 'active' || recheck.kind === 'unreadable') {
+          return commandError(
+            new ApexError({
+              code: 'RESUME_REQUIRES_FORCE',
+              stage: 'resume',
+              message:
+                `run ${run.runId} sent a fresh heartbeat while resume was preparing; ` +
+                'a live process may have taken over — resume requires the explicit --force flag',
+            }),
+          );
+        }
+      }
       deps.output.writeLine(
-        deps.redaction.redactText(
-          `警告：系统无法判断 run ${run.runId} 的旧 Apex/Claude 进程是否仍然存在；` +
-            '请确认旧进程不再写入仓库后再继续。resume 不终止任何进程。',
-        ),
+        deps.redaction.redactText(takeoverWarning(run, classification.liveness)),
       );
       const orphaned = new ApexError({
         code: 'RUN_INTERRUPTED',
         stage: 'resume',
-        message: `run ${run.runId} taken over by resume --force after coordinator loss`,
+        message:
+          `run ${run.runId} taken over by resume${force ? ' --force' : ''} after coordinator loss`,
         sessionId: run.activeSession?.sessionId ?? null,
         taskId: run.currentTaskId,
       });
@@ -263,6 +332,15 @@ export function createResumeRun(deps: RunCommandDeps): {
     } catch (error) {
       return commandError(asApexError(error, 'resume'));
     }
+    // 接管提交点落盘后，本进程成为新的前台属主，开始发送存活信号。
+    heartbeat = createRunHeartbeat({
+      stateStore: bound.stateStore,
+      clock: deps.clock,
+      runId: run.runId,
+      logger,
+      scheduleInterval: deps.scheduleInterval,
+    });
+    heartbeat.start();
     deps.output.writeLine(
       deps.redaction.redactText(
         `[apex] run ${run.runId} resumed (${run.status} -> ${classification.point.fromStatus})`,
@@ -307,8 +385,11 @@ export function createResumeRun(deps: RunCommandDeps): {
     async execute(input: ResumeRunInput): Promise<ResumeRunResult> {
       try {
         const prepared = await prepare(input);
-        return 'kind' in prepared ? prepared : await drivePrepared(prepared);
+        return 'kind' in prepared ? prepared : await drivePrepared(prepared, input.force);
       } finally {
+        // 存活信号随前台进程收尾停止；文件保留为最后一次已知存活时间。
+        heartbeat?.close();
+        heartbeat = null;
         await logger.flush();
       }
     },

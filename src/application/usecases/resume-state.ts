@@ -11,6 +11,7 @@ import type { ResumePoint, RunJson } from '../../domain/schemas/run-json.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
 import type { FileSystemPort } from '../ports/file-system.js';
 import type { StateStorePort } from '../ports/state-store.js';
+import type { OwnerLiveness } from './run-heartbeat.js';
 
 const STATE_DIR_NAME = '.apex-coding-agent';
 
@@ -24,6 +25,8 @@ export interface DiscoveredResumeState {
 export interface ResumeClassification {
   readonly point: ResumePoint;
   readonly requiresOrphanReconciliation: boolean;
+  /** 分类时依据的属主存活性（终态恢复为 null：无需判定）。 */
+  readonly liveness: OwnerLiveness | null;
 }
 
 /** Windows 绝对路径统一为 `/`，仅用于应用层路径比较与向上遍历。 */
@@ -116,8 +119,19 @@ export async function discoverResumeState(
   }
 }
 
-/** 只根据已校验 Run 与显式 --force 判定恢复形态。 */
-export function classifyResumeRun(run: RunJson, force: boolean): ResumeClassification {
+/**
+ * 只根据已校验 Run、显式 --force 与属主存活性判定恢复形态。
+ *
+ * 非终态 Run 的接管门槛（§17 resume + §2.4 崩溃判定）：
+ * - 存活信号判定崩溃离场：系统有确切依据，免 --force 自动接管；
+ * - 信号新鲜或不可读：旧进程可能仍在，必须显式 --force；
+ * - 无信号（旧版本 Run 或信号未写入）：保持原有人工确认 + --force 语义。
+ */
+export function classifyResumeRun(
+  run: RunJson,
+  force: boolean,
+  liveness: OwnerLiveness,
+): ResumeClassification {
   if (isTerminalRunStatus(run.status)) {
     if (run.status !== 'failed' || run.resumePoint === null) {
       throw new ApexError({
@@ -130,26 +144,47 @@ export function classifyResumeRun(run: RunJson, force: boolean): ResumeClassific
             : `run ${run.runId} is already terminal (${run.status}); nothing to resume`,
       });
     }
-    return { point: run.resumePoint, requiresOrphanReconciliation: false };
+    return { point: run.resumePoint, requiresOrphanReconciliation: false, liveness: null };
   }
 
-  if (!force) {
+  if (force || liveness.kind === 'presumed_dead') {
+    return {
+      point: {
+        fromStatus: run.status,
+        taskId: run.currentTaskId,
+        sessionId: run.activeSession?.sessionId ?? null,
+      },
+      requiresOrphanReconciliation: true,
+      liveness,
+    };
+  }
+
+  if (liveness.kind === 'active') {
     throw new ApexError({
       code: 'RESUME_REQUIRES_FORCE',
       stage: 'resume',
       message:
-        `run ${run.runId} is ${run.status} (possibly still owned by a crashed process); ` +
-        'resume requires the explicit --force flag',
+        `run ${run.runId} is ${run.status} and its owner process is still alive ` +
+        `(heartbeat ${Math.round(liveness.ageMs / 1000)}s ago); confirm it has exited, ` +
+        'then resume requires the explicit --force flag',
     });
   }
-  return {
-    point: {
-      fromStatus: run.status,
-      taskId: run.currentTaskId,
-      sessionId: run.activeSession?.sessionId ?? null,
-    },
-    requiresOrphanReconciliation: true,
-  };
+  if (liveness.kind === 'unreadable') {
+    throw new ApexError({
+      code: 'RESUME_REQUIRES_FORCE',
+      stage: 'resume',
+      message:
+        `run ${run.runId} is ${run.status} and its heartbeat file is unreadable; ` +
+        'a live process may still own it — resume requires the explicit --force flag',
+    });
+  }
+  throw new ApexError({
+    code: 'RESUME_REQUIRES_FORCE',
+    stage: 'resume',
+    message:
+      `run ${run.runId} is ${run.status} (possibly still owned by a crashed process); ` +
+      'resume requires the explicit --force flag',
+  });
 }
 
 /**

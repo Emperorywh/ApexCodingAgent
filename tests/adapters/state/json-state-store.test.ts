@@ -375,3 +375,33 @@ describe('plan revision commit (SPEC §11.2)', () => {
     await expectApexErrorAsync(() => store.readConsistentSnapshot(), 'STATE_SNAPSHOT_BUSY');
   });
 });
+
+describe('heartbeat.json liveness facts (§2.4)', () => {
+  const HEARTBEAT_PATH = `${STATE_DIR}/heartbeat.json`;
+  const FACT = { runId: 'RUN-123e4567-e89b-42d3-a456-426614174000', at: '2026-01-01T00:00:00.000Z' };
+
+  it('round-trips a heartbeat fact and overwrites with the latest value', async () => {
+    expect(await store.readHeartbeat()).toBeNull();
+    await store.writeHeartbeat(FACT);
+    expect(await store.readHeartbeat()).toEqual(FACT);
+
+    const newer = { ...FACT, at: '2026-01-01T00:05:00.000Z' };
+    await store.writeHeartbeat(newer);
+    expect(await store.readHeartbeat()).toEqual(newer);
+  });
+
+  it('treats corrupt content as unreadable instead of guessing', async () => {
+    fs.files.set(HEARTBEAT_PATH, new TextEncoder().encode('{ "runId": '));
+    expect(await store.readHeartbeat()).toBe('unreadable');
+  });
+
+  it('treats structurally foreign content as unreadable', async () => {
+    fs.files.set(HEARTBEAT_PATH, new TextEncoder().encode(JSON.stringify({ hello: 'world' })));
+    expect(await store.readHeartbeat()).toBe('unreadable');
+  });
+
+  it('maps write I/O failures to STATE_WRITE_FAILED', async () => {
+    fs.injectFailure({ op: 'writeFile', pathIncludes: 'heartbeat.json', error: new Error('disk full') });
+    await expectApexErrorAsync(() => store.writeHeartbeat(FACT), 'STATE_WRITE_FAILED');
+  });
+});

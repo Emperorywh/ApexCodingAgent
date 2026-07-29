@@ -85,7 +85,12 @@ function makeRuntime(overrides: Partial<CliRuntime> = {}): FakeRuntime {
   const disposed: number[] = [];
   const runtime: CliRuntime = {
     cwd: '/repo',
-    environment: { platform: 'win32', release: '10.0.22631', nodeVersion: 'v22.11.0' },
+    environment: {
+      platform: 'win32',
+      release: '10.0.22631',
+      nodeVersion: 'v22.11.0',
+      agentVersion: '0.0.0-test',
+    },
     stdout: (text) => stdout.push(text),
     stderr: (text) => stderr.push(text),
     redaction: createRedactor(),

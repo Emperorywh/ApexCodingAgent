@@ -522,6 +522,8 @@ describe('e2e startup validation (§8.1)', () => {
         expect(second.kind).toBe('startup-failed');
         if (second.kind === 'startup-failed') {
           expect(second.error.errorCode).toBe('RUN_ALREADY_ACTIVE_OR_INTERRUPTED');
+          // 第一个 Run 的存活信号新鲜：拒绝文案明确指出属主进程仍存活。
+          expect(second.error.message).toContain('still alive');
         }
 
         // 收尾：中断第一个 Run（有界结束为 failed）。

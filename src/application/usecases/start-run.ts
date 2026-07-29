@@ -29,8 +29,15 @@ import {
   assertEnvironmentSupported,
   assertStateDirectoryWritable,
   probeClaudeCapabilities,
+  reportApexVersion,
   type EnvironmentFacts,
 } from './run-runtime-preflight.js';
+import {
+  createRunHeartbeat,
+  readOwnerLiveness,
+  type OwnerLiveness,
+  type RunHeartbeat,
+} from './run-heartbeat.js';
 
 export interface StartRunInput {
   /** 命令调用目录。 */
@@ -57,6 +64,41 @@ export type StartRunResult =
 
 const STATE_DIR_NAME = '.apex-coding-agent';
 
+/**
+ * §8.1 第 12 项拒绝文案：按属主存活性给出精确的行动指引。
+ * 只有"崩溃离场"可以免人工排查直接 resume；其余形态保持人工确认语义。
+ */
+function runAlreadyActiveError(run: RunJson, liveness: OwnerLiveness): ApexError {
+  const guidance = ((): string => {
+    switch (liveness.kind) {
+      case 'active':
+        return (
+          `its owner process is still alive (heartbeat ${Math.round(liveness.ageMs / 1000)}s ago); ` +
+          'wait for it to exit, then use resume to continue it or abandon --force'
+        );
+      case 'unreadable':
+        return (
+          'its heartbeat file is unreadable and a live process may still own it; ' +
+          'inspect old processes and use resume --force to continue it or abandon --force'
+        );
+      case 'presumed_dead':
+        return (
+          `but its owner process sent no heartbeat for ${Math.round(liveness.ageMs / 1000)}s and is presumed crashed; ` +
+          'use resume to continue it (no --force needed) or abandon --force'
+        );
+      case 'unknown':
+        return (
+          'inspect old processes and use resume --force to continue it or abandon --force'
+        );
+    }
+  })();
+  return new ApexError({
+    code: 'RUN_ALREADY_ACTIVE_OR_INTERRUPTED',
+    stage: 'startup',
+    message: `run ${run.runId} is ${run.status}; ${guidance} before starting a new run`,
+  });
+}
+
 export function createStartRun(deps: RunCommandDeps): {
   execute(input: StartRunInput): Promise<StartRunResult>;
 } {
@@ -67,6 +109,8 @@ export function createStartRun(deps: RunCommandDeps): {
    * 输出。注意上一终态 Run 归档会清空 logs/，归档前写入的行随旧 Run 归档。
    */
   let logger: LoggerPort = createNullLogger();
+  /** 前台属主存活信号写入器；Run 创建后启动，进程收尾前停止。 */
+  let heartbeat: RunHeartbeat | null = null;
 
   async function executeInner(input: StartRunInput): Promise<StartRunResult> {
     // ---- §8.1 启动检查 + §8.2 步骤 1–4：任何失败都不创建新 Run ----
@@ -80,6 +124,8 @@ export function createStartRun(deps: RunCommandDeps): {
       readonly run: RunJson;
     };
     try {
+      // 启动横幅先行：即使环境门禁拒绝启动，输出版本也有助排障。
+      reportApexVersion(deps.output, deps.redaction, input.environment.agentVersion);
       assertEnvironmentSupported(input.environment);
 
       // 先用 CLI 提供（或默认）的 Git 入口解析仓库与设置，再按 §16 优先级
@@ -166,13 +212,18 @@ export function createStartRun(deps: RunCommandDeps): {
         throw error;
       }
       if (existing !== null && (existing.status === 'planning' || existing.status === 'running' || existing.status === 'final_review')) {
-        throw new ApexError({
-          code: 'RUN_ALREADY_ACTIVE_OR_INTERRUPTED',
-          stage: 'startup',
-          message:
-            `run ${existing.runId} is ${existing.status}; inspect old processes and ` +
-            'use resume --force to continue it or abandon --force before starting a new run',
+        /**
+         * §8.1 第 12 项 + §2.4：存活信号把"旧进程是否还在"从纯人工排查
+         * 变成有依据的判定；崩溃离场给出免 --force 的精确指引，其余形态
+         * 保持原有人工确认语义。拦截行为本身不变：start 永不接管旧 Run。
+         */
+        const liveness = await readOwnerLiveness(bound.stateStore, deps.clock, existing.runId);
+        logger.log('debug', 'startup.existing_run_liveness', {
+          runId: existing.runId,
+          status: existing.status,
+          liveness: liveness.kind,
         });
+        throw runAlreadyActiveError(existing, liveness);
       }
 
       // §8.2 步骤 1：幂等排除状态目录（用真实 exclude 文件，不改 .gitignore）。
@@ -242,6 +293,15 @@ export function createStartRun(deps: RunCommandDeps): {
         baseBranch: initialRun.repository.baseBranch,
         runBranch: initialRun.repository.runBranch,
       });
+      // 属主存活信号自此开始：创建点到首次驱动之间的崩溃同样可被判定。
+      heartbeat = createRunHeartbeat({
+        stateStore: bound.stateStore,
+        clock: deps.clock,
+        runId,
+        logger,
+        scheduleInterval: deps.scheduleInterval,
+      });
+      heartbeat.start();
       prepared = { root, stateDir, git, claude, bound, runId, run: initialRun };
     } catch (error) {
       const startupError = isApexError(error)
@@ -335,6 +395,9 @@ export function createStartRun(deps: RunCommandDeps): {
       try {
         return await executeInner(input);
       } finally {
+        // 存活信号随前台进程收尾停止；文件保留为最后一次已知存活时间。
+        heartbeat?.close();
+        heartbeat = null;
         // 进程收尾与下次归档前确保尾部调试事件落盘，不丢失诊断。
         await logger.flush();
       }

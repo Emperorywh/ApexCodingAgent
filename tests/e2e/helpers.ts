@@ -49,6 +49,9 @@ export const FAKE_CLAUDE_PATH = fileURLToPath(
 
 export { COMPLETE_HELP, FAKE_VERSION };
 
+/** e2e 注入的 ApexCodingAgent 版本横幅值（生产路径由 bootstrap 从 package.json 读取）。 */
+export const E2E_AGENT_VERSION = '0.0.0-e2e';
+
 /** 序列场景元素（tests/fake-claude/claude.mjs 的契约镜像）。 */
 export interface ScenarioElement {
   readonly stdoutLines?: readonly (string | Record<string, unknown>)[];
@@ -103,6 +106,12 @@ export interface E2EHarness {
   readSessionRecord(sessionId: string): Promise<SessionRecord>;
   listSessionRecords(): Promise<SessionRecord[]>;
   readReport(): Promise<string>;
+  /**
+   * 直接布置/清除 heartbeat.json：崩溃现场仿真（绕过前台信号写入器，
+   * 等价于进程猝死后磁盘上的实际残留）。
+   */
+  writeHeartbeat(fact: { runId: string; at: string }): Promise<void>;
+  removeHeartbeat(): Promise<void>;
   makeBoundDeps(): UseCaseDeps;
   cleanup(): Promise<void>;
 }
@@ -162,6 +171,12 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       interrupt: intCtrl,
       wait,
       interruptWaitMs,
+      scheduleInterval: (callback, intervalMs) => {
+        const timer = setInterval(callback, intervalMs);
+        return () => {
+          clearInterval(timer);
+        };
+      },
       makeGitPort: (gitCliPath) => {
         /*
          * 与 Claude 路径记录保持同一层级，只观察工厂输入，不替换真实
@@ -203,6 +218,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     platform: process.platform,
     release: release(),
     nodeVersion: process.version,
+    agentVersion: E2E_AGENT_VERSION,
   };
 
   const savedScenario = process.env['APEX_FAKE_CLAUDE_SCENARIO'];
@@ -293,6 +309,12 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     },
     async readReport() {
       return readFile(join(stateDir, 'report.md'), 'utf8');
+    },
+    async writeHeartbeat(fact) {
+      await writeFile(join(stateDir, 'heartbeat.json'), JSON.stringify(fact, null, 2), 'utf8');
+    },
+    async removeHeartbeat() {
+      await rm(join(stateDir, 'heartbeat.json'), { force: true });
     },
     makeBoundDeps() {
       return startDeps.makeBoundDeps({

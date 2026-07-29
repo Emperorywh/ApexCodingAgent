@@ -13,8 +13,9 @@
  *    否则 ARCHIVE_CONFLICT。
  *
  * 发布成功后清理（§4.4）：保留 settings.json；清除根级 tasks.json、
- * run.json、report.md；清空 plans/、sessions/、logs/。归档只复制程序事实，
- * 不切换、修改或删除任何 Branch、Checkpoint 或用户文件。
+ * run.json、report.md 与属主存活信号（heartbeat.json 是旧前台进程的
+ * 运行期事实，不归档、不得带入下一 Run）；清空 plans/、sessions/、logs/。
+ * 归档只复制程序事实，不切换、修改或删除任何 Branch、Checkpoint 或用户文件。
  */
 import { ApexError } from '../../domain/errors.js';
 import { isTerminalRunStatus } from '../../domain/run-state.js';
@@ -294,7 +295,9 @@ export function createRunArchiver(options: RunArchiverOptions): RunArchivePort {
       }
 
       // 发布后清理：保留 settings.json，清除根级 Run 事实与旧目录内容。
-      for (const rootFile of ['run.json', 'tasks.json', 'report.md']) {
+      // heartbeat.json 一并清除：它是旧前台进程的存活信号，归档后对新 Run
+      // 只是 runId 不匹配的噪声，留着没有任何判定价值。
+      for (const rootFile of ['run.json', 'tasks.json', 'report.md', 'heartbeat.json']) {
         if (await pathExists(`${stateDir}/${rootFile}`)) {
           await fs.unlink(`${stateDir}/${rootFile}`);
         }

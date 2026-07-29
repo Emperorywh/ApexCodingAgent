@@ -5,7 +5,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createE2EHarness, executionCompleted, finalReviewCompleted, planDraft, streamOf, COMPLETE_HELP, FAKE_VERSION } from './helpers.js';
+import { createE2EHarness, executionCompleted, finalReviewCompleted, planDraft, streamOf, COMPLETE_HELP, E2E_AGENT_VERSION, FAKE_VERSION } from './helpers.js';
 import { seedRepo } from '../integration/git/helpers.js';
 
 const ONE_TASK = {
@@ -49,7 +49,8 @@ describe('e2e debug logging', () => {
       expect(progress.some((line) => line.includes('session') && line.includes('planning started'))).toBe(true);
       expect(progress.some((line) => line.includes('finished in') && line.includes('exit 0'))).toBe(true);
 
-      // 启动探测后输出版本行；init 元数据到达后输出模型行
+      // 启动横幅先输出 Apex 自身版本；探测后输出 Claude 版本行；init 元数据到达后输出模型行
+      expect(progress.some((line) => line.includes(`ApexCodingAgent version: ${E2E_AGENT_VERSION}`))).toBe(true);
       expect(progress.some((line) => line.includes(`claude version: ${FAKE_VERSION}`))).toBe(true);
       expect(progress.some((line) => line.includes('using model fake-model'))).toBe(true);
 

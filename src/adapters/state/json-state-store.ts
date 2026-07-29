@@ -18,6 +18,7 @@ import type { FileSystemPort } from '../../application/ports/file-system.js';
 import type {
   ConsistentSnapshot,
   PlanRevisionCommit,
+  RunHeartbeatFact,
   StateStorePort,
 } from '../../application/ports/state-store.js';
 import { ApexError } from '../../domain/errors.js';
@@ -39,11 +40,13 @@ import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 import {
   ensureDirectory,
+  isNotFound,
   readJsonIfExists,
   serializeJson,
   sha256Hex,
   stateValidationFailed,
   stateWriteFailed,
+  tempPathFor,
   writeJsonAtomically,
   type ReadJsonResult,
 } from './json-file-writer.js';
@@ -64,6 +67,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   const { stateDir, fs } = options;
   const runPath = `${stateDir}/run.json`;
   const tasksPath = `${stateDir}/tasks.json`;
+  const heartbeatPath = `${stateDir}/heartbeat.json`;
   const plansDir = `${stateDir}/plans`;
   const sessionsDir = `${stateDir}/sessions`;
   const snapshotPath = (planRevision: number): string => `${plansDir}/${planRevision}.json`;
@@ -319,6 +323,49 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
     });
   }
 
+  /**
+   * 存活信号是覆盖式最新值语义：同目录 temp→rename 保证读者永远看到完整
+   * 内容，但不走 schema 注册表与 Domain 校验（它不是聚合，SPEC §11.2 的
+   * 写协议只对状态事实生效）。
+   */
+  async function writeHeartbeat(fact: RunHeartbeatFact): Promise<void> {
+    const bytes = serializeJson(fact);
+    const tempPath = tempPathFor(heartbeatPath);
+    try {
+      await fs.writeFile(tempPath, bytes);
+    } catch (error) {
+      throw stateWriteFailed(`failed to write temporary file for ${heartbeatPath}`, error);
+    }
+    try {
+      await fs.rename(tempPath, heartbeatPath);
+    } catch (error) {
+      await fs.unlink(tempPath).catch(() => undefined);
+      throw stateWriteFailed(`failed to replace ${heartbeatPath}`, error);
+    }
+  }
+
+  async function readHeartbeat(): Promise<RunHeartbeatFact | null | 'unreadable'> {
+    let bytes: Uint8Array;
+    try {
+      bytes = await fs.readFile(heartbeatPath);
+    } catch (error) {
+      // 不存在 = 没有信号；其余 I/O 失败一律按不可读保守处理。
+      return isNotFound(error) ? null : 'unreadable';
+    }
+    try {
+      const parsed: unknown = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        if (typeof record['runId'] === 'string' && typeof record['at'] === 'string') {
+          return { runId: record['runId'], at: record['at'] };
+        }
+      }
+      return 'unreadable';
+    } catch {
+      return 'unreadable';
+    }
+  }
+
   return {
     readRun,
     writeRun,
@@ -330,5 +377,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
     writeSessionRecord,
     commitPlanRevision,
     readConsistentSnapshot,
+    writeHeartbeat,
+    readHeartbeat,
   };
 }

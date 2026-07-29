@@ -27,6 +27,11 @@ export interface RunCommandDeps {
   readonly interrupt: InterruptController;
   readonly wait: (ms: number) => Promise<void>;
   readonly interruptWaitMs: number;
+  /**
+   * 周期调度器（组合根用 unref 的 setInterval 实现），返回解除函数。
+   * 目前唯一消费者是前台属主存活信号（usecases/run-heartbeat）。
+   */
+  readonly scheduleInterval: (callback: () => void, intervalMs: number) => () => void;
   /** 按最终生效路径构造 Git 适配器。 */
   readonly makeGitPort: (gitCliPath: string | null) => GitPort;
   /** 按最终生效路径构造 Claude 适配器。 */

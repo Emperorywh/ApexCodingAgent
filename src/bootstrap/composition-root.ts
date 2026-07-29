@@ -75,6 +75,14 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
       // unref：会话结束后遗留的心跳定时器不得拖延进程退出。
       setTimeout(resolve, ms).unref();
     });
+  // 属主存活信号的周期调度；unref 同理：定时器不得拖延进程退出。
+  const scheduleInterval: RunCommandDeps['scheduleInterval'] = (callback, intervalMs) => {
+    const timer = setInterval(callback, intervalMs);
+    timer.unref();
+    return () => {
+      clearInterval(timer);
+    };
+  };
 
   const makeGitPort: RunCommandDeps['makeGitPort'] = (gitCliPath) =>
     createGitAdapter(gitCliPath === null ? {} : { gitPath: gitCliPath });
@@ -128,6 +136,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     interrupt,
     wait,
     interruptWaitMs: INTERRUPT_WAIT_MS,
+    scheduleInterval,
     makeGitPort,
     makeClaudePort,
     makeStateStore,
@@ -144,6 +153,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     interrupt,
     wait,
     interruptWaitMs: INTERRUPT_WAIT_MS,
+    scheduleInterval,
     makeGitPort,
     makeClaudePort,
     makeStateStore,

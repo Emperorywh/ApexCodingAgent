@@ -16,6 +16,7 @@ import type { RedactionPort } from '../ports/redaction.js';
 import type { StateStorePort } from '../ports/state-store.js';
 import { toErrorRecord } from './error-record.js';
 import { reconcileOrphanedSessionFacts } from './orphaned-session-reconciler.js';
+import { readOwnerLiveness, type OwnerLiveness } from './run-heartbeat.js';
 
 export interface AbandonRunDeps {
   readonly stateStore: StateStorePort;
@@ -31,6 +32,31 @@ export interface AbandonRunInput {
 
 export interface AbandonRunResult {
   readonly run: RunJson;
+}
+
+/**
+ * §17 第 3 步风险提示：有存活信号依据时给出精确事实，无依据时保持
+ * "系统无法判断"的人工确认语义。abandon 始终要求 --force（§17 第 2 步），
+ * 存活信号只改变提示内容，不改变门槛。
+ */
+function abandonRiskWarning(run: RunJson, liveness: OwnerLiveness): string {
+  switch (liveness.kind) {
+    case 'presumed_dead':
+      return (
+        `run ${run.runId} 的属主进程已 ${Math.round(liveness.ageMs / 1000)} 秒未发送存活信号，` +
+        '判定为崩溃离场；本命令只做状态收尾，不终止任何进程、不修改 Git。'
+      );
+    case 'active':
+      return (
+        `警告：run ${run.runId} 的属主进程在 ${Math.round(liveness.ageMs / 1000)} 秒前仍有存活信号；` +
+        '请确认旧进程已停止，否则 abandon 会与仍在运行的进程并发写状态。本命令不终止任何进程、不修改 Git。'
+      );
+    default:
+      return (
+        `警告：系统无法判断 run ${run.runId} 的旧 Apex/Claude 进程是否仍然存在；` +
+        '请确认旧进程不再写入仓库后再继续。本命令不终止任何进程、不修改 Git。'
+      );
+  }
 }
 
 export function createAbandonRun(deps: AbandonRunDeps): {
@@ -78,13 +104,9 @@ export function createAbandonRun(deps: AbandonRunDeps): {
       });
     }
 
-    // §17 第 3 步：风险提示（系统无法判断旧进程是否仍然存在）。
-    deps.output.writeLine(
-      deps.redaction.redactText(
-        `警告：系统无法判断 run ${run.runId} 的旧 Apex/Claude 进程是否仍然存在；` +
-          '请确认旧进程不再写入仓库后再继续。本命令不终止任何进程、不修改 Git。',
-      ),
-    );
+    // §17 第 3 步：按属主存活性给出精确风险提示。
+    const liveness = await readOwnerLiveness(deps.stateStore, deps.clock, run.runId);
+    deps.output.writeLine(deps.redaction.redactText(abandonRiskWarning(run, liveness)));
 
     const abandoned = new ApexError({
       code: 'RUN_ABANDONED_BY_USER',

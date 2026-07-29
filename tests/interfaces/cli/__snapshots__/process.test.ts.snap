@@ -18,7 +18,8 @@ exports[`cli process: help & usage (§17) > --help exits 0 and matches the docum
   resume    恢复被中断（RUN_INTERRUPTED）的 Run：重开为中断前状态并前台
             运行到终态；Planning、Execution 或 Final Review 会话被中断时
             续接原 Claude 对话上下文。仅确认原 transcript 不可用时回退为
-            一趟全新会话。对崩溃残留的非终态 Run 必须显式 --force
+            一趟全新会话。对崩溃残留的非终态 Run：存活信号判定旧进程已
+            崩溃时自动接管（免 --force），否则必须显式 --force
   status    只读展示最近成功写入的一致性快照（读取 failed/abandoned 也算成功）
   report    只为终态 Run 生成或重新生成 report.md，失败不修改终态
   abandon   把无法继续的非终态 Run 显式转为 abandoned，必须显式 --force
@@ -36,8 +37,10 @@ start 参数与选项:
 
 resume 参数与选项:
   --full-access             原 Run 使用 bypassPermissions 时必须再次显式授权
-  --force                   恢复崩溃残留的非终态 Run（旧进程可能仍在，
-                            请先确认其已停止）
+  --force                   恢复崩溃残留的非终态 Run；旧进程仍有存活信号
+                            或信号缺失/不可读时必须显式提供（请先确认旧进程
+                            已停止）；信号超时确认崩溃时 resume 自动免
+                            --force 接管
   --claude-cli-path <path>  Claude CLI 入口（默认: 原 Run 记录或 PATH 中的 claude）
   --git-cli-path <path>     Git CLI 入口（默认: 原 Run 记录或 PATH 中的 git）
   -v, --verbose             把调试日志镜像到 stderr
@@ -58,5 +61,10 @@ resume CLI 路径优先级: 显式 CLI 参数 > 原 Run 快照 > settings.json >
 （停新 Session、终止直接 Claude 子进程、最多等待 10 秒、保存事实、
 Run 转 failed 并记录恢复点，以 130 退出）；第二次中断信号立即结束进程。
 中断后的 Run 可用 resume 从断点继续，不会重做已完成 Task。
+
+崩溃判定（§2.4）: 前台 Run 每 5 秒向状态目录写入一次存活信号
+（heartbeat.json）。进程被强制结束后信号停止更新，超过 30 秒未更新即
+判定旧进程已崩溃：此时 start 会给出精确指引，resume 免 --force 自动
+接管；信号新鲜、缺失或不可读时仍需人工确认并显式 --force。
 "
 `;

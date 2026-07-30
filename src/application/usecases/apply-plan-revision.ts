@@ -9,7 +9,7 @@
 import { mergePlanRevision } from '../../domain/plan.js';
 import { applyRunEvent } from '../../domain/run-state.js';
 import { ApexError } from '../../domain/errors.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlanRevisionSnapshot, PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
@@ -56,7 +56,7 @@ export async function applyPlanRevision(
     unabsorbedCheckpoints: unabsorbedCheckpoints(run),
   });
 
-  const generatedAt = formatRfc3339Utc(deps.clock.now());
+  const generatedAt = formatRfc3339InSystemTimeZone(deps.clock.now());
 
   // §6.5 步骤 4–6：completed 原样；retained pending 原样；被省略的转
   // skipped（保留 executionEpisodes）；新增 Task 建全新 pending 运行态。

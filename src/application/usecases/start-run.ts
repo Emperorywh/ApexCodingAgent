@@ -13,7 +13,7 @@
  * run.json.runSettings，Run 期间不重载。
  */
 import { ApexError, isApexError } from '../../domain/errors.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { ExecutionPermissionMode } from '../../domain/schemas/settings-json.js';
 import type { ClaudeRuntimePort } from '../ports/ClaudeRuntimePort.js';
@@ -102,7 +102,7 @@ function runAlreadyActiveError(run: RunJson, liveness: OwnerLiveness): ApexError
 export function createStartRun(deps: RunCommandDeps): {
   execute(input: StartRunInput): Promise<StartRunResult>;
 } {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
 
   /**
    * 调试日志在 stateDir 确定后由 makeLogger 装配；此前的失败由 CLI 错误面

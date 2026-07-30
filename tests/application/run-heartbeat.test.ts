@@ -14,6 +14,7 @@ import {
 import { classifyResumeRun } from '../../src/application/usecases/resume-state.js';
 import type { ClockPort } from '../../src/application/ports/clock.js';
 import { createNullLogger } from '../../src/application/ports/logger.js';
+import { formatRfc3339InSystemTimeZone } from '../../src/domain/time.js';
 import type {
   RunHeartbeatFact,
   StateStorePort,
@@ -203,7 +204,14 @@ describe('createRunHeartbeat (§2.4)', () => {
     heartbeat.start();
     await settled();
     expect(written).toHaveLength(1);
-    expect(written[0]).toEqual({ runId: RUN_ID, at: '2026-01-01T00:10:00.000Z' });
+    /*
+     * 心跳参与恢复接管判定，但其持久化格式仍必须与其他程序时间一致，
+     * 使用当前操作系统时区且保持同一个绝对时间点。
+     */
+    expect(written[0]).toEqual({
+      runId: RUN_ID,
+      at: formatRfc3339InSystemTimeZone(new Date(NOW)),
+    });
     expect(ticks).toHaveLength(1);
     // 上一拍未写完时重叠的 tick 会被跳过：先落盘再触发下一拍。
     ticks[0]!();

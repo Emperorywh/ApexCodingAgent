@@ -6,9 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { createDebugLogger } from '../../../src/adapters/logging/debug-file-logger.js';
 import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import type { ClockPort } from '../../../src/application/ports/clock.js';
+import { formatRfc3339InSystemTimeZone } from '../../../src/domain/time.js';
 import { InMemoryFileSystem } from '../state/in-memory-file-system.js';
 
-const clock: ClockPort = { now: () => new Date('2026-07-28T00:00:00.000Z') } as ClockPort;
+const CLOCK_DATE = new Date('2026-07-28T00:00:00.000Z');
+const clock: ClockPort = { now: () => CLOCK_DATE } as ClockPort;
 
 /**
  * 日志格式正确性依赖结构化脱敏的类型保持语义，因此这里直接使用生产
@@ -62,8 +64,12 @@ describe('debug file logger', () => {
     expect(lines).toHaveLength(2);
 
     const first = JSON.parse(lines[0]!) as Record<string, unknown>;
+    /*
+     * 日志时间必须复用全局格式化契约，确保它与运行状态、心跳和报告中的
+     * 时间一样使用当前操作系统时区。
+     */
     expect(first).toEqual({
-      ts: '2026-07-28T00:00:00.000Z',
+      ts: formatRfc3339InSystemTimeZone(CLOCK_DATE),
       level: 'debug',
       event: 'run.created',
       runId: 'RUN-1',

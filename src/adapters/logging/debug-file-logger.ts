@@ -2,14 +2,15 @@
  * 调试文件日志适配器（SPEC §18.4 脱敏边界、NFR-005）：LoggerPort 的落盘实现。
  *
  * - 输出为 JSON Lines：每行 `{"ts","level","event",...fields}`，时间戳为
- *   RFC3339 UTC；完整记录先做类型安全的结构化脱敏，再序列化到 sink；
+ *   当前操作系统时区下的 RFC 3339；完整记录先做类型安全的结构化脱敏，
+ *   再序列化到 sink；
  * - `log` 同步返回：追加写经内部 Promise 链串行化，保证行序与调用序一致；
  *   首次写入前惰性创建父目录（此时状态目录必然已存在）；
  * - 写失败只回调 `onWriteFailure` 诊断，绝不抛出、不打断后续写入——调试
  *   日志不得影响 Run 本身；
  * - `mirror`（--verbose 的 stderr 镜像）同步调用，与文件写入解耦。
  */
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { ClockPort } from '../../application/ports/clock.js';
 import type { FileSystemPort } from '../../application/ports/file-system.js';
 import type { LoggerPort, LogFields, LogLevel } from '../../application/ports/logger.js';
@@ -40,7 +41,7 @@ export function createDebugLogger(options: DebugFileLoggerOptions): LoggerPort {
     fields: LogFields | undefined,
   ): Record<string, string | number | boolean | null> {
     return {
-      ts: formatRfc3339Utc(options.clock.now()),
+      ts: formatRfc3339InSystemTimeZone(options.clock.now()),
       level,
       event,
       ...fields,

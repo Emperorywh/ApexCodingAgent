@@ -12,7 +12,10 @@ import {
   taskIdNumber,
 } from '../../src/domain/ids.js';
 import { isGitRelativePath } from '../../src/domain/paths.js';
-import { formatRfc3339Utc, isRfc3339Utc } from '../../src/domain/time.js';
+import {
+  formatRfc3339InSystemTimeZone,
+  isRfc3339,
+} from '../../src/domain/time.js';
 import { RUN_ID, UUID_1 } from './fixtures.js';
 
 describe('ids', () => {
@@ -102,30 +105,42 @@ describe('Git relative paths', () => {
 });
 
 describe('time', () => {
-  it('accepts UTC RFC 3339 with Z designator', () => {
-    expect(isRfc3339Utc('2026-01-01T00:00:00Z')).toBe(true);
-    expect(isRfc3339Utc('2026-01-01T00:00:00.123Z')).toBe(true);
-    expect(isRfc3339Utc('2026-02-29T23:59:59Z')).toBe(false); // 2026 is not a leap year
-    expect(isRfc3339Utc('2024-02-29T23:59:59Z')).toBe(true); // 2024 is a leap year
+  it('accepts RFC 3339 with a Z designator or numeric offset', () => {
+    expect(isRfc3339('2026-01-01T00:00:00Z')).toBe(true);
+    expect(isRfc3339('2026-01-01T00:00:00.123+08:00')).toBe(true);
+    expect(isRfc3339('2026-01-01T00:00:00-05:30')).toBe(true);
+    expect(isRfc3339('2026-02-29T23:59:59+08:00')).toBe(false); // 2026 is not a leap year
+    expect(isRfc3339('2024-02-29T23:59:59+08:00')).toBe(true); // 2024 is a leap year
   });
 
-  it('rejects offsets, missing Z and out-of-range components', () => {
-    expect(isRfc3339Utc('2026-01-01T00:00:00+08:00')).toBe(false);
-    expect(isRfc3339Utc('2026-01-01T00:00:00')).toBe(false);
-    expect(isRfc3339Utc('2026-13-01T00:00:00Z')).toBe(false);
-    expect(isRfc3339Utc('2026-01-32T00:00:00Z')).toBe(false);
-    expect(isRfc3339Utc('2026-01-01T24:00:00Z')).toBe(false);
-    expect(isRfc3339Utc('2026-02-30T00:00:00Z')).toBe(false);
-    expect(isRfc3339Utc('not-a-date')).toBe(false);
+  it('rejects a missing zone and out-of-range components', () => {
+    expect(isRfc3339('2026-01-01T00:00:00')).toBe(false);
+    expect(isRfc3339('2026-01-01T00:00:00+24:00')).toBe(false);
+    expect(isRfc3339('2026-01-01T00:00:00+08:60')).toBe(false);
+    expect(isRfc3339('2026-13-01T00:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-01-32T00:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-01-01T24:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-02-30T00:00:00Z')).toBe(false);
+    expect(isRfc3339('not-a-date')).toBe(false);
   });
 
-  it('formats Dates as UTC RFC 3339 accepted by the validator', () => {
-    expect(formatRfc3339Utc(new Date(Date.UTC(2026, 0, 2, 3, 4, 5, 6)))).toBe(
-      '2026-01-02T03:04:05.006Z',
-    );
-    expect(isRfc3339Utc(formatRfc3339Utc(new Date(Date.UTC(1999, 11, 31, 23, 59, 59))))).toBe(
-      true,
-    );
-    expect(() => formatRfc3339Utc(new Date(Number.NaN))).toThrow(RangeError);
+  it('formats Dates in the current operating-system time zone', () => {
+    /*
+     * 使用本地日历构造值，直接验证输出的墙上时间和当前日期对应的系统
+     * 偏移量；断言不绑定开发机或 CI 的固定时区。
+     */
+    const date = new Date(2026, 0, 2, 3, 4, 5, 6);
+    const offsetMinutes = date.getTimezoneOffset();
+    const offsetSign = offsetMinutes <= 0 ? '+' : '-';
+    const absoluteOffset = Math.abs(offsetMinutes);
+    const expectedOffset =
+      `${offsetSign}${String(Math.floor(absoluteOffset / 60)).padStart(2, '0')}:` +
+      String(absoluteOffset % 60).padStart(2, '0');
+    const formatted = formatRfc3339InSystemTimeZone(date);
+
+    expect(formatted).toBe(`2026-01-02T03:04:05.006${expectedOffset}`);
+    expect(Date.parse(formatted)).toBe(date.getTime());
+    expect(isRfc3339(formatted)).toBe(true);
+    expect(() => formatRfc3339InSystemTimeZone(new Date(Number.NaN))).toThrow(RangeError);
   });
 });

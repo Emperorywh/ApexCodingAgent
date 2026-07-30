@@ -12,7 +12,7 @@
  */
 import { ApexError, isApexError } from '../../domain/errors.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import { createRunDriver } from '../run-driver.js';
 import { createNullLogger, type LoggerPort } from '../ports/logger.js';
 import type { RunCommandDeps } from '../run-command-deps.js';
@@ -111,7 +111,7 @@ function takeoverWarning(run: RunJson, liveness: OwnerLiveness | null): string {
 export function createResumeRun(deps: RunCommandDeps): {
   execute(input: ResumeRunInput): Promise<ResumeRunResult>;
 } {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
   let logger: LoggerPort = createNullLogger();
   /** 接管成功后的前台属主存活信号；进程收尾前停止。 */
   let heartbeat: RunHeartbeat | null = null;

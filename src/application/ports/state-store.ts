@@ -53,7 +53,7 @@ export interface PlanRevisionCommit {
 export interface RunHeartbeatFact {
   /** 发送信号的 Run；只有与当前 run.json 同 runId 的信号才有判定效力。 */
   readonly runId: string;
-  /** 信号发送时间（RFC 3339 UTC，程序生成）。 */
+  /** 信号发送时间（携带当前操作系统时区偏移量的 RFC 3339，程序生成）。 */
   readonly at: string;
 }
 

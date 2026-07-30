@@ -12,7 +12,7 @@
 import type { ApexError } from '../../domain/errors.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { SessionRecord } from '../../domain/schemas/session-record.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { OutputPort } from '../ports/output.js';
 import type { RedactionPort } from '../ports/redaction.js';
@@ -41,7 +41,7 @@ export async function reconcileOrphanedSessionFacts(
   run: RunJson,
   error: ApexError,
 ): Promise<RunJson> {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
 
   if (run.activeSession !== null) {
     const active = run.activeSession;

@@ -25,7 +25,7 @@ import type {
   RunArchiveManifestFile,
 } from '../../domain/schemas/run-archive-manifest.js';
 import { migrateRunJsonForRead, type RunJson } from '../../domain/schemas/run-json.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { RunArchivePort } from '../../application/ports/run-archive-port.js';
 import type { FileSystemPort } from '../../application/ports/file-system.js';
 import type { ClockPort } from '../../application/ports/clock.js';
@@ -245,7 +245,7 @@ export function createRunArchiver(options: RunArchiverOptions): RunArchivePort {
         schemaVersion: 1,
         runId,
         runStatus,
-        archivedAt: formatRfc3339Utc(clock.now()),
+        archivedAt: formatRfc3339InSystemTimeZone(clock.now()),
         files: await collectFiles(stagingDir),
       };
       const manifestValidation = validate('RunArchiveManifest', manifest);

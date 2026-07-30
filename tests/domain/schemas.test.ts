@@ -321,11 +321,17 @@ describe('custom formats and enums', () => {
     );
   });
 
-  it('rfc3339 format requires UTC with Z', () => {
+  it('rfc3339 format requires an explicit valid time zone', () => {
     const record = VALID.ErrorRecord() as Record<string, unknown>;
+    /*
+     * 操作系统本地时间会以数值偏移持久化，因此 Schema 必须接纳标准
+     * RFC 3339 偏移形式，同时继续拒绝缺少时区或无效日期。
+     */
+    expectValid('ErrorRecord', { ...record, at: '2026-01-01T08:00:00+08:00' });
+    expectValid('ErrorRecord', { ...record, at: '2025-12-31T19:00:00-05:00' });
     expectInvalid('ErrorRecord', { ...record, at: '2026-01-01T00:00:00' });
-    expectInvalid('ErrorRecord', { ...record, at: '2026-01-01T00:00:00+08:00' });
-    expectInvalid('ErrorRecord', { ...record, at: '2026-02-30T00:00:00Z' });
+    expectInvalid('ErrorRecord', { ...record, at: '2026-01-01T00:00:00+24:00' });
+    expectInvalid('ErrorRecord', { ...record, at: '2026-02-30T00:00:00+08:00' });
   });
 
   it('Task ID pattern rejects TASK-000 and other shapes', () => {

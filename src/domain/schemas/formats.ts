@@ -2,12 +2,12 @@
  * SPEC §11.5 要求的集中式 AJV 自定义格式。
  *
  * 包含规范小写 UUID、SHA-256、完整 Git OID、Git 相对路径，以及
- * 使用 UTC Z 标识的 RFC 3339 时间。
+ * 显式携带时区信息的 RFC 3339 时间。
  */
 import { Ajv } from 'ajv';
 import { isGitOid, isSha256, isUuid } from '../ids.js';
 import { isGitRelativePath } from '../paths.js';
-import { isRfc3339Utc } from '../time.js';
+import { isRfc3339 } from '../time.js';
 
 /**
  * 集中注册全部跨 Schema 共享格式。
@@ -29,6 +29,6 @@ export function createAjv(): Ajv {
   ajv.addFormat('sha256', { type: 'string', validate: isSha256 });
   ajv.addFormat('git-oid', { type: 'string', validate: isGitOid });
   ajv.addFormat('git-relative-path', { type: 'string', validate: isGitRelativePath });
-  ajv.addFormat('rfc3339', { type: 'string', validate: isRfc3339Utc });
+  ajv.addFormat('rfc3339', { type: 'string', validate: isRfc3339 });
   return ajv;
 }

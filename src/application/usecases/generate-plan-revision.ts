@@ -13,7 +13,7 @@
  * Run 转 failed；不自动重试、不降级。
  */
 import { ApexError } from '../../domain/errors.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
@@ -78,7 +78,7 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     options?: GeneratePlanRevisionOptions,
   ): Promise<GeneratePlanRevisionResult>;
 } {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
 
   /** 终态失败收尾：清槽、lastError、terminalAt，尽力持久化（§15 state_error）。 */
   async function failTerminal(run: RunJson, error: ApexError): Promise<GeneratePlanRevisionResult> {

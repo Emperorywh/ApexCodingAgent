@@ -16,7 +16,7 @@
  * 保守方向始终偏向"存活"：时钟回拨（age 为负）、文件不可读、runId 不
  * 匹配（属于其他 Run 的残留信号）都不会被误判为崩溃。
  */
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { LoggerPort } from '../ports/logger.js';
 import type { StateStorePort } from '../ports/state-store.js';
@@ -99,7 +99,7 @@ export function createRunHeartbeat(options: {
     void options.stateStore
       .writeHeartbeat({
         runId: options.runId,
-        at: formatRfc3339Utc(options.clock.now()),
+        at: formatRfc3339InSystemTimeZone(options.clock.now()),
       })
       .catch((error: unknown) => {
         options.logger.log('debug', 'run.heartbeat_write_failed', {

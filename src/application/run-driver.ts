@@ -13,7 +13,7 @@
  */
 import { ApexError, isApexError } from '../domain/errors.js';
 import { isTerminalRunStatus } from '../domain/run-state.js';
-import { formatRfc3339Utc } from '../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../domain/time.js';
 import type { PlanRevisionTrigger } from '../domain/schemas/plan-revision-snapshot.js';
 import type { ResumePoint, RunJson } from '../domain/schemas/run-json.js';
 import {
@@ -107,7 +107,7 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
     const terminal = toTerminalFailedRun(
       run,
       apex,
-      formatRfc3339Utc(deps.clock.now()),
+      formatRfc3339InSystemTimeZone(deps.clock.now()),
       deps.redaction,
     );
     await persistRunBestEffort(deps, terminal);
@@ -144,7 +144,7 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
         const terminal = toTerminalFailedRun(
           run,
           interrupted,
-          formatRfc3339Utc(deps.clock.now()),
+          formatRfc3339InSystemTimeZone(deps.clock.now()),
           deps.redaction,
         );
         await persistRunBestEffort(deps, terminal);

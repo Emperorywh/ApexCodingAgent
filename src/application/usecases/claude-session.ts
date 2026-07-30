@@ -16,7 +16,7 @@
  */
 import { appendExecutionEpisode, appendFinalReviewEpisode, createExecutionEpisode, createFinalReviewEpisode } from '../../domain/episodes.js';
 import { ApexError, isApexError } from '../../domain/errors.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
 import type { ActiveSession, SessionType } from '../../domain/schemas/active-session.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
@@ -97,7 +97,7 @@ export async function beginSession<T extends SessionType>(
   input: BeginSessionInput<T>,
   options?: BeginSessionOptions,
 ): Promise<ActiveSessionHandle<T>> {
-  const startedAt = formatRfc3339Utc(deps.clock.now());
+  const startedAt = formatRfc3339InSystemTimeZone(deps.clock.now());
   const sessionId = globalThis.crypto.randomUUID();
   const activeSession: ActiveSession = {
     sessionId,
@@ -465,7 +465,7 @@ export async function writeCompletedSessionRecord<T extends SessionType>(
     planRevision: handle.planRevision,
     specSha256: handle.specSha256,
     startedAt: handle.startedAt,
-    endedAt: formatRfc3339Utc(deps.clock.now()),
+    endedAt: formatRfc3339InSystemTimeZone(deps.clock.now()),
     claude: {
       version: deps.redaction.redactText(fact.claudeVersion),
       model: redactOptional(fact.model),
@@ -493,7 +493,7 @@ export async function writeFailedSessionRecord(
   error: ApexError,
   facts: { processExitCode: number | null; claudeVersion: string | null },
 ): Promise<void> {
-  const endedAt = formatRfc3339Utc(deps.clock.now());
+  const endedAt = formatRfc3339InSystemTimeZone(deps.clock.now());
   /*
    * 失败事实可能来自测试替身或非 Claude 异常，版本字符串仍按外部元数据处理；
    * unknown 是程序生成常量，不需要保留任何未经脱敏的备用副本。

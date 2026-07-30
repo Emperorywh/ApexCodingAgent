@@ -8,7 +8,7 @@
 import { ApexError, isApexError } from '../../domain/errors.js';
 import { applyRunEvent, isTerminalRunStatus } from '../../domain/run-state.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { OutputPort } from '../ports/output.js';
@@ -62,7 +62,7 @@ function abandonRiskWarning(run: RunJson, liveness: OwnerLiveness): string {
 export function createAbandonRun(deps: AbandonRunDeps): {
   execute(input: AbandonRunInput): Promise<AbandonRunResult>;
 } {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
 
   async function execute(input: AbandonRunInput): Promise<AbandonRunResult> {
     // §17 第 1 步：要求存在严格 Schema 合法的非终态 run.json。

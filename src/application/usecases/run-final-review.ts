@@ -21,7 +21,7 @@ import {
   validateFinalReviewResultSemantics,
 } from '../../domain/results.js';
 import { applyRunEvent } from '../../domain/run-state.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import {
@@ -65,7 +65,7 @@ export interface RunFinalReviewOptions {
 export function createRunFinalReview(deps: UseCaseDeps): {
   execute(options?: RunFinalReviewOptions): Promise<RunFinalReviewResult>;
 } {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
 
   async function failTerminal(run: RunJson, error: ApexError): Promise<RunFinalReviewResult> {
     deps.logger.log('error', 'final_review.run_failed', {

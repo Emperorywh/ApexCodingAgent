@@ -32,7 +32,7 @@ import {
   selectReadyTask,
   type TaskTransitionReason,
 } from '../../domain/task-state.js';
-import { formatRfc3339Utc } from '../../domain/time.js';
+import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
@@ -96,7 +96,7 @@ export interface ExecuteNextTaskOptions {
 export function createExecuteNextTask(deps: UseCaseDeps): {
   execute(options?: ExecuteNextTaskOptions): Promise<ExecuteNextTaskResult>;
 } {
-  const now = (): string => formatRfc3339Utc(deps.clock.now());
+  const now = (): string => formatRfc3339InSystemTimeZone(deps.clock.now());
 
   /** 终态失败收尾：清槽、lastError、terminalAt，尽力持久化（§15 state_error）。 */
   async function failTerminal(run: RunJson, error: ApexError): Promise<ExecuteNextTaskResult> {

@@ -38,25 +38,53 @@ function applyStyle(
   return styleText(format, text, { validateStream: false });
 }
 
-/** 根据语义符号为单行添加克制的 TTY 颜色。 */
+/**
+ * 只为行首语义图标着色，避免任务列表整行铺满高饱和颜色。
+ *
+ * 缩进必须原样保留；图标只是视觉增强，移除 ANSI 后仍是完整纯文本。
+ */
+function styleLeadingIcon(
+  line: string,
+  format: Parameters<typeof styleText>[0],
+): string {
+  const iconIndex = line.search(/\S/);
+  if (iconIndex < 0) return line;
+  return (
+    line.slice(0, iconIndex) +
+    applyStyle(format, line[iconIndex]!) +
+    line.slice(iconIndex + 1)
+  );
+}
+
+/**
+ * 根据语义符号为单行添加克制的 TTY 颜色。
+ *
+ * 产品标题和区块标题使用整行强调；状态行只强调图标，使长任务列表仍保持
+ * 清晰层级，并避免“全部完成”场景出现大面积绿色文本。
+ */
 function styleConsoleLine(line: string): string {
   const trimmed = line.trimStart();
   if (line.startsWith('ApexCodingAgent ')) {
     return applyStyle('cyan', applyStyle('bold', line));
   }
-  if (trimmed.startsWith('✓')) return applyStyle('green', line);
-  if (trimmed.startsWith('✗') || trimmed.startsWith('!')) return applyStyle('red', line);
   if (
-    trimmed.startsWith('⚠') ||
     trimmed.startsWith('警告：') ||
     trimmed.startsWith('风险提示：')
   ) {
     return applyStyle('yellow', line);
   }
-  if (trimmed.startsWith('◆') || trimmed.startsWith('◇')) return applyStyle('cyan', line);
-  if (trimmed.startsWith('↻')) return applyStyle('magenta', line);
-  if (trimmed.startsWith('→')) return applyStyle('blue', line);
-  if (trimmed.startsWith('…')) return applyStyle('gray', line);
+  if (trimmed.startsWith('◆')) return applyStyle('cyan', line);
+  if (trimmed.startsWith('✓')) return styleLeadingIcon(line, 'green');
+  if (trimmed.startsWith('✗') || trimmed.startsWith('!')) {
+    return styleLeadingIcon(line, 'red');
+  }
+  if (trimmed.startsWith('⚠')) return styleLeadingIcon(line, 'yellow');
+  if (trimmed.startsWith('◇')) return styleLeadingIcon(line, 'cyan');
+  if (trimmed.startsWith('↻')) return styleLeadingIcon(line, 'magenta');
+  if (trimmed.startsWith('→')) return styleLeadingIcon(line, 'blue');
+  if (trimmed.startsWith('…') || trimmed.startsWith('⊘')) {
+    return styleLeadingIcon(line, 'gray');
+  }
   return line;
 }
 

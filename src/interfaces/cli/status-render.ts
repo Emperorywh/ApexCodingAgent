@@ -5,79 +5,238 @@
  */
 import type { RepositoryStatusFact } from '../../application/ports/GitPort.js';
 import type { ConsistentSnapshot } from '../../application/ports/state-store.js';
-import type { RunJson } from '../../domain/schemas/run-json.js';
+import type { SessionType } from '../../domain/schemas/active-session.js';
+import type { RunJson, RunStatus } from '../../domain/schemas/run-json.js';
+import type {
+  TaskRuntimeState,
+  TaskStatus,
+} from '../../domain/schemas/task-runtime-state.js';
 
-function shortOid(oid: string | null): string {
-  return oid === null ? '-' : oid.slice(0, 12);
+interface StatusPresentation {
+  readonly icon: string;
+  readonly label: string;
 }
 
-function taskLine(run: RunJson, taskId: string, title: string | null): string {
+/**
+ * 状态展示词汇集中维护，避免概览、计数和任务行各自解释同一领域状态。
+ *
+ * 图标同时是终端颜色层的语义标记；纯文本和重定向输出仍保留完整含义。
+ */
+const RUN_STATUS_PRESENTATION: Readonly<Record<RunStatus, StatusPresentation>> = {
+  planning: { icon: '◆', label: '规划中' },
+  running: { icon: '→', label: '执行中' },
+  final_review: { icon: '◆', label: '最终检查' },
+  completed: { icon: '✓', label: '已完成' },
+  failed: { icon: '✗', label: '运行失败' },
+  abandoned: { icon: '⊘', label: '已放弃' },
+};
+
+const TASK_STATUS_PRESENTATION: Readonly<Record<TaskStatus, StatusPresentation>> = {
+  pending: { icon: '◇', label: '待处理' },
+  running: { icon: '→', label: '执行中' },
+  completed: { icon: '✓', label: '已完成' },
+  failed: { icon: '✗', label: '失败' },
+  skipped: { icon: '⊘', label: '已跳过' },
+};
+
+/**
+ * 计数始终按用户最关心的顺序展示，不依赖对象属性或状态迁移的插入顺序。
+ *
+ * “已完成”置前，“待处理/已跳过”置后，使正常路径和异常路径都容易扫读。
+ */
+const TASK_STATUS_SUMMARY_ORDER: readonly TaskStatus[] = [
+  'completed',
+  'running',
+  'failed',
+  'pending',
+  'skipped',
+];
+
+const PROGRESS_BAR_WIDTH = 24;
+
+function shortOid(oid: string | null): string {
+  return oid === null ? '—' : oid.slice(0, 12);
+}
+
+/**
+ * 当前计划保持 tasks.json 的稳定顺序；被后续 Revision 移出的历史任务
+ * 仍以 skipped 永久保存在 run.json，并按 ID 稳定追加在当前计划之后。
+ */
+function orderedTaskIds(snapshot: ConsistentSnapshot): readonly string[] {
+  const { run, tasks } = snapshot;
+  const currentIds = tasks?.tasks.map((task) => task.id) ?? [];
+  const currentIdSet = new Set(currentIds);
+  const historicalIds = Object.keys(run.tasks)
+    .filter((taskId) => !currentIdSet.has(taskId))
+    .sort();
+  return tasks === null ? historicalIds : [...currentIds, ...historicalIds];
+}
+
+function taskStatus(run: RunJson, taskId: string): TaskStatus {
+  return run.tasks[taskId]?.status ?? 'pending';
+}
+
+/**
+ * 计数基于最终会渲染的任务集合，而不是单独遍历 run.tasks。
+ *
+ * 这使缺少运行态记录但已进入计划的任务仍明确计入“待处理”，避免总数与
+ * 状态小计在边界快照中出现视觉不一致。
+ */
+function countTaskStatuses(
+  run: RunJson,
+  taskIds: readonly string[],
+): Readonly<Record<TaskStatus, number>> {
+  const counts: Record<TaskStatus, number> = {
+    pending: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    skipped: 0,
+  };
+  for (const taskId of taskIds) {
+    counts[taskStatus(run, taskId)] += 1;
+  }
+  return counts;
+}
+
+function renderProgressBar(completed: number, total: number): string {
+  const ratio = total === 0 ? 0 : completed / total;
+  const filledWidth = Math.round(ratio * PROGRESS_BAR_WIDTH);
+  const bar = `${'█'.repeat(filledWidth)}${'░'.repeat(PROGRESS_BAR_WIDTH - filledWidth)}`;
+  return `  ${bar}  ${completed}/${total} · ${Math.round(ratio * 100)}%`;
+}
+
+function renderStatusSummary(counts: Readonly<Record<TaskStatus, number>>): string {
+  const visibleCounts = TASK_STATUS_SUMMARY_ORDER
+    .filter((status) => counts[status] > 0)
+    .map((status) => `${TASK_STATUS_PRESENTATION[status].label} ${counts[status]}`);
+  return visibleCounts.length === 0 ? '  暂无任务' : `  ${visibleCounts.join(' · ')}`;
+}
+
+function taskDetail(state: TaskRuntimeState | undefined): string | null {
+  if (state?.finalCheckpoint != null) {
+    return `检查点 ${shortOid(state.finalCheckpoint)}`;
+  }
+  if (state?.failure != null) {
+    return state.failure.errorCode;
+  }
+  if (state?.skipReason != null) {
+    return state.skipReason;
+  }
+  return null;
+}
+
+function renderTaskLine(run: RunJson, taskId: string, title: string | null): string {
   const state = run.tasks[taskId];
-  const status = state?.status ?? 'pending';
-  const parts = [`  ${taskId}`, status.padEnd(9)];
-  if (state?.finalCheckpoint != null) parts.push(`checkpoint ${shortOid(state.finalCheckpoint)}`);
-  if (state?.skipReason != null) parts.push(`skipped: ${state.skipReason}`);
-  if (state?.failure != null) parts.push(`failed: ${state.failure.errorCode}`);
-  if (title !== null) parts.push(title);
-  return parts.join('  ');
+  const presentation = TASK_STATUS_PRESENTATION[state?.status ?? 'pending'];
+  const detail = taskDetail(state);
+  const titlePart = title === null ? '' : `  ${title}`;
+  const detailPart = detail === null ? '' : ` · ${detail}`;
+  return `  ${presentation.icon} ${taskId}${titlePart}${detailPart}`;
+}
+
+function sessionTypeLabel(type: SessionType): string {
+  switch (type) {
+    case 'planning':
+      return '规划';
+    case 'execution':
+      return '执行';
+    case 'final_review':
+      return '最终检查';
+  }
+}
+
+function renderOverview(run: RunJson): string[] {
+  const presentation = RUN_STATUS_PRESENTATION[run.status];
+  const lines = [
+    'ApexCodingAgent · 运行状态',
+    '',
+    `${presentation.icon} ${presentation.label} · ${run.runId}`,
+    `  SPEC      ${run.spec.path} · sha256 ${run.spec.sha256.slice(0, 12)}…`,
+    `  计划修订  ${run.planRevision}`,
+    `  创建时间  ${run.createdAt}`,
+    `  更新时间  ${run.updatedAt}`,
+  ];
+
+  if (run.terminalAt !== null) {
+    lines.push(`  结束时间  ${run.terminalAt}`);
+  }
+  if (run.currentTaskId !== null) {
+    lines.push(`  当前任务  ${run.currentTaskId}`);
+  }
+  if (run.activeSession !== null) {
+    const task = run.activeSession.taskId === null ? '' : ` · ${run.activeSession.taskId}`;
+    lines.push(
+      `  活跃会话  ${sessionTypeLabel(run.activeSession.type)} · ` +
+        `${run.activeSession.sessionId}${task}`,
+    );
+  }
+  return lines;
+}
+
+function renderLastError(run: RunJson): string[] {
+  if (run.lastError === null) return [];
+
+  const lines = [
+    '',
+    `! 最近错误 · ${run.lastError.errorCode} · ${run.lastError.stage}`,
+    `  ${run.lastError.message}`,
+  ];
+  if (run.resumePoint !== null) {
+    lines.push('  → 恢复运行  ApexCodingAgent resume');
+  }
+  return lines;
+}
+
+function renderTasks(snapshot: ConsistentSnapshot): string[] {
+  const taskIds = orderedTaskIds(snapshot);
+  const counts = countTaskStatuses(snapshot.run, taskIds);
+  const titles = new Map((snapshot.tasks?.tasks ?? []).map((task) => [task.id, task.title]));
+  return [
+    '',
+    '◆ 任务进度',
+    renderProgressBar(counts.completed, taskIds.length),
+    renderStatusSummary(counts),
+    '',
+    `◆ 任务 · ${taskIds.length}`,
+    ...taskIds.map((taskId) =>
+      renderTaskLine(snapshot.run, taskId, titles.get(taskId) ?? null),
+    ),
+  ];
+}
+
+/**
+ * Git 区块只在 HEAD 偏离运行分支或处于 detached 状态时追加位置说明。
+ *
+ * 正常路径不重复打印同一条长分支名，异常位置仍保留完整诊断事实。
+ */
+function renderRepository(run: RunJson, git: RepositoryStatusFact): string[] {
+  const headLocation =
+    git.head.branch === run.repository.runBranch
+      ? ''
+      : ` · ${git.head.branch ?? 'detached'}`;
+  return [
+    '',
+    '◆ Git',
+    `  基线      ${run.repository.baseBranch} @ ${shortOid(run.repository.baseCommit)}`,
+    `  运行分支  ${run.repository.runBranch}`,
+    `  HEAD      ${shortOid(git.head.oid)}${headLocation}`,
+  ];
+}
+
+function renderArtifacts(run: RunJson): string[] {
+  return run.reportPath === null ? [] : ['', '◆ 产物', `  报告  ${run.reportPath}`];
 }
 
 export function renderStatus(
   snapshot: ConsistentSnapshot,
   git: RepositoryStatusFact,
 ): string[] {
-  const { run, tasks } = snapshot;
-  const lines: string[] = [];
-
-  lines.push(`Run: ${run.runId}`);
-  lines.push(`Status: ${run.status}`);
-  lines.push(`SPEC: ${run.spec.path} (sha256 ${run.spec.sha256.slice(0, 12)}…)`);
-  lines.push(`Plan revision: ${run.planRevision}`);
-  lines.push(`Created: ${run.createdAt}`);
-  lines.push(`Updated: ${run.updatedAt}`);
-  lines.push(`Terminal: ${run.terminalAt ?? '-'}`);
-  lines.push(
-    `Base branch: ${run.repository.baseBranch} (${run.repository.baseBranchRef}) @ ${shortOid(run.repository.baseCommit)}`,
-  );
-  lines.push(`Run branch: ${run.repository.runBranch}`);
-  lines.push(
-    `Git HEAD: ${shortOid(git.head.oid)} (branch: ${git.head.branch ?? 'detached'})`,
-  );
-  lines.push(`Current task: ${run.currentTaskId ?? '-'}`);
-  lines.push(
-    run.activeSession === null
-      ? 'Active session: -'
-      : `Active session: ${run.activeSession.sessionId} (${run.activeSession.type}` +
-          `${run.activeSession.taskId === null ? '' : `, ${run.activeSession.taskId}`})`,
-  );
-
-  /**
-   * 当前计划 Task 保持 tasks.json 的稳定顺序；被后续 Revision 移出的
-   * 历史 Task 仍以 skipped 永久保存在 run.json，按 ID 稳定追加展示。
-   * 这样总数、状态计数和实际渲染行始终属于同一组任务事实。
-   */
-  const currentIds = tasks !== null ? tasks.tasks.map((task) => task.id) : [];
-  const currentIdSet = new Set(currentIds);
-  const historicalIds = Object.keys(run.tasks)
-    .filter((taskId) => !currentIdSet.has(taskId))
-    .sort();
-  const orderedIds = tasks === null ? historicalIds : [...currentIds, ...historicalIds];
-  const counts = new Map<string, number>();
-  for (const state of Object.values(run.tasks)) {
-    counts.set(state.status, (counts.get(state.status) ?? 0) + 1);
-  }
-  const summary = [...counts.entries()].map(([status, count]) => `${status} ${count}`).join(', ');
-  lines.push(`Tasks: ${orderedIds.length} total${summary === '' ? '' : ` (${summary})`}`);
-  const titles = new Map((tasks?.tasks ?? []).map((task) => [task.id, task.title]));
-  for (const taskId of orderedIds) {
-    lines.push(taskLine(run, taskId, titles.get(taskId) ?? null));
-  }
-
-  lines.push(
-    run.lastError === null
-      ? 'Last error: -'
-      : `Last error: ${run.lastError.errorCode} (${run.lastError.stage}): ${run.lastError.message}`,
-  );
-  lines.push(`Report: ${run.reportPath ?? '-'}`);
-  return lines;
+  return [
+    ...renderOverview(snapshot.run),
+    ...renderLastError(snapshot.run),
+    ...renderTasks(snapshot),
+    ...renderRepository(snapshot.run, git),
+    ...renderArtifacts(snapshot.run),
+  ];
 }

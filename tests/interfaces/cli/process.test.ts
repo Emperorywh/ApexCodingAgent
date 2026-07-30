@@ -159,9 +159,9 @@ describe('cli process: start exit codes', () => {
         15_000,
       );
       expect(status.code).toBe(0);
-      expect(status.stdout).toContain('Status: completed');
+      expect(status.stdout).toContain('✓ 已完成 · RUN-');
       expect(status.stdout).toContain('TASK-001');
-      expect(status.stdout).toContain('completed');
+      expect(status.stdout).toContain('✓ TASK-001');
 
       const report = await awaitOutcome(
         spawnCli(['report'], { cwd: fixture.repo.root, env: fixture.fake.env }),
@@ -234,7 +234,7 @@ describe('cli process: start exit codes', () => {
         15_000,
       );
       expect(status.code).toBe(0);
-      expect(status.stdout).toContain('Status: failed');
+      expect(status.stdout).toContain('✗ 运行失败 · RUN-');
       expect(status.stdout).toContain('CLAUDE_EXIT_NONZERO');
     } finally {
       await cleanupFixture(fixture);
@@ -313,7 +313,7 @@ describe('cli process: abandon flow after an interrupted run (§17, AC-027/028)'
         15_000,
       );
       expect(statusPlanning.code).toBe(0);
-      expect(statusPlanning.stdout).toContain('Status: planning');
+      expect(statusPlanning.stdout).toContain('◆ 规划中 · RUN-');
 
       const earlyReport = await awaitOutcome(
         spawnCli(['report'], { cwd: fixture.repo.root, env: fixture.fake.env }),
@@ -350,7 +350,7 @@ describe('cli process: abandon flow after an interrupted run (§17, AC-027/028)'
         15_000,
       );
       expect(statusAbandoned.code).toBe(0);
-      expect(statusAbandoned.stdout).toContain('Status: abandoned');
+      expect(statusAbandoned.stdout).toContain('⊘ 已放弃 · RUN-');
 
       const again = await awaitOutcome(
         spawnCli(['abandon', '--force'], { cwd: fixture.repo.root, env: fixture.fake.env }),

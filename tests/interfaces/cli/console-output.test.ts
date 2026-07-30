@@ -24,7 +24,12 @@ describe('console output', () => {
 
   it('TTY 模式只添加 Apex 自己的颜色序列', () => {
     const rendered = formatConsoleText('✓ 完成', true);
-    expect(rendered).toContain('✓ 完成');
+    /**
+     * 颜色现在只包裹语义图标，避免长任务行整行着色。
+     *
+     * 移除终端样式后必须无损恢复原始文本，确保颜色不承载业务含义。
+     */
+    expect(sanitizeConsoleText(rendered)).toBe('✓ 完成');
     expect(rendered).toContain('\u001B[');
   });
 });

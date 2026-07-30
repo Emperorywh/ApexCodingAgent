@@ -37,6 +37,7 @@ import {
   createClaudeStreamCollector,
   evaluateCollectedStreamOutcome,
 } from './stream-parser.js';
+import { createClaudeSessionLog } from './session-log.js';
 
 const DEFAULT_CLAUDE_PATH = 'claude';
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
@@ -51,8 +52,6 @@ const RESULT_SCHEMA_BY_SESSION_TYPE = {
   execution: 'TaskExecutionResult',
   final_review: 'FinalReviewResult',
 } as const;
-const STDERR_LOG_HEADER = '[apex stderr diagnostic]';
-
 export interface ClaudeRuntimeOptions {
   /**
    * Claude 可执行入口；默认使用 PATH 中的 claude。
@@ -66,15 +65,6 @@ export interface ClaudeRuntimeOptions {
   readonly redaction: RedactionPort;
   /** version/help 探测超时；正式 Session 不设置自动超时。 */
   readonly probeTimeoutMs?: number;
-}
-
-interface IncrementalSessionLog {
-  readonly pushStdout: (
-    chunk: Uint8Array,
-    safeRecordBoundaryOffsets: readonly number[],
-  ) => Promise<void>;
-  readonly finish: (stderrSummary: string | null) => Promise<void>;
-  readonly failure: () => unknown | null;
 }
 
 interface CollectedStderr {
@@ -143,88 +133,6 @@ function createStderrCollector(redaction: RedactionPort): StderrCollector {
       );
       return { redacted, resumeTranscriptUnavailable };
     },
-  };
-}
-
-/**
- * 创建单次 Session 的增量日志写入器。
- *
- * UTF-8 解码和脱敏状态跨 chunk 保持；每次 appendFile 都在进程输出回压
- * 链中等待完成。写入失败只记录首个原因并停止后续文件操作，让进程继续
- * 到达可持久化的真实退出码，再统一映射 STATE_WRITE_FAILED。
- */
-function createIncrementalSessionLog(
-  request: ClaudeInvocationRequest,
-  fileSystem: FileSystemPort,
-  redaction: RedactionPort,
-): IncrementalSessionLog {
-  const root = request.cwd.replace(/[\\/]+$/, '');
-  const absolute = `${root}/.apex-coding-agent/logs/${request.sessionId}.log`;
-  const parent = absolute.slice(0, absolute.lastIndexOf('/'));
-  const decoder = new TextDecoder();
-  const chunkRedactor = redaction.createChunkRedactor();
-  const encoder = new TextEncoder();
-  let initialized = false;
-  let writeFailure: unknown | null = null;
-  let hasContent = false;
-  let endsWithNewline = true;
-  let finished = false;
-
-  async function record(operation: () => Promise<void>): Promise<void> {
-    if (writeFailure !== null) return;
-    try {
-      await operation();
-    } catch (error) {
-      writeFailure = error;
-    }
-  }
-
-  async function ensureInitialized(): Promise<void> {
-    if (initialized || writeFailure !== null) return;
-    initialized = true;
-    await record(async () => {
-      await fileSystem.mkdir(parent, { recursive: true });
-      await fileSystem.writeFile(absolute, new Uint8Array(0));
-    });
-  }
-
-  async function append(text: string): Promise<void> {
-    if (text === '') return;
-    await ensureInitialized();
-    await record(() => fileSystem.appendFile(absolute, encoder.encode(text)));
-    hasContent = true;
-    endsWithNewline = text.endsWith('\n');
-  }
-
-  return {
-    async pushStdout(chunk, safeRecordBoundaryOffsets): Promise<void> {
-      if (finished) throw new Error('cannot write to a finished session log');
-      const text = decoder.decode(chunk, { stream: true });
-      /**
-       * stream-json 解析器只为已验证的 JSON 对象行提供边界。每段先进入通用
-       * 流式脱敏器，再尝试按记录排出；若存在尚未闭合的多行私钥，脱敏器会
-       * 跨记录继续保留，不能因日志低延迟需求而牺牲安全性。
-       */
-      let segmentStart = 0;
-      for (const boundaryOffset of safeRecordBoundaryOffsets) {
-        await append(chunkRedactor.push(text.slice(segmentStart, boundaryOffset)));
-        await append(chunkRedactor.flushRecordBoundary());
-        segmentStart = boundaryOffset;
-      }
-      await append(chunkRedactor.push(text.slice(segmentStart)));
-    },
-    async finish(stderrSummary): Promise<void> {
-      if (finished) throw new Error('session log finish called more than once');
-      finished = true;
-      const decodedTail = decoder.decode();
-      await append(`${chunkRedactor.push(decodedTail)}${chunkRedactor.flush()}`);
-      await ensureInitialized();
-      if (stderrSummary !== null) {
-        const separator = !hasContent || endsWithNewline ? '' : '\n';
-        await append(`${separator}${STDERR_LOG_HEADER}\n${stderrSummary}\n`);
-      }
-    },
-    failure: () => writeFailure,
   };
 }
 
@@ -332,7 +240,12 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         : { onActivity: request.onStreamActivity }),
     });
     const stderrCollector = createStderrCollector(redaction);
-    const sessionLog = createIncrementalSessionLog(request, fileSystem, redaction);
+    const sessionLog = createClaudeSessionLog({
+      repositoryRoot: request.cwd,
+      sessionId: request.sessionId,
+      fileSystem,
+      redaction,
+    });
 
     try {
       const outcome = await processExecutor.execute({
@@ -344,8 +257,8 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
           activeProcess = process;
         },
         onStdoutChunk: async (chunk) => {
-          const safeRecordBoundaryOffsets = streamCollector.push(chunk);
-          await sessionLog.pushStdout(chunk, safeRecordBoundaryOffsets);
+          const logRecords = streamCollector.push(chunk);
+          await sessionLog.push(logRecords);
         },
         onStderrChunk: (chunk) => {
           stderrCollector.push(chunk);
@@ -371,9 +284,11 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         });
       }
 
-      const stream = streamCollector.finish();
+      const finalizedStream = streamCollector.finish();
+      const stream = finalizedStream.stream;
       const stderr = stderrCollector.finish();
       const stderrSummary = summarizeStderr(stderr.redacted, (text) => text);
+      await sessionLog.push(finalizedStream.trailingRecords);
       await sessionLog.finish(stderrSummary);
       const logFailure = sessionLog.failure();
       if (logFailure !== null) {

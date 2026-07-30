@@ -67,14 +67,6 @@ export function compactProgressDetail(
   return oneLine.length <= limit ? oneLine : `${oneLine.slice(0, limit)}…`;
 }
 
-/** 把字节数转换为适合心跳行的紧凑 IEC 单位。 */
-export function formatProgressBytes(bytes: number): string {
-  if (bytes < 1_024) return `${bytes} B`;
-  if (bytes < 1_048_576) return `${Math.round(bytes / 1_024)} KiB`;
-  const mib = bytes / 1_048_576;
-  return `${mib >= 10 ? Math.round(mib) : mib.toFixed(1)} MiB`;
-}
-
 /** 三类 Session 的稳定中文阶段名。 */
 export function sessionDisplayName(type: SessionType): string {
   return SESSION_LABELS[type];
@@ -134,9 +126,14 @@ export function renderSessionActivity(
   return `  ${event.kind === 'tool_error' ? '!' : '→'} ${label}${detail}`;
 }
 
-/** 长 Session 的静默心跳：只保留耗时、流量和存活事实。 */
-export function renderSessionHeartbeat(elapsed: string, receivedBytes: number): string {
-  return `  … 已运行 ${elapsed} · 已接收 ${formatProgressBytes(receivedBytes)} · Claude 仍在工作`;
+/**
+ * 长 Session 的静默心跳。
+ *
+ * 有效事件数排除高频内部遥测，因此只能表达已完成解析的工作事件，不再把
+ * 原始协议字节增长误导成任务进度；存活事实仍由固定间隔心跳独立表达。
+ */
+export function renderSessionHeartbeat(elapsed: string, relevantEventCount: number): string {
+  return `  … 已运行 ${elapsed} · 已处理 ${relevantEventCount} 个有效事件 · Claude 仍在工作`;
 }
 
 /** Session 成功结束行。 */
@@ -157,6 +154,13 @@ export function renderSessionFailed(
   elapsed: string,
   errorCode: string,
 ): string {
+  /*
+   * 中断仍沿用失败持久化协议，但前台文案单独表达用户动作，避免把可恢复
+   * 断点误读成 Claude 或任务实现失败。
+   */
+  if (errorCode === 'RUN_INTERRUPTED') {
+    return `  ◇ ${sessionDisplayName(type)}已中断 · 用时 ${elapsed} · ${errorCode}`;
+  }
   return `  ✗ ${sessionDisplayName(type)}失败 · 用时 ${elapsed} · ${errorCode}`;
 }
 

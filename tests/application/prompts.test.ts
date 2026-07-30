@@ -11,6 +11,7 @@ import {
 } from '../../src/application/prompts/planning.js';
 import {
   buildExecutionPrompt,
+  buildExecutionResumePrompt,
   buildExecutionResultRepairPrompt,
   type ExecutionPromptInput,
   type ExecutionResultRepairPromptInput,
@@ -129,6 +130,12 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('无法判断的信息记录为 assumption，不要发明业务需求');
     expect(prompt).toContain('Replan 时返回完整新计划，不要返回局部补丁');
     expect(prompt).toContain('每个保留的中间 Checkpoint 必须由且只能由一个 pending Task 接管');
+    /*
+     * Planning 必须提前把自动验证与人工界面验收分开，避免后续执行 Agent
+     * 把长期后台服务误当作验收命令，并在任务间遗留资源。
+     */
+    expect(prompt).toContain('verificationHints 必须区分可自动运行的检查与用户手动验证');
+    expect(prompt).toContain('不能依赖长期后台服务');
     expect(prompt).toContain('likelyPaths 只是提示，不是强制文件范围');
     // 返回结构
     expect(prompt).toContain('retainedCheckpointDispositions');
@@ -230,6 +237,14 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
     expect(prompt).toContain('只有全部 acceptanceCriteria 均 satisfied 且不存在 failed test 时才能返回 completed');
     expect(prompt).toContain('返回 replan_required 和非空原因，不要伪造完成');
     expect(prompt).toContain('返回 failed，并保留准确诊断');
+    /*
+     * 可写 Session 共用同一验证策略，以下断言锁定人工界面边界、
+     * 有界服务生命周期和失败收敛三项关键约束。
+     */
+    expect(prompt).toContain('若说明要求界面由用户手动验证，不得启动浏览器或开发服务器');
+    expect(prompt).toContain('不得把独立的开发服务器留在后台');
+    expect(prompt).toContain('使用带截止时间的条件轮询');
+    expect(prompt).toContain('原则上只进行两轮有针对性的修正');
     expect(prompt).toContain('不要返回 Markdown');
   });
 
@@ -261,6 +276,20 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
     const prompt = buildExecutionPrompt({ ...input, completedTasks: [], adoptedCheckpoints: [] });
     expect(prompt).toContain('COMPLETED_TASKS（简洁摘要与最终 Checkpoint）：\n（无）');
     expect(prompt).toContain('ADOPTED_INTERMEDIATE_CHECKPOINTS（当前 Task 接管的中间 Checkpoint）：\n（无）');
+  });
+});
+
+describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
+  it('恢复后继续遵守验证收敛与资源生命周期边界', () => {
+    const prompt = buildExecutionResumePrompt({ task: pendingDefinition });
+    /*
+     * 恢复会话会继承中断前的仓库状态，但不能因此丢失验证资源的所有权。
+     * 这里同时确认任务定义和统一验证策略都进入了续接提示。
+     */
+    expect(prompt).toContain('"id": "TASK-002"');
+    expect(prompt).toContain('不要推倒重来');
+    expect(prompt).toContain('不得把独立的开发服务器留在后台');
+    expect(prompt).toContain('原则上只进行两轮有针对性的修正');
   });
 });
 
@@ -339,6 +368,14 @@ describe('buildFinalReviewPrompt（SPEC §26 + §14.1）', () => {
     expect(prompt).toContain('不执行 remote push、生产部署、付款、生产数据变更或破坏其他分支');
     expect(prompt).toContain('返回 replan_required，并给出非空原因');
     expect(prompt).toContain('reviewedTaskIds 必须无重复；completed 时必须精确列出当前计划的全部 completed Task ID');
+    /*
+     * Final Review 与 Execution 共享验证政策，防止复核阶段重新引入
+     * 无界后台服务、长时间固定等待和不收敛的重复修正。
+     */
+    expect(prompt).toContain('若说明要求界面由用户手动验证，不得启动浏览器或开发服务器');
+    expect(prompt).toContain('不得把独立的开发服务器留在后台');
+    expect(prompt).toContain('使用带截止时间的条件轮询');
+    expect(prompt).toContain('原则上只进行两轮有针对性的修正');
     expect(prompt).toContain('不要返回 Markdown');
   });
 
@@ -380,6 +417,8 @@ describe('buildFinalReviewResumePrompt（Final Review 断点续接）', () => {
     expect(prompt).toContain('从原对话断点继续');
     expect(prompt).toContain('不要推倒重来');
     expect(prompt).toContain('完成整体复核');
+    expect(prompt).toContain('不得把独立的开发服务器留在后台');
+    expect(prompt).toContain('原则上只进行两轮有针对性的修正');
     expect(prompt).toContain('FinalReviewResult');
   });
 });

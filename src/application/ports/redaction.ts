@@ -38,11 +38,10 @@ export interface RedactionPort {
   /** Redacts secrets from a complete text (log lines, console output, markdown). */
   redactText(text: string): string;
   /**
-   * Deep-redacts a structured JSON value before persistence: every string is
-   * scanned, and values whose field name matches
-   * `token|secret|password|apiKey|authorization` (case-insensitive) are
-   * replaced wholesale. JSON types are preserved (only strings are replaced,
-   * with a string placeholder), so schema validity survives redaction.
+   * 持久化前递归脱敏结构化 JSON：扫描所有字符串，并整体替换字段名命中
+   * `token|secret|password|apiKey|authorization`（不区分大小写）的值。
+   * 字符串、数字和布尔值分别使用同类型占位值，null 保持不变，因此脱敏后
+   * 的记录仍是合法 JSON，也不会因占位符改变原字段的 JSON 类型。
    */
   redactStructured<T>(value: T): T;
   /** Creates a streaming redactor for chunked text (e.g. Claude stdout). */

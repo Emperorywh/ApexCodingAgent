@@ -30,11 +30,29 @@ import {
   scenarioFor,
   SESSION_ID,
   streamLines,
+  validStructuredResult,
   type FakeClaudeHarness,
 } from './helpers.js';
 import { createTestProcessExecutor } from '../../process-executor.js';
 
 const TEST_TIMEOUT = { timeout: 30_000 };
+
+/**
+ * Session 日志的公开契约是 JSONL；测试统一通过标准 JSON 解析器读取，
+ * 避免字符串包含断言掩盖数字字段被文本替换后产生的损坏记录。
+ */
+function parseSessionLog(text: string): Record<string, unknown>[] {
+  return text
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const value: unknown = JSON.parse(line);
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new Error('session log record must be a JSON object');
+      }
+      return value as Record<string, unknown>;
+    });
+}
 
 let harness: FakeClaudeHarness;
 let restoreHarnessEnv: () => void;
@@ -101,6 +119,66 @@ describe('argument array contract (SPEC §7.2)', () => {
     const log = await harness.readSessionLog(SESSION_ID);
     expect(log).toContain('"type":"result"');
     expect(log).toContain(SESSION_ID);
+    expect(parseSessionLog(log)).toHaveLength(2);
+  }, TEST_TIMEOUT);
+
+  it('filters high-frequency thinking telemetry and keeps the session log valid JSONL', async () => {
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: '{sessionId}',
+          model: 'claude-fake-model',
+        },
+        {
+          type: 'system',
+          subtype: 'thinking_tokens',
+          session_id: '{sessionId}',
+          estimated_tokens: 123,
+        },
+        {
+          type: 'system',
+          subtype: 'thinking_tokens',
+          session_id: '{sessionId}',
+          estimated_tokens: 456,
+        },
+        {
+          type: 'assistant',
+          session_id: '{sessionId}',
+          message: { content: [{ type: 'text', text: 'verification complete' }] },
+          usage: { input_tokens: 789 },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: '{sessionId}',
+          structured_output: validStructuredResult('execution'),
+        },
+      ],
+    });
+
+    const fact = await runtime.invoke(mkRequest(harness));
+    expect(fact.exitCode).toBe(0);
+
+    const records = parseSessionLog(await harness.readSessionLog(SESSION_ID));
+    /*
+     * 高频遥测不逐条持久化，只留下一个可观察的聚合摘要；普通事件仍保留，
+     * 且敏感数字字段使用数字占位值，整份日志可被逐行 JSON.parse。
+     */
+    expect(
+      records.some(
+        (record) => record['type'] === 'system' && record['subtype'] === 'thinking_tokens',
+      ),
+    ).toBe(false);
+    expect(records).toContainEqual({
+      type: 'apex.log-summary',
+      filteredEvents: [{ category: 'system/thinking', count: 2 }],
+    });
+    const assistant = records.find((record) => record['type'] === 'assistant');
+    expect(assistant).toBeDefined();
+    expect((assistant!['usage'] as Record<string, unknown>)['input_tokens']).toBe(0);
   }, TEST_TIMEOUT);
 
   it('persists stdout events before the Claude process exits', async () => {
@@ -146,7 +224,8 @@ describe('argument array contract (SPEC §7.2)', () => {
     expect(fact.stderrSummary).toContain('[REDACTED]');
     expect(fact.stderrSummary).not.toContain(token);
     const log = await harness.readSessionLog(SESSION_ID);
-    expect(log).toContain('[apex stderr diagnostic]');
+    const records = parseSessionLog(log);
+    expect(records.at(-1)?.['type']).toBe('apex.stderr-diagnostic');
     expect(log).toContain('[REDACTED]');
     expect(log).not.toContain(token);
   }, TEST_TIMEOUT);
@@ -420,6 +499,9 @@ describe('environment inheritance and redaction (SPEC §10.2, §18.4)', () => {
     expect(log).toContain('[REDACTED]');
     expect(log).not.toContain(privateKeyBody);
     expect(log).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+    expect(parseSessionLog(log).every((record) => record['type'] === 'apex.invalid-stream-fragment')).toBe(
+      true,
+    );
   }, TEST_TIMEOUT);
 
   it('CC Switch style: environment-only provider configuration works without any private API', async () => {

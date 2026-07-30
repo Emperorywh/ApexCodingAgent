@@ -157,6 +157,45 @@ describe('summarizeStreamEvent', () => {
     expect(activities).toEqual(['1:a.ts', '2:b.ts']);
   });
 
+  it('高频 thinking 遥测只返回聚合分类，不驱动有效进度', () => {
+    const activities: number[] = [];
+    const collector = createClaudeStreamCollector({
+      sessionId: 'session-1',
+      onActivity: (activity) => activities.push(activity.relevantEventCount),
+    });
+    const encoder = new TextEncoder();
+
+    /*
+     * 遥测记录仍先经过 JSON 解析和 Session ID 检查，但不生成展示事件；
+     * 后续真实工具事件从 1 开始计数，证明原始吞吐不会膨胀用户进度。
+     */
+    expect(
+      collector.push(
+        encoder.encode(
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'thinking_tokens',
+            estimated_tokens: 123,
+            session_id: 'session-1',
+          })}\n`,
+        ),
+      ),
+    ).toEqual([{ kind: 'telemetry', category: 'system/thinking' }]);
+    expect(activities).toEqual([]);
+
+    collector.push(
+      encoder.encode(
+        `${JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', name: 'Read', input: { path: 'src/index.ts' } }],
+          },
+        })}\n`,
+      ),
+    );
+    expect(activities).toEqual([1]);
+  });
+
   it('展示摘要会移除外部 ANSI 控制序列', () => {
     const [event] = describeStreamEvent({
       type: 'assistant',

@@ -94,6 +94,8 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - dependsOn 只能引用本计划内存在的 Task ID。
 - acceptanceCriteria 必须是可观察、可判断的完成结果。
 - verificationHints 不得虚构仓库中不存在的命令。
+- verificationHints 必须区分可自动运行的检查与用户手动验证；仓库代理说明禁止自动界面测试时，只能写明“用户手动验证”，不得把开发服务器命令列为 Agent 必跑项。
+- 需要本地服务的自动验证必须规划为单一有界入口，由同一入口负责启动、就绪检查和结束，不能依赖长期后台服务。
 - likelyPaths 只是提示，不是强制文件范围。
 
 请返回结构化任务计划，包含：

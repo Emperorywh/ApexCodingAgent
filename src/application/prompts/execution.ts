@@ -10,6 +10,7 @@
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type { CompletedTaskSummary } from './planning.js';
+import { VERIFICATION_POLICY } from './verification-policy.js';
 
 export interface ExecutionPromptInput {
   /** 仓库根目录绝对路径。 */
@@ -51,6 +52,7 @@ const EXECUTION_BASELINE = `你是 ApexCodingAgent 当前 Task 的执行 Agent�
 6. 不执行 remote push、生产部署、付款、生产数据变更或破坏其他分支。
 7. 可以使用 Claude Code 原生 Skills、MCP、Subagents、Plugins 和 Hooks。
 8. 运行与当前 Task 验收条件相称的测试或验证。
+${VERIFICATION_POLICY}
 9. 对每一项 acceptanceCriteria 按原索引返回一条 acceptanceEvidence，说明 satisfied 或 not_satisfied 及可观察证据。
 10. 只有全部 acceptanceCriteria 均 satisfied 且不存在 failed test 时才能返回 completed。
 11. 如果仓库事实、架构前置条件或需求变化使当前计划不再正确，返回 replan_required 和非空原因，不要伪造完成。
@@ -185,6 +187,8 @@ export function buildExecutionResumePrompt(input: {
 
 CURRENT_TASK（当前 Task 完整定义，JSON）：
 ${toJson(input.task)}
+
+${VERIFICATION_POLICY}
 
 继续执行要求：
 1. 原执行要求与安全边界全部继续有效（不修改 SPEC、不触碰 .apex-coding-agent、不执行危险操作）。

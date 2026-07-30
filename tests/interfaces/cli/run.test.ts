@@ -181,6 +181,8 @@ describe('runCli exit codes (§17)', () => {
       resume: { execute: async () => ({ kind: 'failed', run: interruptedRun }) },
     });
     expect(await runCli(['resume'], interrupted.runtime)).toBe(CLI_EXIT.interrupted);
+    expect(interrupted.stderr.join('\n')).toContain('已中断 · RUN_INTERRUPTED');
+    expect(interrupted.stderr.join('\n')).not.toContain('失败 · RUN_INTERRUPTED');
 
     const plainRun = makeRunJson({
       status: 'failed',
@@ -259,11 +261,13 @@ describe('runCli exit codes (§17)', () => {
       terminalAt: '2026-01-01T01:00:00Z',
       lastError: makeErrorRecord('RUN_INTERRUPTED'),
     });
-    const { runtime } = makeRuntime({
+    const { runtime, stderr } = makeRuntime({
       startRun: stubStartRun({ kind: 'failed', run }),
     });
     const code = await runCli(['start'], runtime);
     expect(code).toBe(CLI_EXIT.interrupted);
+    expect(stderr.join('\n')).toContain('已中断 · RUN_INTERRUPTED');
+    expect(stderr.join('\n')).not.toContain('失败 · RUN_INTERRUPTED');
   });
 
   it('startup validation failure exits 3 with the stable code', async () => {

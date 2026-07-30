@@ -13,6 +13,7 @@ import type {
   TestReport,
 } from '../../domain/schemas/task-execution-result.js';
 import type { SkippedTaskSummary } from './planning.js';
+import { VERIFICATION_POLICY } from './verification-policy.js';
 
 /** completed Task 的复核输入：定义、验收证据、摘要、最终 Checkpoint 与已报告测试结果。 */
 export interface CompletedTaskReviewSummary {
@@ -59,6 +60,7 @@ Review 要求：
 2. 检查当前架构、数据流、状态流、模块边界和实现是否一致。
 3. 检查每个 completed Task 的全部 acceptanceEvidence 是否存在、可信且与仓库事实相符。
 4. 自主运行必要的最终测试和集成验证。
+${VERIFICATION_POLICY}
 5. 只能直接修复不改变模块边界、数据模型或验收范围的局部问题；需要 Task 级工作时返回 replan_required。
 6. 不得修改、暂存或提交 SPEC。
 7. 不得修改、暂存、提交或删除 .apex-coding-agent。
@@ -159,6 +161,8 @@ export function buildFinalReviewResumePrompt(): string {
   return `此前的 Final Review 会话被前台中断，本会话从原对话断点继续。
 
 仓库可能保留中断前的复核修改：先核对当前文件与 Git 状态，在此基础上继续完成整体复核，不要推倒重来。原安全边界、验收证据核对、测试要求、replan_required 规则和 FinalReviewResult 结构化结果契约全部继续有效。
+
+${VERIFICATION_POLICY}
 
 返回 FinalReviewResult。不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }

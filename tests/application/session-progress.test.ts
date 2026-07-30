@@ -1,8 +1,8 @@
 /**
  * invokeSession 的用户反馈测试（SPEC §17 start 进度语义）：
  * - Session 开始/结束各一行阶段行（类型、Revision、Task、耗时、结果）；
- * - Session 运行期间按 sessionHeartbeatMs 产出心跳行（已耗时、最近事件、
- *   已接收字节），settle 后不再产出；
+ * - Session 运行期间按 sessionHeartbeatMs 产出心跳行（已耗时、有效事件
+ *   计数），settle 后不再产出；
  * - 默认只即时输出关键工具动作，思考、系统事件与成功结果留在完整日志；
  * - 结构化事件通过 sequence 去重，避免底层 stdout 分块导致重复展示；
  * - 失败行携带稳定 errorCode。
@@ -133,7 +133,7 @@ describe('invokeSession 用户反馈', () => {
     expect(waitResolvers).toHaveLength(1);
 
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 512,
+      relevantEventCount: 2,
       lastEventType: 'assistant',
       displayEvent: null,
       model: null,
@@ -148,7 +148,7 @@ describe('invokeSession 用户反馈', () => {
     expect(heartbeats).toHaveLength(0);
     expect(compactHeartbeats).toHaveLength(1);
     expect(compactHeartbeats[0]).toContain('已运行 15s');
-    expect(compactHeartbeats[0]).toContain('已接收 512 B');
+    expect(compactHeartbeats[0]).toContain('已处理 2 个有效事件');
     expect(waitResolvers.length).toBeGreaterThanOrEqual(2);
 
     // 会话 settle 后：结束行出现，后续 wait 到期也不再产出心跳
@@ -181,6 +181,29 @@ describe('invokeSession 用户反馈', () => {
     expect(lines[1]).toContain('✗ 规划失败 · 用时 0s · CLAUDE_EXIT_NONZERO');
   });
 
+  it('用户中断显示为已中断而不是任务失败', async () => {
+    const interruption = new ClaudeInvocationError({
+      code: 'RUN_INTERRUPTED',
+      stage: 'planning',
+      message: 'foreground interrupt requested',
+      sessionId: SESSION_ID,
+      taskId: null,
+      processExitCode: null,
+      claudeVersion: '1.0.0',
+    });
+    const { deps, lines } = createDeps(async () => {
+      throw interruption;
+    });
+
+    await expect(invokeSession(deps, handle, input)).rejects.toBe(interruption);
+    /*
+     * 领域与持久化仍使用 RUN_INTERRUPTED 失败协议；这里只锁定前台语义，
+     * 防止可恢复的用户动作再次被渲染为 Claude 执行缺陷。
+     */
+    expect(lines[1]).toContain('◇ 规划已中断 · 用时 0s · RUN_INTERRUPTED');
+    expect(lines[1]).not.toContain('规划失败');
+  });
+
   it('默认只打印工具动作，隐藏 thinking 与其他低信噪比事件', async () => {
     let capturedRequest: {
       onStreamActivity?: (activity: ClaudeStreamActivity) => void;
@@ -197,7 +220,7 @@ describe('invokeSession 用户反馈', () => {
     const pending = invokeSession(deps, handle, input);
 
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 100,
+      relevantEventCount: 1,
       lastEventType: 'assistant',
       displayEvent: { sequence: 1, kind: 'thinking', label: '思考', detail: '先读 SPEC' },
       model: null,
@@ -208,14 +231,14 @@ describe('invokeSession 用户反馈', () => {
      * sequence 是事件身份，不能退化为比较可能重复出现的展示字符串。
      */
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 100,
+      relevantEventCount: 1,
       lastEventType: 'assistant',
       displayEvent: { sequence: 1, kind: 'thinking', label: '思考', detail: '先读 SPEC' },
       model: null,
       provider: null,
     });
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 260,
+      relevantEventCount: 2,
       lastEventType: 'assistant',
       displayEvent: { sequence: 2, kind: 'tool', label: 'Read', detail: 'C:/repo/docs/SPEC.md' },
       model: null,
@@ -223,7 +246,7 @@ describe('invokeSession 用户反馈', () => {
     });
     // 无可摘要事件：不输出事件行。
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 300,
+      relevantEventCount: 2,
       lastEventType: 'assistant',
       displayEvent: null,
       model: null,
@@ -255,7 +278,7 @@ describe('invokeSession 用户反馈', () => {
 
     // init 事件到达前：没有模型行。
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 10,
+      relevantEventCount: 0,
       lastEventType: null,
       displayEvent: null,
       model: null,
@@ -264,7 +287,7 @@ describe('invokeSession 用户反馈', () => {
     expect(lines.some((line) => line.includes('模型 '))).toBe(false);
 
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 80,
+      relevantEventCount: 1,
       lastEventType: 'system',
       displayEvent: { sequence: 1, kind: 'system', label: 'init', detail: null },
       model: 'claude-fake-model-1',
@@ -272,7 +295,7 @@ describe('invokeSession 用户反馈', () => {
     });
     // 分块重复上报同一 init 元数据：不重复输出。
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 90,
+      relevantEventCount: 1,
       lastEventType: 'system',
       displayEvent: { sequence: 1, kind: 'system', label: 'init', detail: null },
       model: 'claude-fake-model-1',
@@ -304,7 +327,7 @@ describe('invokeSession 用户反馈', () => {
 
     const pending = invokeSession(deps, handle, input);
     capturedRequest!.onStreamActivity?.({
-      receivedStdoutBytes: 80,
+      relevantEventCount: 1,
       lastEventType: 'system',
       displayEvent: { sequence: 1, kind: 'system', label: 'init', detail: null },
       model: 'claude-fake-model-1',

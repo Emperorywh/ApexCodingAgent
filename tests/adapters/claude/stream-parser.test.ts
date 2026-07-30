@@ -262,24 +262,27 @@ describe('stream-json inline edge cases', () => {
     expect(invocationError.toolSummary).not.toContain(token);
   });
 
-  it('reports only validated JSON object record boundaries for incremental logging', () => {
+  it('reports explicit record facts for structured logging', () => {
     /**
-     * 边界偏移相对于本次解码文本：跨 chunk 的行只在换行到达后确认；一旦
-     * 遇到非法行，后续文本都不能再被声明为可提前排出的安全记录边界。
+     * 跨 chunk 的行只在换行到达后确认；首次非法行及其后全部记录都作为
+     * untrusted 原文交给日志层封装，日志层无需再次解析或猜测安全边界。
      */
     const collector = createClaudeStreamCollector({ sessionId: UUID_1 });
     const encoder = new TextEncoder();
     expect(collector.push(encoder.encode('{"type":'))).toEqual([]);
 
     const completed = '"unknown"}\n{"type":"unknown"}\ntail';
-    const firstLineEnd = completed.indexOf('\n') + 1;
-    const secondLineEnd = completed.indexOf('\n', firstLineEnd) + 1;
     expect(collector.push(encoder.encode(completed))).toEqual([
-      firstLineEnd,
-      secondLineEnd,
+      { kind: 'event', event: { type: 'unknown' } },
+      { kind: 'event', event: { type: 'unknown' } },
     ]);
 
-    expect(collector.push(encoder.encode('\nnot-json\n'))).toEqual([]);
-    expect(collector.push(encoder.encode('{"type":"unknown"}\n'))).toEqual([]);
+    expect(collector.push(encoder.encode('\nnot-json\n'))).toEqual([
+      { kind: 'untrusted', line: 'tail' },
+      { kind: 'untrusted', line: 'not-json' },
+    ]);
+    expect(collector.push(encoder.encode('{"type":"unknown"}\n'))).toEqual([
+      { kind: 'untrusted', line: '{"type":"unknown"}' },
+    ]);
   });
 });

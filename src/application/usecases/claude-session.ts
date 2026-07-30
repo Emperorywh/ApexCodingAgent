@@ -252,7 +252,7 @@ export async function invokeSession<T extends SessionType>(
   const startedMs = deps.clock.now().getTime();
   const elapsedMs = (): number => deps.clock.now().getTime() - startedMs;
   let activity: ClaudeStreamActivity = {
-    receivedStdoutBytes: 0,
+    relevantEventCount: 0,
     lastEventType: null,
     displayEvent: null,
     model: null,
@@ -340,7 +340,7 @@ export async function invokeSession<T extends SessionType>(
         deps.redaction.redactText(
           renderSessionHeartbeat(
             formatElapsed(elapsedMs()),
-            activity.receivedStdoutBytes,
+            activity.relevantEventCount,
           ),
         ),
       );

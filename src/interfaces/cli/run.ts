@@ -50,7 +50,15 @@ function printRunFailed(
   error: Pick<ApexError, 'errorCode' | 'stage' | 'message'> | null,
 ): void {
   const errorCode = error?.errorCode ?? 'unknown';
-  runtime.stderr(runtime.redaction.redactText(`✗ Run ${runId} 失败 · ${errorCode}`));
+  /*
+   * RUN_INTERRUPTED 的持久化状态仍是 failed，但用户主动中断不是执行缺陷。
+   * 这里只改变展示语义，不引入新的领域状态或改变既有恢复协议。
+   */
+  const heading =
+    errorCode === 'RUN_INTERRUPTED'
+      ? `◇ Run ${runId} 已中断 · ${errorCode}`
+      : `✗ Run ${runId} 失败 · ${errorCode}`;
+  runtime.stderr(runtime.redaction.redactText(heading));
   if (error !== null) {
     runtime.stderr(
       runtime.redaction.redactText(`  阶段 ${error.stage} · 原因 ${error.message}`),

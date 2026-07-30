@@ -51,17 +51,42 @@ export interface CollectedClaudeStream {
   readonly provider: string | null;
 }
 
+/**
+ * 已完成的原始流记录事实。
+ *
+ * 解析器是唯一解释 stream-json 的模块：日志层只消费这里给出的显式分类，
+ * 不重复解析事件，也不通过字符串特征猜测哪些记录需要降噪。
+ */
+export type ClaudeStreamLogRecord =
+  | {
+      readonly kind: 'event';
+      readonly event: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly kind: 'telemetry';
+      readonly category: 'system/thinking';
+    }
+  | {
+      readonly kind: 'untrusted';
+      readonly line: string;
+    };
+
+/** finish 同时返回结果判定事实与最后一个未换行记录的日志事实。 */
+export interface FinalizedClaudeStream {
+  readonly stream: CollectedClaudeStream;
+  readonly trailingRecords: readonly ClaudeStreamLogRecord[];
+}
+
 export interface ClaudeStreamCollector {
   /**
    * 依照进程 stdout 的原始 chunk 顺序增量消费字节。
    *
    * push 只解析已经闭合的行；跨 chunk 的 UTF-8 字符和未完成行由内部
    * TextDecoder 与行缓冲保存，直到后续 chunk 或 finish 到达。返回值是
-   * 当前解码文本中已验证 JSON 对象记录结束后的字符偏移，供日志脱敏器
-   * 安全降低输出延迟；首次非法记录之后不再声明任何安全边界。
+   * 已完成记录的显式分类，供日志层结构化脱敏、过滤遥测或封装非法原文。
    */
-  push(chunk: Uint8Array): readonly number[];
-  finish(): CollectedClaudeStream;
+  push(chunk: Uint8Array): readonly ClaudeStreamLogRecord[];
+  finish(): FinalizedClaudeStream;
 }
 
 export interface StreamCollectorOptions {
@@ -252,14 +277,14 @@ export function summarizeStreamEvent(event: StreamEvent): string | null {
 /**
  * 创建单次 Session 独占的增量收集器。
  *
- * 收集器在每个 chunk 后发送一次活动事实，但只在完整事件行到达时更新
- * 最近事件。finish 只能调用一次，防止部分行被重复纳入结果判定。
+ * 收集器只在完整有效事件到达时发送活动事实；高频内部遥测和半条记录
+ * 不伪装成工作进展。finish 只能调用一次，防止部分行被重复纳入结果判定。
  */
 export function createClaudeStreamCollector(options: StreamCollectorOptions): ClaudeStreamCollector {
   const decoder = new TextDecoder();
   let lineBuffer = '';
   let lineNumber = 0;
-  let receivedStdoutBytes = 0;
+  let relevantEventCount = 0;
   let lastEventType: string | null = null;
   let displayEvent: ClaudeStreamDisplayEvent | null = null;
   let displaySequence = 0;
@@ -279,12 +304,20 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
    * 回调粒度绑定“完整事件/内容块”而不是底层 stdout chunk；操作系统即使
    * 把多行合并成一个 chunk，也不会再吞掉前面的工具动作。
    */
-  function consumeEvent(event: StreamEvent): void {
-    if (typeof event['type'] === 'string') {
-      lastEventType = event['type'];
-    }
+  function consumeEvent(event: StreamEvent): ClaudeStreamLogRecord {
     if ('session_id' in event && event['session_id'] !== options.sessionId) {
       sessionIdConflict = true;
+    }
+    /*
+     * thinking_tokens 是 Claude CLI 的高频内部遥测。它不参与结果判定、
+     * 用户进度或逐条日志，只在日志结束时以聚合计数保留可观察事实。
+     */
+    if (event['type'] === 'system' && event['subtype'] === 'thinking_tokens') {
+      return { kind: 'telemetry', category: 'system/thinking' };
+    }
+    relevantEventCount += 1;
+    if (typeof event['type'] === 'string') {
+      lastEventType = event['type'];
     }
     if (event['type'] === 'system' && event['subtype'] === 'init') {
       if (model === null && typeof event['model'] === 'string' && event['model'] !== '') {
@@ -308,56 +341,55 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
     const descriptions = describeStreamEvent(event);
     if (descriptions.length === 0) {
       reportActivity();
-      return;
+      return { kind: 'event', event };
     }
     for (const description of descriptions) {
       displaySequence += 1;
       displayEvent = { sequence: displaySequence, ...description };
       reportActivity();
     }
+    return { kind: 'event', event };
   }
 
-  function consumeLine(rawLine: string): boolean {
+  function consumeLine(rawLine: string): ClaudeStreamLogRecord | null {
     lineNumber += 1;
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    if (line === '') return false;
-    if (parseFailure !== null) return false;
+    if (line === '') return null;
+    if (parseFailure !== null) return { kind: 'untrusted', line };
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch {
       parseFailure = { lineNumber, kind: 'invalid-json' };
-      return false;
+      return { kind: 'untrusted', line };
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       parseFailure = { lineNumber, kind: 'non-object' };
-      return false;
+      return { kind: 'untrusted', line };
     }
-    consumeEvent(parsed as StreamEvent);
-    return true;
+    return consumeEvent(parsed as StreamEvent);
   }
 
-  function consumeText(text: string): readonly number[] {
+  function consumeText(text: string): ClaudeStreamLogRecord[] {
     if (text.trim() !== '') hasContent = true;
-    const safeRecordBoundaryOffsets: number[] = [];
+    const records: ClaudeStreamLogRecord[] = [];
     let segmentStart = 0;
     let newlineIndex = text.indexOf('\n');
     while (newlineIndex !== -1) {
       lineBuffer += text.slice(segmentStart, newlineIndex);
-      if (consumeLine(lineBuffer)) {
-        safeRecordBoundaryOffsets.push(newlineIndex + 1);
-      }
+      const record = consumeLine(lineBuffer);
+      if (record !== null) records.push(record);
       lineBuffer = '';
       segmentStart = newlineIndex + 1;
       newlineIndex = text.indexOf('\n', segmentStart);
     }
     lineBuffer += text.slice(segmentStart);
-    return safeRecordBoundaryOffsets;
+    return records;
   }
 
   function reportActivity(): void {
     options.onActivity?.({
-      receivedStdoutBytes,
+      relevantEventCount,
       lastEventType,
       displayEvent,
       model,
@@ -366,38 +398,35 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   }
 
   return {
-    push(chunk): readonly number[] {
+    push(chunk): readonly ClaudeStreamLogRecord[] {
       if (finished) throw new Error('cannot push to a finished Claude stream collector');
-      receivedStdoutBytes += chunk.byteLength;
-      const sequenceBefore = displaySequence;
-      const eventTypeBefore = lastEventType;
-      const safeRecordBoundaryOffsets = consumeText(decoder.decode(chunk, { stream: true }));
       /*
-       * 没有完整事件时仍上报字节活跃事实，供静默心跳判断流是否继续前进。
-       * 已完整消费事件时 consumeEvent 已逐条回调，这里不得再重复上报。
+       * 活跃回调只由完整有效事件驱动。高频遥测和半条记录不再触发回调，
+       * 心跳定时器仍能证明会话存活，同时不会把协议吞吐伪装为工作进展。
        */
-      if (displaySequence === sequenceBefore && lastEventType === eventTypeBefore) {
-        reportActivity();
-      }
-      return safeRecordBoundaryOffsets;
+      return consumeText(decoder.decode(chunk, { stream: true }));
     },
-    finish(): CollectedClaudeStream {
+    finish(): FinalizedClaudeStream {
       if (finished) throw new Error('Claude stream collector finish called more than once');
       finished = true;
-      consumeText(decoder.decode());
+      const trailingRecords = consumeText(decoder.decode());
       if (lineBuffer !== '') {
-        consumeLine(lineBuffer);
+        const record = consumeLine(lineBuffer);
+        if (record !== null) trailingRecords.push(record);
         lineBuffer = '';
       }
       return {
-        parseFailure,
-        hasContent,
-        sessionIdConflict,
-        terminalEventCount,
-        terminalHasStructuredOutput,
-        structuredOutput,
-        model,
-        provider,
+        stream: {
+          parseFailure,
+          hasContent,
+          sessionIdConflict,
+          terminalEventCount,
+          terminalHasStructuredOutput,
+          structuredOutput,
+          model,
+          provider,
+        },
+        trailingRecords,
       };
     },
   };
@@ -514,8 +543,9 @@ export function evaluateStreamOutcome<T extends SessionType>(
 ): StreamEvaluation<T> {
   const collector = createClaudeStreamCollector({ sessionId: input.sessionId });
   collector.push(new TextEncoder().encode(input.stdout));
+  const finalized = collector.finish();
   return evaluateCollectedStreamOutcome({
-    stream: collector.finish(),
+    stream: finalized.stream,
     stderr: input.stderr,
     exitCode: input.exitCode,
     sessionId: input.sessionId,

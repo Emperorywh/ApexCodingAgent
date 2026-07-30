@@ -10,11 +10,14 @@
  * - Plan Revision commit order (SPEC §11.2): immutable snapshot → tasks.json
  *   → raw-byte SHA-256 → run.json commit point. All Domain checks run before
  *   the first write, so validation failures touch zero files.
+ * - 每个聚合在首次 I/O 前执行脱敏稳定性断言；检测到上游遗漏时拒绝写入，
+ *   不在持久化层静默改变影响恢复协议的领域事实。
  * - Consistent read (SPEC §11.2): run → tasks → run with stateRevision,
  *   planRevision and tasksSha256 agreement; 1 attempt + at most 3 immediate
  *   retries, then STATE_SNAPSHOT_BUSY without modifying anything.
  */
 import type { FileSystemPort } from '../../application/ports/file-system.js';
+import type { RedactionPort } from '../../application/ports/redaction.js';
 import type {
   ConsistentSnapshot,
   PlanRevisionCommit,
@@ -62,6 +65,8 @@ export interface JsonStateStoreOptions {
   /** Absolute path of the `.apex-coding-agent/` state directory, `/`-separated. */
   readonly stateDir: string;
   readonly fs: FileSystemPort;
+  /** 写入前的最后安全断言；State Store 不负责猜测应如何修复业务事实。 */
+  readonly redaction: RedactionPort;
 }
 
 export function createJsonStateStore(options: JsonStateStoreOptions): StateStorePort {
@@ -73,6 +78,21 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   const sessionsDir = `${stateDir}/sessions`;
   const snapshotPath = (planRevision: number): string => `${plansDir}/${planRevision}.json`;
   const sessionPath = (sessionId: string): string => `${sessionsDir}/${sessionId}.json`;
+
+  /**
+   * 状态层只做“已经安全”的断言，不在这里静默改写领域事实。
+   *
+   * 如果调用方遗漏了脱敏，直接替换路径、Task ID 或其他操作性字段可能破坏
+   * 恢复协议；因此检测到差异时以稳定验证错误拒绝首次写入，由事实组装层修复。
+   */
+  function assertPayloadAlreadyRedacted(schemaName: string, value: unknown): void {
+    const redacted = options.redaction.redactStructured(value);
+    if (JSON.stringify(redacted) !== JSON.stringify(value)) {
+      throw stateValidationFailed(
+        `${schemaName} contains recognized sensitive content before persistence`,
+      );
+    }
+  }
 
   function readTasksWithBytes(): Promise<ReadJsonResult<TasksJson> | null> {
     return readJsonIfExists<TasksJson>(fs, tasksPath, 'TasksJson');
@@ -97,6 +117,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   }
 
   async function writeRun(run: RunJson): Promise<void> {
+    assertPayloadAlreadyRedacted('RunJson', run);
     const existing = await readRun();
     if (existing !== null && run.stateRevision <= existing.stateRevision) {
       throw stateValidationFailed(
@@ -136,6 +157,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   }
 
   async function writeTasks(tasks: TasksJson): Promise<string> {
+    assertPayloadAlreadyRedacted('TasksJson', tasks);
     const reread = await writeJsonAtomically(fs, {
       targetPath: tasksPath,
       value: tasks,
@@ -165,6 +187,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   }
 
   async function writePlanSnapshot(snapshot: PlanRevisionSnapshot): Promise<void> {
+    assertPayloadAlreadyRedacted('PlanRevisionSnapshot', snapshot);
     assertSchemaValid('PlanRevisionSnapshot', snapshot, STATE_VALIDATION);
     assertPlanRevisionSnapshotRules(snapshot);
     const path = snapshotPath(snapshot.planRevision);
@@ -200,6 +223,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   }
 
   async function writeSessionRecord(record: SessionRecord): Promise<void> {
+    assertPayloadAlreadyRedacted('SessionRecord', record);
     assertSchemaValid('SessionRecord', record, STATE_VALIDATION);
     const path = sessionPath(record.sessionId);
     if ((await fs.stat(path)) !== null) {
@@ -225,6 +249,9 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
      * 任何字段漂移、Revision 跳号或父版本错误都会以零写入失败，
      * 不会制造一个表面可读、语义上却互相矛盾的半提交 Revision。
      */
+    assertPayloadAlreadyRedacted('PlanRevisionSnapshot', snapshot);
+    assertPayloadAlreadyRedacted('TasksJson', tasks);
+    assertPayloadAlreadyRedacted('RunJson', run);
     assertSchemaValid('PlanRevisionSnapshot', snapshot, STATE_VALIDATION);
     assertSchemaValid('TasksJson', tasks, STATE_VALIDATION);
     /**

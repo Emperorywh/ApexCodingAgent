@@ -10,10 +10,18 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect } from 'vitest';
+import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import type { SessionGitFacts } from '../../../src/application/ports/GitPort.js';
 import { ApexError, type ErrorCode } from '../../../src/domain/errors.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Git Adapter 的脱敏依赖在生产中是强制项；集成测试统一复用真实 Redactor，
+ * 既避免 identity 旁路，也让每个临时仓库测试保持相同安全边界。
+ */
+const redactor = createRedactor();
+export const redactGitText = (text: string): string => redactor.redactText(text);
 
 export const RUN_ID = 'RUN-123e4567-e89b-42d3-a456-426614174000';
 export const RUN_BRANCH = `apex-coding-agent/${RUN_ID}`;

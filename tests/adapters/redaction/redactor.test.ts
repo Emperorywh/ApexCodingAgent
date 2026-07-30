@@ -14,7 +14,7 @@ import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 const redactor = createRedactor();
 
 function stream(chunks: readonly string[]): string {
-  const r: ChunkRedactor = redactor.createChunkRedactor();
+  const r: ChunkRedactor = redactor.createChunkRedactor('all');
   return chunks.map((chunk) => r.push(chunk)).join('') + r.flush();
 }
 
@@ -82,6 +82,49 @@ describe('redactText', () => {
     expect(redactor.redactText('accessToken: secret-value-4')).toBe(
       `accessToken: ${REDACTED_PLACEHOLDER}`,
     );
+    expect(redactor.redactText('"api_key": "secret-value-5"')).toBe(
+      `"api_key": "${REDACTED_PLACEHOLDER}"`,
+    );
+    expect(redactor.redactText('signing-passphrase=secret-value-6')).toBe(
+      `signing-passphrase=${REDACTED_PLACEHOLDER}`,
+    );
+    expect(redactor.redactText('"registryCredential": "secret-value-7"')).toBe(
+      `"registryCredential": "${REDACTED_PLACEHOLDER}"`,
+    );
+  });
+
+  it('keeps JSON text parseable when sensitive primitive values are unquoted', () => {
+    /*
+     * 文本级脱敏仍会作为纵深防御处理已序列化 JSON；数字、布尔和 null
+     * 必须替换成带引号占位符，且不能吞掉对象或数组的结束符。
+     */
+    const output = redactor.redactText(
+      '{"token":42,"secret":true,"password":null,"other":7}',
+    );
+    expect(JSON.parse(output)).toEqual({
+      token: REDACTED_PLACEHOLDER,
+      secret: REDACTED_PLACEHOLDER,
+      password: REDACTED_PLACEHOLDER,
+      other: 7,
+    });
+  });
+
+  it('normalizes control sequences before detecting credential shapes', () => {
+    /*
+     * Token 中间插入 ANSI 序列时，终端清理后会重新拼成原秘密；Redactor
+     * 必须先规范化再匹配，避免不同 Sink 的处理顺序形成绕过。
+     */
+    const secret = 'sk-proj-abcdefghijklmnop';
+    const disguised = 'sk-proj-abcdefgh\u001b[31mijklmnop';
+    const output = redactor.redactText(`version ${disguised}`);
+    expect(output).toBe(`version ${REDACTED_PLACEHOLDER}`);
+    expect(output).not.toContain(secret);
+    expect(output).not.toContain('\u001b');
+
+    const oscDisguised = 'sk-proj-abcdefgh\u001b]0;window-title\u0007ijklmnop';
+    expect(redactor.redactText(`version ${oscDisguised}`)).toBe(
+      `version ${REDACTED_PLACEHOLDER}`,
+    );
   });
 
   it('uses a fixed placeholder and never echoes, hashes or encodes the value', () => {
@@ -108,6 +151,9 @@ describe('redactStructured', () => {
       PASSWORD: 'k3',
       accessToken: 'k4',
       authorization: 'k5',
+      api_key: 'k8',
+      signingPassphrase: 'k9',
+      registryCredential: 'k10',
       nested: { tokens: ['k6', 'k7'] },
       other: 'plain',
     };
@@ -117,6 +163,9 @@ describe('redactStructured', () => {
     expect(out.PASSWORD).toBe(REDACTED_PLACEHOLDER);
     expect(out.accessToken).toBe(REDACTED_PLACEHOLDER);
     expect(out.authorization).toBe(REDACTED_PLACEHOLDER);
+    expect(out.api_key).toBe(REDACTED_PLACEHOLDER);
+    expect(out.signingPassphrase).toBe(REDACTED_PLACEHOLDER);
+    expect(out.registryCredential).toBe(REDACTED_PLACEHOLDER);
     expect(out.nested.tokens).toEqual([REDACTED_PLACEHOLDER, REDACTED_PLACEHOLDER]);
     expect(out.other).toBe('plain');
   });
@@ -150,8 +199,8 @@ describe('redactStructured', () => {
       list: [1, 'two', false],
       credentials: {
         nestedToken: REDACTED_PLACEHOLDER,
-        attempts: 9,
-        enabled: true,
+        attempts: 0,
+        enabled: false,
       },
     });
   });
@@ -186,12 +235,49 @@ describe('redactStructured', () => {
     expect(out.credentials.apiKey).toBe(REDACTED_PLACEHOLDER);
     expect(out).not.toBe(input);
   });
+
+  it('returns stable rule-only audit facts without secret derivatives', () => {
+    /*
+     * 审计信息只允许回答“发生了多少次、命中了哪些规则”；原值、长度、
+     * 哈希或局部片段都不能进入日志分析面。
+     */
+    const secret = 'sk-proj-abcdefghijklmnop';
+    const result = redactor.redactStructuredWithAudit({
+      message: `failed with ${secret}`,
+      token: 42,
+    });
+    expect(result.value).toEqual({
+      message: `failed with ${REDACTED_PLACEHOLDER}`,
+      token: 0,
+    });
+    expect(result.audit).toEqual({
+      matchCount: 2,
+      matchedRules: ['openai-key', 'sensitive-field'],
+    });
+    expect(JSON.stringify(result.audit)).not.toContain(secret);
+  });
 });
 
 describe('chunk redactor', () => {
   it('redacts a token split across chunk boundaries', () => {
     const out = stream(['see Bearer abc', 'defgh-12345678 done']);
     expect(out).toBe(`see Bearer ${REDACTED_PLACEHOLDER} done`);
+  });
+
+  it('redacts a token when both the token and ANSI sequence cross chunks', () => {
+    /*
+     * OS 分块可以同时切开凭据和 CSI 序列；流式规范化器必须保留控制协议
+     * 状态，不能先丢 ESC 再把下一块的可打印参数留在 Token 中间。
+     */
+    const secret = 'sk-proj-abcdefghijklmnop';
+    const out = stream([
+      'version sk-proj-abcdef',
+      'gh\u001b[',
+      '31mijkl',
+      'mnop done',
+    ]);
+    expect(out).toBe(`version ${REDACTED_PLACEHOLDER} done`);
+    expect(out).not.toContain(secret);
   });
 
   it('redacts a private key block split mid-body', () => {
@@ -227,7 +313,7 @@ describe('chunk redactor', () => {
   });
 
   it('holds a short stream until flush so every possible match stays intact', () => {
-    const r = redactor.createChunkRedactor();
+    const r = redactor.createChunkRedactor('all');
     /**
      * 短输入无法仅凭当前内容证明其尾部不会在后续 chunk 中扩展成秘密，
      * 因此在 flush 前保留整个窗口，优先保证任意边界下都不泄漏。
@@ -245,7 +331,7 @@ describe('chunk redactor', () => {
     const prefix = 'ordinary diagnostic line\n'.repeat(MAX_REDACTION_MATCH_LENGTH);
     const secret = 'https://user:Sup3rSecret@example.com/repo.git';
     const document = `${prefix}${secret}\nend`;
-    const r = redactor.createChunkRedactor();
+    const r = redactor.createChunkRedactor('all');
     const emitted = r.push(document);
 
     expect(emitted.length).toBeGreaterThan(0);
@@ -258,11 +344,11 @@ describe('chunk redactor', () => {
      * 普通记录可立即持久化；私钥起始标记出现后，即使调用方确认当前 JSON
      * 记录结束，也必须等待后续记录中的结束标记，再整体替换固定占位符。
      */
-    const ordinary = redactor.createChunkRedactor();
+    const ordinary = redactor.createChunkRedactor('record-spanning');
     expect(ordinary.push('{"type":"result"}\n')).toBe('');
     expect(ordinary.flushRecordBoundary()).toBe('{"type":"result"}\n');
 
-    const privateKey = redactor.createChunkRedactor();
+    const privateKey = redactor.createChunkRedactor('record-spanning');
     expect(privateKey.push('{"text":"-----BEGIN RSA PRIVATE KEY-----"}\n')).toBe('');
     expect(privateKey.flushRecordBoundary()).toBe('');
     expect(

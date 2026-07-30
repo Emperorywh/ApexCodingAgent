@@ -36,11 +36,16 @@ export function createClaudeSessionLog(options: ClaudeSessionLogOptions): Claude
   const absolute = `${root}/.apex-coding-agent/logs/${options.sessionId}.log`;
   const parent = absolute.slice(0, absolute.lastIndexOf('/'));
   const encoder = new TextEncoder();
-  const untrustedRedactor = options.redaction.createChunkRedactor();
+  const untrustedRedactor = options.redaction.createChunkRedactor('all');
+  const recordSpanningRedactor =
+    options.redaction.createChunkRedactor('record-spanning');
   let initialized = false;
   let writeFailure: unknown | null = null;
   let filteredTelemetryCount = 0;
   let finished = false;
+  let pendingRecordCount = 0;
+  let pendingRecordInput = '';
+  let pendingRecordOutput = '';
 
   async function record(operation: () => Promise<void>): Promise<void> {
     if (writeFailure !== null) return;
@@ -60,18 +65,79 @@ export function createClaudeSessionLog(options: ClaudeSessionLogOptions): Claude
     });
   }
 
+  /** 只追加已经脱敏并完成 JSONL 边界处理的文本。 */
+  async function appendText(text: string): Promise<void> {
+    if (text === '') return;
+    await ensureInitialized();
+    await record(() =>
+      options.fileSystem.appendFile(absolute, encoder.encode(text)),
+    );
+  }
+
   /**
-   * 所有结构化值先按字段类型脱敏，再序列化为单行 JSON。
+   * 写入已经确认不再参与 stdout 跨记录检测的安全 JSON 对象。
+   *
+   * 该入口只用于程序生成的摘要和已完成流式脱敏的 stderr；Claude stdout
+   * 事件必须走 appendJson，不能绕过跨记录私钥检测。
+   */
+  async function appendSafeJson(value: Readonly<Record<string, unknown>>): Promise<void> {
+    const redacted = options.redaction.redactStructured(value);
+    await appendText(`${JSON.stringify(redacted)}\n`);
+  }
+
+  /**
+   * 对单记录先做类型安全脱敏，再用只含跨记录规则的流式窗口检查相邻记录。
    *
    * 数字和布尔敏感字段由 RedactionPort 保持原 JSON 类型，避免文本占位符
    * 把合法 stream-json 变成无法被标准解析器读取的损坏记录。
+   *
+   * 一旦规则确实跨越多条 JSONL 记录，不能直接把文本替换结果写回，因为不同
+   * 事件结构可能被拼成非法 JSON；这里丢弃整批受影响记录并写安全计数摘要。
    */
   async function appendJson(value: Readonly<Record<string, unknown>>): Promise<void> {
-    await ensureInitialized();
     const redacted = options.redaction.redactStructured(value);
-    await record(() =>
-      options.fileSystem.appendFile(absolute, encoder.encode(`${JSON.stringify(redacted)}\n`)),
-    );
+    const serialized = `${JSON.stringify(redacted)}\n`;
+    pendingRecordCount += 1;
+    pendingRecordInput += serialized;
+    pendingRecordOutput += recordSpanningRedactor.push(serialized);
+    const boundaryOutput = recordSpanningRedactor.flushRecordBoundary();
+    if (boundaryOutput === '') return;
+    pendingRecordOutput += boundaryOutput;
+
+    if (pendingRecordOutput === pendingRecordInput) {
+      await appendText(pendingRecordInput);
+    } else {
+      await appendSafeJson({
+        type: 'apex.redacted-records',
+        reason: 'record-spanning-secret',
+        count: pendingRecordCount,
+      });
+    }
+    pendingRecordCount = 0;
+    pendingRecordInput = '';
+    pendingRecordOutput = '';
+  }
+
+  /**
+   * 流结束时仍被保留的记录含有未闭合跨记录秘密起点。
+   *
+   * 与普通文本 flush 不同，Session 日志宁可丢弃这些诊断事件，也不能把一个
+   * BEGIN 私钥块及其后续正文原样落盘；计数摘要保留最小可观察事实。
+   */
+  async function finishRecordStream(): Promise<void> {
+    if (pendingRecordCount === 0) {
+      recordSpanningRedactor.flush();
+      return;
+    }
+    recordSpanningRedactor.flush();
+    await appendSafeJson({
+      type: 'apex.redacted-records',
+      reason: 'unclosed-record-spanning-secret',
+      count: pendingRecordCount,
+    });
+    pendingRecordCount = 0;
+    pendingRecordInput = '';
+    pendingRecordOutput = '';
   }
 
   /** 把非法流原文封装为安全 JSON 字符串，同时保留跨行秘密的检测窗口。 */
@@ -102,8 +168,9 @@ export function createClaudeSessionLog(options: ClaudeSessionLogOptions): Claude
       if (finished) throw new Error('session log finish called more than once');
       finished = true;
       await appendUntrustedFragment(untrustedRedactor.flush());
+      await finishRecordStream();
       if (filteredTelemetryCount > 0) {
-        await appendJson({
+        await appendSafeJson({
           type: 'apex.log-summary',
           filteredEvents: [
             {
@@ -114,7 +181,7 @@ export function createClaudeSessionLog(options: ClaudeSessionLogOptions): Claude
         });
       }
       if (stderrSummary !== null) {
-        await appendJson({
+        await appendSafeJson({
           type: 'apex.stderr-diagnostic',
           summary: stderrSummary,
         });

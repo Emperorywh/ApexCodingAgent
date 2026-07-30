@@ -18,6 +18,7 @@ import type { GitPort } from '../../../src/application/ports/GitPort.js';
 import {
   createTempRepo,
   expectApexErrorAsync,
+  redactGitText,
   seedRepo,
   type TempRepo,
 } from './helpers.js';
@@ -32,7 +33,10 @@ let port: GitPort;
 
 beforeEach(async () => {
   repo = await createTempRepo();
-  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
+  port = createGitAdapter({
+    processExecutor: createTestProcessExecutor(),
+    redact: redactGitText,
+  });
 });
 
 afterEach(async () => {
@@ -105,7 +109,10 @@ describe('default discovery', () => {
 
     expect(
       await discoverSpecCandidates(
-        createGitRunner({ processExecutor: createTestProcessExecutor() }),
+        createGitRunner({
+          processExecutor: createTestProcessExecutor(),
+          redact: redactGitText,
+        }),
         repo.root,
         repo.root,
       ),
@@ -131,7 +138,10 @@ describe('invocation-directory scoping', () => {
     await seedRepo(repo);
     await repo.writeFile('sub/a/SPEC.md', '# A\n');
     await repo.writeFile('sub/b/SPEC.md', '# B\n');
-    const git = createGitRunner({ processExecutor: createTestProcessExecutor() });
+    const git = createGitRunner({
+      processExecutor: createTestProcessExecutor(),
+      redact: redactGitText,
+    });
     const all = await discoverSpecCandidates(git, repo.root, repo.root);
     expect([...all].sort()).toEqual(['SPEC.md', 'sub/a/SPEC.md', 'sub/b/SPEC.md']);
     const scoped = await discoverSpecCandidates(git, repo.root, join(repo.root, 'sub'));

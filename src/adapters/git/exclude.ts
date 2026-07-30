@@ -25,7 +25,10 @@ export async function ensureStateDirectoryExcluded(git: GitRunner, root: string)
     content = await readFile(excludePath, 'utf8');
   } catch (error) {
     if ((error as { readonly code?: unknown }).code !== 'ENOENT') {
-      throw gitCommandFailed(`failed to read git exclude file ${excludePath}`, { cause: error });
+      throw gitCommandFailed(`failed to read git exclude file ${excludePath}`, {
+        redact: git.redact,
+        cause: error,
+      });
     }
     content = '';
   }
@@ -41,6 +44,9 @@ export async function ensureStateDirectoryExcluded(git: GitRunner, root: string)
       flag: 'a',
     });
   } catch (error) {
-    throw gitCommandFailed(`failed to update git exclude file ${excludePath}`, { cause: error });
+    throw gitCommandFailed(`failed to update git exclude file ${excludePath}`, {
+      redact: git.redact,
+      cause: error,
+    });
   }
 }

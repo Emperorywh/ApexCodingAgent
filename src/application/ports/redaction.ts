@@ -13,6 +13,21 @@
 /** Fixed placeholder; original values are never hashed, encoded or echoed. */
 export const REDACTED_PLACEHOLDER = '[REDACTED]';
 
+/** 流式脱敏的规则范围；调用方必须按输入边界显式选择。 */
+export type ChunkRedactionScope = 'all' | 'record-spanning';
+
+/** 不包含任何原文的安全审计事实，供结构化日志记录脱敏行为。 */
+export interface RedactionAudit {
+  readonly matchCount: number;
+  readonly matchedRules: readonly string[];
+}
+
+/** 结构化值及其安全审计事实；审计信息只包含规则名和命中次数。 */
+export interface StructuredRedactionResult<T> {
+  readonly value: T;
+  readonly audit: RedactionAudit;
+}
+
 /**
  * Streaming text redactor. Chunks may split a secret anywhere; the
  * implementation holds back an overlap window (SPEC §18.4) so a token
@@ -44,6 +59,18 @@ export interface RedactionPort {
    * 的记录仍是合法 JSON，也不会因占位符改变原字段的 JSON 类型。
    */
   redactStructured<T>(value: T): T;
-  /** Creates a streaming redactor for chunked text (e.g. Claude stdout). */
-  createChunkRedactor(): ChunkRedactor;
+  /**
+   * 结构化脱敏并返回安全审计事实。
+   *
+   * 该入口服务于调试日志等需要解释“哪些类别被隐藏”的 Sink；它绝不返回
+   * 原值、哈希、长度或可用于恢复秘密的片段。
+   */
+  redactStructuredWithAudit<T>(value: T): StructuredRedactionResult<T>;
+  /**
+   * 创建流式脱敏器。
+   *
+   * `all` 用于原始 stdout/stderr；`record-spanning` 只启用允许跨逻辑记录
+   * 的规则，供 JSONL 写入器在不重复应用单记录规则的前提下检测跨记录秘密。
+   */
+  createChunkRedactor(scope: ChunkRedactionScope): ChunkRedactor;
 }

@@ -146,7 +146,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   function makeDepsFor(intCtrl: InterruptController): RunCommandDeps {
     const makeBoundDeps: RunCommandDeps['makeBoundDeps'] = ({ stateDir: dir, git, claude, capabilityReport, logger }) => ({
       stateDir: dir,
-      stateStore: createJsonStateStore({ stateDir: dir, fs: fileSystem }),
+      stateStore: createJsonStateStore({ stateDir: dir, fs: fileSystem, redaction }),
       git,
       claude,
       clock,
@@ -163,7 +163,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       capabilityReport,
     });
     const makeStateStore: RunCommandDeps['makeStateStore'] = (dir) =>
-      createJsonStateStore({ stateDir: dir, fs: fileSystem });
+      createJsonStateStore({ stateDir: dir, fs: fileSystem, redaction });
     return {
       fileSystem,
       clock,
@@ -186,6 +186,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         gitPortPaths.push(gitCliPath);
         return createGitAdapter({
           processExecutor: createTestProcessExecutor(),
+          redact: (text) => redaction.redactText(text),
           ...(gitCliPath === null ? {} : { gitPath: gitCliPath }),
         });
       },
@@ -324,7 +325,14 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     makeBoundDeps() {
       return startDeps.makeBoundDeps({
         stateDir,
-        git: createGitAdapter({ processExecutor: createTestProcessExecutor() }),
+        /*
+         * 直接构造绑定依赖的测试路径也必须保留生产 Git 脱敏边界，避免测试
+         * 辅助函数制造一条真实组合根中不存在的旁路。
+         */
+        git: createGitAdapter({
+          processExecutor: createTestProcessExecutor(),
+          redact: (text) => redaction.redactText(text),
+        }),
         claude: createClaudeRuntime({
           claudePath: FAKE_CLAUDE_PATH,
           processExecutor: createTestProcessExecutor(),

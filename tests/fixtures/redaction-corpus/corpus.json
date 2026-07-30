@@ -123,6 +123,30 @@
       "secret": "9xyzABCD-1234-5678-wxyz"
     },
     {
+      "id": "field-api-key-json",
+      "rule": "sensitive-field",
+      "snippet": "\"api_key\": \"synthetic-service-key-12345678\"",
+      "secret": "synthetic-service-key-12345678"
+    },
+    {
+      "id": "field-api-key-yaml",
+      "rule": "sensitive-field",
+      "snippet": "api-key: synthetic-yaml-key-87654321",
+      "secret": "synthetic-yaml-key-87654321"
+    },
+    {
+      "id": "field-passphrase-json",
+      "rule": "sensitive-field",
+      "snippet": "\"signing_passphrase\": \"synthetic-passphrase-12345678\"",
+      "secret": "synthetic-passphrase-12345678"
+    },
+    {
+      "id": "field-credential-json",
+      "rule": "sensitive-field",
+      "snippet": "\"registryCredential\": \"synthetic-credential-12345678\"",
+      "secret": "synthetic-credential-12345678"
+    },
+    {
       "id": "private-key-block",
       "rule": "private-key-block",
       "snippet": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7dKj8fHh3kLmN9pQrS2tUvWxYzAbCdEfGhIjKlMnOpQrStUv\nWxYz1234567890AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx\nKjNmHgFdSaPoIyUrTxWvEqAzCxVbNmLkJhGdFsAaQpWoEiRtYuMzXcVbNnMkLq\n-----END RSA PRIVATE KEY-----",

@@ -14,6 +14,8 @@
  *   `stateRevision`; when `planRevision > 0`, `run.tasksSha256` must equal
  *   the SHA-256 of the current tasks.json raw bytes.
  * - Plan snapshots and Session Records are immutable once written.
+ * - 任何写入在首次文件操作前都必须通过脱敏稳定性断言；State Store 只拒绝
+ *   未清洗事实，不静默改写可能影响恢复协议的操作性字段。
  *
  * Reads return `null` when the file simply does not exist (absence is a
  * valid state: no Run yet, tasks.json before the first revision). Use-case

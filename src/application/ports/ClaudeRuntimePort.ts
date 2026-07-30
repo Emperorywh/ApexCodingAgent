@@ -146,6 +146,10 @@ export type ClaudeStructuredResult<T extends SessionType> =
 export interface ClaudeInvocationFact<T extends SessionType = SessionType>
   extends ClaudeInvocationFactBase {
   readonly type: T;
+  /**
+   * 已通过对应 Domain Schema，且在离开 Claude Adapter 前完成结构化脱敏。
+   * Application 不得再持有同一 Session 的原始结构化结果副本。
+   */
   readonly structuredResult: ClaudeStructuredResult<T>;
 }
 

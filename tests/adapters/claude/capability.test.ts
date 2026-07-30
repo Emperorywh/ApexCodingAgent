@@ -12,6 +12,7 @@ import {
   REQUIRED_CAPABILITIES,
   type ProbeRunner,
 } from '../../../src/adapters/claude/capability.js';
+import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import { ApexError } from '../../../src/domain/errors.js';
 import { expectApexErrorAsync } from '../fixtures.js';
 
@@ -106,9 +107,18 @@ function healthyRunner(): ProbeRunner {
   });
 }
 
+/**
+ * 能力探测返回的版本和错误详情属于外部输入，测试使用生产 Redactor 组装
+ * Probe，确保适配器边界与真实组合根保持一致。
+ */
+const redactor = createRedactor();
+function capabilityProbe(run: ProbeRunner) {
+  return createCapabilityProbe(run, (text) => redactor.redactText(text));
+}
+
 describe('createCapabilityProbe', () => {
   it('confirms a healthy installation with its version and capability list', async () => {
-    const report = await createCapabilityProbe(healthyRunner()).probeCapabilities();
+    const report = await capabilityProbe(healthyRunner()).probeCapabilities();
     expect(report.version).toBe(VERSION);
     expect([...report.capabilities].sort()).toEqual([...ALL_CAPABILITY_IDS].sort());
   });
@@ -120,7 +130,7 @@ describe('createCapabilityProbe', () => {
       { outcome: { code: 0, stdout: '  \n' }, reason: 'produced no version output' },
     ];
     for (const { outcome, reason } of cases) {
-      const probe = createCapabilityProbe(
+      const probe = capabilityProbe(
         scriptedRunner({ version: outcome, help: { code: 0, stdout: helpFixture('complete.help.txt') } }),
       );
       const error = await expectApexErrorAsync(
@@ -132,7 +142,7 @@ describe('createCapabilityProbe', () => {
   });
 
   it('maps help output missing a capability to CLAUDE_CAPABILITY_MISSING listing it plus the version', async () => {
-    const probe = createCapabilityProbe(
+    const probe = capabilityProbe(
       scriptedRunner({
         version: { code: 0, stdout: VERSION },
         help: { code: 0, stdout: helpFixture('missing-json-schema.help.txt') },
@@ -158,7 +168,7 @@ describe('createCapabilityProbe', () => {
       { code: 1, stdout: '' },
       { code: 0, stdout: '   \n' },
     ] satisfies ScriptedOutcome[]) {
-      const probe = createCapabilityProbe(
+      const probe = capabilityProbe(
         scriptedRunner({ version: { code: 0, stdout: VERSION }, help }),
       );
       let thrown: unknown;
@@ -177,14 +187,28 @@ describe('createCapabilityProbe', () => {
   });
 
   it('readVersion returns the trimmed version or null on any failure', async () => {
-    await expect(createCapabilityProbe(healthyRunner()).readVersion()).resolves.toBe(VERSION);
+    await expect(capabilityProbe(healthyRunner()).readVersion()).resolves.toBe(VERSION);
     for (const version of [
       'spawn-failure',
       { code: 1, stdout: VERSION },
       { code: 0, stdout: '\n' },
     ] satisfies ScriptedOutcome[]) {
-      const probe = createCapabilityProbe(scriptedRunner({ version }));
+      const probe = capabilityProbe(scriptedRunner({ version }));
       await expect(probe.readVersion()).resolves.toBeNull();
     }
+  });
+
+  it('redacts secrets and control sequences before version facts leave the adapter', async () => {
+    const secret = 'sk-proj-abcdefghijklmnop';
+    const report = await capabilityProbe(
+      scriptedRunner({
+        version: { code: 0, stdout: `Claude\u001b[31m ${secret}\n` },
+        help: { code: 0, stdout: helpFixture('complete.help.txt') },
+      }),
+    ).probeCapabilities();
+
+    expect(report.version).toBe('Claude [REDACTED]');
+    expect(report.version).not.toContain(secret);
+    expect(report.version).not.toContain('\u001b');
   });
 });

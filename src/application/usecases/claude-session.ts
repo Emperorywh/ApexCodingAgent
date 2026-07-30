@@ -449,6 +449,12 @@ export async function writeCompletedSessionRecord<T extends SessionType>(
   handle: ActiveSessionHandle<T>,
   fact: ClaudeInvocationFact<T>,
 ): Promise<void> {
+  /*
+   * State Store 会执行最终安全断言，但 Session Record 组装层仍负责把端口事实
+   * 转成安全领域事实；测试替身或未来 Adapter 也不能把未清洗元数据带入状态。
+   */
+  const redactOptional = (value: string | null): string | null =>
+    value === null ? null : deps.redaction.redactText(value);
   const record: SessionRecord = {
     schemaVersion: 1,
     sessionId: handle.sessionId,
@@ -460,7 +466,11 @@ export async function writeCompletedSessionRecord<T extends SessionType>(
     specSha256: handle.specSha256,
     startedAt: handle.startedAt,
     endedAt: formatRfc3339Utc(deps.clock.now()),
-    claude: { version: fact.claudeVersion, model: fact.model, provider: fact.provider },
+    claude: {
+      version: deps.redaction.redactText(fact.claudeVersion),
+      model: redactOptional(fact.model),
+      provider: redactOptional(fact.provider),
+    },
     exitCode: 0,
     structuredResult: deps.redaction.redactStructured(fact.structuredResult),
     logPath: fact.logPath,
@@ -484,6 +494,14 @@ export async function writeFailedSessionRecord(
   facts: { processExitCode: number | null; claudeVersion: string | null },
 ): Promise<void> {
   const endedAt = formatRfc3339Utc(deps.clock.now());
+  /*
+   * 失败事实可能来自测试替身或非 Claude 异常，版本字符串仍按外部元数据处理；
+   * unknown 是程序生成常量，不需要保留任何未经脱敏的备用副本。
+   */
+  const claudeVersion =
+    facts.claudeVersion === null
+      ? 'unknown'
+      : deps.redaction.redactText(facts.claudeVersion);
   const record: SessionRecord = {
     schemaVersion: 1,
     sessionId: handle.sessionId,
@@ -495,7 +513,7 @@ export async function writeFailedSessionRecord(
     specSha256: handle.specSha256,
     startedAt: handle.startedAt,
     endedAt,
-    claude: { version: facts.claudeVersion ?? 'unknown', model: null, provider: null },
+    claude: { version: claudeVersion, model: null, provider: null },
     exitCode: facts.processExitCode,
     structuredResult: null,
     logPath: `logs/${handle.sessionId}.log`,

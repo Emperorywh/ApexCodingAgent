@@ -95,7 +95,7 @@ function appendBounded(current: string, addition: string, limit: number): string
  */
 function createStderrCollector(redaction: RedactionPort): StderrCollector {
   const decoder = new TextDecoder();
-  const chunkRedactor = redaction.createChunkRedactor();
+  const chunkRedactor = redaction.createChunkRedactor('all');
   let redacted = '';
   let diagnosticTail = '';
   let resumeTranscriptUnavailable = false;
@@ -187,7 +187,10 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
     return { code: outcome.code ?? -1, stdout: outcome.stdout, stderr: outcome.stderr };
   };
 
-  const probe: CapabilityProbe = createCapabilityProbe(runProbe);
+  const probe: CapabilityProbe = createCapabilityProbe(
+    runProbe,
+    (text) => redaction.redactText(text),
+  );
 
   async function invoke<T extends SessionType>(
     request: ClaudeInvocationRequest<T>,
@@ -202,7 +205,11 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       );
     }
 
-    const claudeVersion = request.capabilityReport.version;
+    /*
+     * 调用请求通常来自本 Adapter 的能力探测，但端口也可被测试或其他组合根
+     * 直接调用；版本事实仍在当前边界重新清洗，错误路径和成功路径共用它。
+     */
+    const claudeVersion = redaction.redactText(request.capabilityReport.version);
     const resultSchema = RESULT_SCHEMA_BY_SESSION_TYPE[request.type];
     /*
      * resume 续接仍由 Claude Adapter 独占构造。
@@ -237,7 +244,34 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       sessionId: request.sessionId,
       ...(request.onStreamActivity === undefined
         ? {}
-        : { onActivity: request.onStreamActivity }),
+        : {
+            onActivity: (activity) => {
+              /*
+               * 流式活动同样是 Adapter 对外事实，不能依赖 Application 在每个
+               * 展示点自行补脱敏；所有动态标签、详情和元数据在回调前统一清洗。
+               */
+              request.onStreamActivity?.({
+                ...activity,
+                model:
+                  activity.model === null ? null : redaction.redactText(activity.model),
+                provider:
+                  activity.provider === null
+                    ? null
+                    : redaction.redactText(activity.provider),
+                displayEvent:
+                  activity.displayEvent === null
+                    ? null
+                    : {
+                        ...activity.displayEvent,
+                        label: redaction.redactText(activity.displayEvent.label),
+                        detail:
+                          activity.displayEvent.detail === null
+                            ? null
+                            : redaction.redactText(activity.displayEvent.detail),
+                      },
+              });
+            },
+          }),
     });
     const stderrCollector = createStderrCollector(redaction);
     const sessionLog = createClaudeSessionLog({
@@ -343,10 +377,16 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         sessionId: request.sessionId,
         type: request.type,
         exitCode: 0,
-        structuredResult: evaluation.structuredResult,
+        /*
+         * 成功事实离开 Claude Adapter 前整体脱敏。Application 后续可以直接
+         * 用于决策和持久化，replanReason 等新增字段不会再绕过单独调用点。
+         */
+        structuredResult: redaction.redactStructured(evaluation.structuredResult),
         claudeVersion,
-        model: evaluation.model,
-        provider: evaluation.provider,
+        model:
+          evaluation.model === null ? null : redaction.redactText(evaluation.model),
+        provider:
+          evaluation.provider === null ? null : redaction.redactText(evaluation.provider),
         stderrSummary: evaluation.stderrSummary,
         logPath: sessionLogPath(request.sessionId),
       };

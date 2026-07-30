@@ -2,7 +2,7 @@
  * 调试文件日志适配器（SPEC §18.4 脱敏边界、NFR-005）：LoggerPort 的落盘实现。
  *
  * - 输出为 JSON Lines：每行 `{"ts","level","event",...fields}`，时间戳为
- *   RFC3339 UTC；整行在到达任何 sink 前统一过 RedactionPort；
+ *   RFC3339 UTC；完整记录先做类型安全的结构化脱敏，再序列化到 sink；
  * - `log` 同步返回：追加写经内部 Promise 链串行化，保证行序与调用序一致；
  *   首次写入前惰性创建父目录（此时状态目录必然已存在）；
  * - 写失败只回调 `onWriteFailure` 诊断，绝不抛出、不打断后续写入——调试
@@ -34,13 +34,17 @@ export function createDebugLogger(options: DebugFileLoggerOptions): LoggerPort {
   let tail: Promise<void> = Promise.resolve();
   let dirReady = false;
 
-  function serialize(level: LogLevel, event: string, fields: LogFields | undefined): string {
-    return JSON.stringify({
+  function buildRecord(
+    level: LogLevel,
+    event: string,
+    fields: LogFields | undefined,
+  ): Record<string, string | number | boolean | null> {
+    return {
       ts: formatRfc3339Utc(options.clock.now()),
       level,
       event,
       ...fields,
-    });
+    };
   }
 
   function enqueue(line: string): void {
@@ -61,7 +65,25 @@ export function createDebugLogger(options: DebugFileLoggerOptions): LoggerPort {
 
   return {
     log(level: LogLevel, event: string, fields?: LogFields): void {
-      const line = options.redaction.redactText(serialize(level, event, fields));
+      /*
+       * 必须先对结构化记录脱敏再序列化，不能对 JSON 文本做字段级替换。
+       * 这样数字、布尔和 null 敏感字段仍保持原 JSON 类型，日志永远可解析。
+       *
+       * 安全审计只增加规则名和命中次数，不保存原值、长度、哈希或局部片段；
+       * 即使秘密被隐藏，后续分析仍能判断是哪一类规则触发了脱敏。
+       */
+      const result = options.redaction.redactStructuredWithAudit(
+        buildRecord(level, event, fields),
+      );
+      const record =
+        result.audit.matchCount === 0
+          ? result.value
+          : {
+              ...result.value,
+              redactionMatchCount: result.audit.matchCount,
+              redactionRules: result.audit.matchedRules.join(','),
+            };
+      const line = JSON.stringify(record);
       options.mirror?.(line);
       enqueue(line);
     },

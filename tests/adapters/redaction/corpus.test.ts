@@ -72,7 +72,7 @@ function chunkRandomly(text: string, seed: number): string[] {
  * 所有边界测试共用这一入口，避免测试辅助逻辑自身出现差异。
  */
 function redactChunks(chunks: readonly string[]): string {
-  const chunkRedactor = redactor.createChunkRedactor();
+  const chunkRedactor = redactor.createChunkRedactor('all');
   let out = '';
   for (const chunk of chunks) {
     out += chunkRedactor.push(chunk);

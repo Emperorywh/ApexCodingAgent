@@ -5,6 +5,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createJsonStateStore } from '../../../src/adapters/state/json-state-store.js';
+import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import type { StateStorePort } from '../../../src/application/ports/state-store.js';
 import type { RunJson } from '../../../src/domain/schemas/run-json.js';
 import type { TasksJson } from '../../../src/domain/schemas/tasks-json.js';
@@ -25,7 +26,11 @@ let store: StateStorePort;
 
 beforeEach(() => {
   fs = new InMemoryFileSystem();
-  store = createJsonStateStore({ stateDir: STATE_DIR, fs });
+  /*
+   * 一致读测试与真实装配共用同一安全写入契约，保证测试准备阶段写入的聚合
+   * 也必须是已经脱敏的状态事实。
+   */
+  store = createJsonStateStore({ stateDir: STATE_DIR, fs, redaction: createRedactor() });
 });
 
 async function commitRevision1(): Promise<void> {

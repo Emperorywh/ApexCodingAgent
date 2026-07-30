@@ -16,6 +16,7 @@ import {
   createTempRepo,
   expectApexErrorAsync,
   mkFacts,
+  redactGitText,
   seedRepo,
   type TempRepo,
 } from './helpers.js';
@@ -26,7 +27,10 @@ let port: GitPort;
 
 beforeEach(async () => {
   repo = await createTempRepo();
-  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
+  port = createGitAdapter({
+    processExecutor: createTestProcessExecutor(),
+    redact: redactGitText,
+  });
 });
 
 afterEach(async () => {

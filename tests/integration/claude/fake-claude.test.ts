@@ -23,6 +23,7 @@ import {
   activateHarness,
   COMPLETE_HELP,
   createFakeClaudeHarness,
+  FAKE_CAPABILITY_REPORT,
   FAKE_CLAUDE_PATH,
   FAKE_VERSION,
   makeRuntime,
@@ -479,6 +480,50 @@ describe('environment inheritance and redaction (SPEC §10.2, §18.4)', () => {
     expect(rawRecords).not.toContain(token);
   }, TEST_TIMEOUT);
 
+  it('normalizes ANSI sequences before redacting metadata and progress facts', async () => {
+    /*
+     * 版本与模型标识会进入调用事实、进度回调和 Session 日志；凭据被
+     * ANSI 序列拆开时，三个出口都必须得到同一个安全值。
+     */
+    const secret = 'sk-proj-abcdefghijklmnop';
+    const disguised = 'sk-proj-abcdefgh\u001b[31mijklmnop';
+    const activities: Array<{ model: string | null }> = [];
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: '{sessionId}',
+          model: disguised,
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: '{sessionId}',
+          structured_output: validStructuredResult('execution'),
+        },
+      ],
+    });
+
+    const fact = await runtime.invoke(
+      mkRequest(harness, {
+        capabilityReport: {
+          ...FAKE_CAPABILITY_REPORT,
+          version: `Claude ${secret}`,
+        },
+        onStreamActivity: (activity) => activities.push({ model: activity.model }),
+      }),
+    );
+    const log = await harness.readSessionLog(SESSION_ID);
+
+    expect(fact.model).toBe('[REDACTED]');
+    expect(fact.claudeVersion).toBe('Claude [REDACTED]');
+    expect(activities.some((activity) => activity.model === '[REDACTED]')).toBe(true);
+    expect(log).not.toContain(secret);
+    expect(log).not.toContain('\u001b');
+  }, TEST_TIMEOUT);
+
   it('does not flush a multi-line private key at JSON record boundaries', async () => {
     /**
      * 恶意或损坏的 stdout 可能把私钥拆成多行，不能把换行一概视为安全
@@ -502,6 +547,64 @@ describe('environment inheritance and redaction (SPEC §10.2, §18.4)', () => {
     expect(parseSessionLog(log).every((record) => record['type'] === 'apex.invalid-stream-fragment')).toBe(
       true,
     );
+  }, TEST_TIMEOUT);
+
+  it('replaces valid JSON events when a private key spans record boundaries', async () => {
+    /*
+     * 每条事件单独看都是合法 JSON，私钥块却跨越两条事件。写入器不能把
+     * 两个对象拼接后做文本替换，否则会破坏 JSONL；受影响记录改为安全摘要。
+     */
+    const privateKeyBody = 'MIIEowIBAAKCAQEA7';
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: '{sessionId}',
+          model: 'claude-fake-model',
+        },
+        {
+          type: 'assistant',
+          session_id: '{sessionId}',
+          message: {
+            content: [{ type: 'text', text: '-----BEGIN RSA PRIVATE KEY-----' }],
+          },
+        },
+        {
+          type: 'assistant',
+          session_id: '{sessionId}',
+          message: {
+            content: [
+              {
+                type: 'text',
+                text: `${privateKeyBody}\n-----END RSA PRIVATE KEY-----`,
+              },
+            ],
+          },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: '{sessionId}',
+          structured_output: validStructuredResult('execution'),
+        },
+      ],
+    });
+
+    const fact = await runtime.invoke(mkRequest(harness));
+    const log = await harness.readSessionLog(SESSION_ID);
+    const records = parseSessionLog(log);
+
+    expect(fact.exitCode).toBe(0);
+    expect(log).not.toContain(privateKeyBody);
+    expect(log).not.toContain('-----BEGIN RSA PRIVATE KEY-----');
+    expect(records).toContainEqual({
+      type: 'apex.redacted-records',
+      reason: 'record-spanning-secret',
+      count: 2,
+    });
+    expect(records.some((record) => record['type'] === 'result')).toBe(true);
   }, TEST_TIMEOUT);
 
   it('CC Switch style: environment-only provider configuration works without any private API', async () => {

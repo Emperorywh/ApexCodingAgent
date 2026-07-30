@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createJsonStateStore } from '../../../src/adapters/state/json-state-store.js';
+import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import type { StateStorePort } from '../../../src/application/ports/state-store.js';
 import type { RunJson } from '../../../src/domain/schemas/run-json.js';
 import { mkErrorRecord, mkRun, UUID_2 } from '../../domain/fixtures.js';
@@ -37,7 +38,11 @@ let store: StateStorePort;
 
 beforeEach(() => {
   fs = new InMemoryFileSystem();
-  store = createJsonStateStore({ stateDir: STATE_DIR, fs });
+  /*
+   * State Store 的生产契约包含写入前安全断言；单元测试使用真实 Redactor，
+   * 避免以 identity 替身绕过新增的持久化边界。
+   */
+  store = createJsonStateStore({ stateDir: STATE_DIR, fs, redaction: createRedactor() });
 });
 
 describe('run.json writes', () => {
@@ -85,6 +90,25 @@ describe('run.json writes', () => {
   it('rejects schema-invalid runs before touching the filesystem', async () => {
     await expectApexErrorAsync(
       () => store.writeRun(mkRun({ runId: 'not-a-run-id' })),
+      'STATE_VALIDATION_FAILED',
+    );
+    expect(fs.ops.filter((op) => op.op === 'writeFile' || op.op === 'rename')).toEqual([]);
+    expect(fs.files.has(RUN_PATH)).toBe(false);
+  });
+
+  it('rejects recognized secrets before any state file I/O', async () => {
+    /*
+     * State Store 是持久化前的最后断言边界：它不静默改写操作事实，而是拒绝
+     * 上游遗漏脱敏的数据，并保证连临时文件都不会创建。
+     */
+    const run = mkRun({
+      runSettings: {
+        ...mkRun().runSettings,
+        claudeCliPath: 'C:/tools/sk-proj-abcdefghijklmnop/claude.exe',
+      },
+    });
+    await expectApexErrorAsync(
+      () => store.writeRun(run),
       'STATE_VALIDATION_FAILED',
     );
     expect(fs.ops.filter((op) => op.op === 'writeFile' || op.op === 'rename')).toEqual([]);

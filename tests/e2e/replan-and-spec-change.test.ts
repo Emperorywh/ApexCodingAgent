@@ -20,6 +20,7 @@ import {
 } from './helpers.js';
 import { seedRepo } from '../integration/git/helpers.js';
 
+const REPLAN_SECRET = 'sk-proj-abcdefghijklmnop';
 const REPLAN_RESULT = {
   decision: 'replan_required',
   summary: '架构前置条件变化，需要重新规划',
@@ -27,7 +28,7 @@ const REPLAN_RESULT = {
   acceptanceEvidence: [{ criterionIndex: 0, status: 'not_satisfied', evidence: '尚未完成' }],
   changedAreas: ['src'],
   remainingRisks: [],
-  replanReason: '发现需要先抽象配置层',
+  replanReason: `发现需要先抽象配置层，诊断值 ${REPLAN_SECRET}`,
 };
 
 describe('e2e replan_required', () => {
@@ -97,7 +98,7 @@ describe('e2e replan_required', () => {
         expect(run.planRevision).toBe(2);
         const snapshot2 = await harness.readPlanSnapshot(2);
         expect(snapshot2.trigger.type).toBe('execution_replan');
-        expect(snapshot2.trigger.reason).toBe('发现需要先抽象配置层');
+        expect(snapshot2.trigger.reason).toBe('发现需要先抽象配置层，诊断值 [REDACTED]');
         expect(snapshot2.trigger.sourceSessionId).not.toBeNull();
 
         // 中间 Checkpoint 被 TASK-001 接管（completed 后视为已吸收）。
@@ -136,6 +137,11 @@ describe('e2e replan_required', () => {
           'execution',
           'final_review',
         ]);
+        /*
+         * Execution 结构化结果、Run 运行态、Revision Trigger 和 Session
+         * Record 共用真实生产路径；任一层遗漏都会让这个聚合断言失败。
+         */
+        expect(JSON.stringify({ run, snapshot2, records })).not.toContain(REPLAN_SECRET);
       } finally {
         await harness.cleanup();
       }

@@ -9,7 +9,7 @@ import { basename, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitAdapter } from '../../../src/adapters/git/adapter.js';
 import type { GitPort } from '../../../src/application/ports/GitPort.js';
-import { createTempRepo, seedRepo, type TempRepo } from './helpers.js';
+import { createTempRepo, redactGitText, seedRepo, type TempRepo } from './helpers.js';
 import { createTestProcessExecutor } from '../../process-executor.js';
 
 let repo: TempRepo;
@@ -18,7 +18,10 @@ let port: GitPort;
 beforeEach(async () => {
   repo = await createTempRepo();
   await seedRepo(repo);
-  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
+  port = createGitAdapter({
+    processExecutor: createTestProcessExecutor(),
+    redact: redactGitText,
+  });
 });
 
 afterEach(async () => {

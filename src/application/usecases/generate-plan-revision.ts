@@ -34,6 +34,7 @@ import {
 } from './claude-session.js';
 import { invokeResumableSession } from './resumable-session.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
+import { sanitizePlanRevisionTrigger } from './plan-revision-trigger.js';
 
 export type GeneratePlanRevisionResult =
   /** Revision 已提交，Run 转 running。 */
@@ -104,6 +105,11 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     trigger: PlanRevisionTrigger,
     options?: GeneratePlanRevisionOptions,
   ): Promise<GeneratePlanRevisionResult> {
+    /*
+     * Trigger 在用例入口只清洗一次，后续日志、Planning Prompt 与不可变
+     * Snapshot 共用同一安全事实，杜绝 replanReason 在分支间发生语义漂移。
+     */
+    const safeTrigger = sanitizePlanRevisionTrigger(trigger, deps.redaction);
     const run = await deps.stateStore.readRun();
     if (run === null || run.status !== 'planning') {
       throw new ApexError({
@@ -115,8 +121,8 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     const tasks = await deps.stateStore.readTasks();
     const root = run.repository.root;
     deps.logger.log('debug', 'planning.begin', {
-      trigger: trigger.type,
-      reason: trigger.reason,
+      trigger: safeTrigger.type,
+      reason: safeTrigger.reason,
       nextRevision: run.planRevision + 1,
     });
 
@@ -145,7 +151,7 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       completedTasks: completedTaskSummaries(run, tasks),
       pendingTasks: pendingTasks(run, tasks),
       skippedTasks: skippedTaskSummaries(run),
-      replanTrigger: trigger.type === 'initial' ? null : trigger,
+      replanTrigger: safeTrigger.type === 'initial' ? null : safeTrigger,
       unabsorbedCheckpoints: run.intermediateCheckpoints.filter((checkpoint) => {
         if (checkpoint.ownerTaskId === null) return true;
         return run.tasks[checkpoint.ownerTaskId]?.status !== 'completed';
@@ -221,7 +227,7 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     try {
       const committed = await applyPlanRevision(deps, handle.run, tasks, {
         draft: deps.redaction.redactStructured(fact.structuredResult),
-        trigger,
+        trigger: safeTrigger,
         plannerSessionId: handle.sessionId,
         specSha256: specBefore.sha256,
         repositoryRoot: root,

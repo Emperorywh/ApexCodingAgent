@@ -1,23 +1,20 @@
 /**
- * DebugFileLogger 适配器测试：JSON Lines 落盘、整行脱敏、行序保持、
+ * DebugFileLogger 适配器测试：JSON Lines 落盘、结构化脱敏、行序保持、
  * 惰性建目录、写失败只诊断不影响后续写入、flush 等待尾部事件。
  */
 import { describe, expect, it } from 'vitest';
 import { createDebugLogger } from '../../../src/adapters/logging/debug-file-logger.js';
+import { createRedactor } from '../../../src/adapters/redaction/redactor.js';
 import type { ClockPort } from '../../../src/application/ports/clock.js';
-import type { RedactionPort } from '../../../src/application/ports/redaction.js';
 import { InMemoryFileSystem } from '../state/in-memory-file-system.js';
 
 const clock: ClockPort = { now: () => new Date('2026-07-28T00:00:00.000Z') } as ClockPort;
 
-/** 简化脱敏：把 SECRET 替换为占位符，便于断言整行脱敏被调用。 */
-const redaction: RedactionPort = {
-  redactText: (text) => text.replaceAll('SECRET', '[REDACTED]'),
-  redactStructured: (value) => value,
-  createChunkRedactor: () => {
-    throw new Error('unused in this test');
-  },
-};
+/**
+ * 日志格式正确性依赖结构化脱敏的类型保持语义，因此这里直接使用生产
+ * Redactor，避免测试替身绕过真实边界契约。
+ */
+const redaction = createRedactor();
 
 interface Fixture {
   readonly fs: InMemoryFileSystem;
@@ -48,7 +45,14 @@ describe('debug file logger', () => {
     const { fs, mirrorLines, logger } = createFixture();
 
     logger.log('debug', 'run.created', { runId: 'RUN-1', verbose: false });
-    logger.log('error', 'session.invoke.error', { errorCode: 'SECRET-token', retry: null });
+    const secret = 'sk-proj-abcdefghijklmnop';
+    logger.log('error', 'session.invoke.error', {
+      errorCode: `upstream ${secret}`,
+      token: 42,
+      secret: true,
+      password: null,
+      retry: null,
+    });
     await logger.flush();
 
     const lines = fs
@@ -69,10 +73,18 @@ describe('debug file logger', () => {
     const second = JSON.parse(lines[1]!) as Record<string, unknown>;
     expect(second['level']).toBe('error');
     expect(second['event']).toBe('session.invoke.error');
-    // 整行脱敏：字段值中的机密不得落盘
-    expect(second['errorCode']).toBe('[REDACTED]-token');
+    /*
+     * 结构化脱敏必须保持数字、布尔与 null 的 JSON 类型；审计元数据只记录
+     * 规则类别和命中次数，不携带任何秘密派生值。
+     */
+    expect(second['errorCode']).toBe('upstream [REDACTED]');
+    expect(second['token']).toBe(0);
+    expect(second['secret']).toBe(false);
+    expect(second['password']).toBeNull();
     expect(second['retry']).toBeNull();
-    expect(lines[1]).not.toContain('SECRET');
+    expect(second['redactionMatchCount']).toBe(3);
+    expect(second['redactionRules']).toBe('openai-key,sensitive-field');
+    expect(lines[1]).not.toContain(secret);
 
     // 镜像与落盘内容一致（同一已脱敏行）
     expect(mirrorLines).toEqual(lines);

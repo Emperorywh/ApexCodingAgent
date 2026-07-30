@@ -45,6 +45,13 @@ function redactSensitiveFieldValue(
   let redactedValue = REDACTED_PLACEHOLDER;
   if (value.startsWith('"')) redactedValue = `"${REDACTED_PLACEHOLDER}"`;
   else if (value.startsWith("'")) redactedValue = `'${REDACTED_PLACEHOLDER}'`;
+  /*
+   * JSON.stringify 生成的属性名始终使用双引号。原值是数字、布尔或 null
+   * 时也必须补上字符串引号，避免文本级纵深防御破坏 JSONL 语法。
+   */
+  else if (openQuote === '"' && closeQuote === '"') {
+    redactedValue = `"${REDACTED_PLACEHOLDER}"`;
+  }
   return `${openQuote}${name}${closeQuote}${separator}${redactedValue}`;
 }
 
@@ -147,9 +154,13 @@ export const REDACTION_RULES: readonly RedactionRule[] = [
     /**
      * 字段名两侧引号彼此独立可选，不要求使用反向引用；这样既覆盖 JSON /
      * YAML / 环境变量形式，也让字段名和分隔符的所有量词保持显式有界。
+     *
+     * 未加引号的值排除 JSON 容器结束符，防止 `null}` 一类输入在替换时吞掉
+     * 右花括号；固定占位符单列为完整备选以保持幂等，避免右方括号被误认为
+     * 容器结束符而残留；api_key/api-key、passphrase、credential 也纳入词典。
      */
     pattern:
-      /(["']?)([A-Za-z0-9_.-]{0,64}(?:token|secret|password|apiKey|authorization)[A-Za-z0-9_.-]{0,64})(["']?)([ \t]{0,64}[:=][ \t]{0,64})("[^"]{0,4096}"|'[^']{0,4096}'|(?:Bearer|Basic)[ \t]{1,64}[^\s,;&]{1,512}|[^\s,;&]{1,512})/gi,
+      /(["']?)([A-Za-z0-9_.-]{0,64}(?:token|secret|password|passphrase|credential|api[_-]?key|authorization)[A-Za-z0-9_.-]{0,64})(["']?)([ \t]{0,64}[:=][ \t]{0,64})(\[REDACTED\]|"[^"]{0,4096}"|'[^']{0,4096}'|(?:Bearer|Basic)[ \t]{1,64}[^\s,;&}\]]{1,512}|[^\s,;&}\]]{1,512})/gi,
     replacement: redactSensitiveFieldValue as (...args: string[]) => string,
     maxMatchLength: 4370,
   },

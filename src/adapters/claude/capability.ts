@@ -163,21 +163,29 @@ interface VersionProbeOutcome {
   readonly failure: string | null;
 }
 
-export function createCapabilityProbe(run: ProbeRunner): CapabilityProbe {
+export function createCapabilityProbe(
+  run: ProbeRunner,
+  redact: (text: string) => string,
+): CapabilityProbe {
   async function readVersionOutcome(): Promise<VersionProbeOutcome> {
     let result: ProbeRunResult;
     try {
       result = await run(['--version']);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { version: null, failure: `could not be started (${reason})` };
+      /*
+       * 启动异常和探测 stderr 都来自外部进程，必须在组装错误事实前脱敏；
+       * CapabilityProbe 返回的任何动态字符串因而都可以安全离开 Adapter。
+       */
+      return { version: null, failure: `could not be started (${redact(reason)})` };
     }
     if (result.code !== 0) {
       const firstStderrLine = result.stderr.split(/\r?\n/, 1)[0]?.trim() ?? '';
-      const suffix = firstStderrLine === '' ? '' : `: ${firstStderrLine.slice(0, 160)}`;
+      const suffix =
+        firstStderrLine === '' ? '' : `: ${redact(firstStderrLine).slice(0, 160)}`;
       return { version: null, failure: `exited with code ${result.code}${suffix}` };
     }
-    const version = result.stdout.trim();
+    const version = redact(result.stdout.trim());
     return version === ''
       ? { version: null, failure: 'produced no version output' }
       : { version, failure: null };

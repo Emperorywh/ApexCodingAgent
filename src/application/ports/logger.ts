@@ -8,7 +8,8 @@
  *
  * 实现必须满足：
  * - `log` 同步返回，异步落盘由实现内部串行化，写失败绝不抛出、不影响 Run；
- * - 整行到达任何 sink（文件/控制台）前必须经过 RedactionPort（§18.4）；
+ * - 整条结构化记录到达任何 sink（文件/控制台）前必须经过 RedactionPort；
+ * - 实现可以记录规则名和命中次数，但不得记录原值、哈希、长度或局部片段；
  * - 字段只放标量；Error 对象由调用方拆成 errorCode/message/stack 等字段。
  */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

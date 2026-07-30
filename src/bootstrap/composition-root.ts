@@ -95,6 +95,11 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
   const makeGitPort: RunCommandDeps['makeGitPort'] = (gitCliPath) =>
     createGitAdapter({
       processExecutor,
+      /*
+       * Git stderr 必须在离开 Adapter 前进入统一脱敏边界；后续 ErrorRecord
+       * 和控制台仍可重复执行幂等脱敏，但不再承接第一道防线的职责。
+       */
+      redact: (text) => redaction.redactText(text),
       ...(gitCliPath === null ? {} : { gitPath: gitCliPath }),
     });
   const makeClaudePort: RunCommandDeps['makeClaudePort'] = (claudeCliPath) =>
@@ -105,7 +110,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
       redaction,
     });
   const makeStateStore: RunCommandDeps['makeStateStore'] = (stateDir) =>
-    createJsonStateStore({ stateDir, fs: fileSystem });
+    createJsonStateStore({ stateDir, fs: fileSystem, redaction });
   const makeBoundDeps: RunCommandDeps['makeBoundDeps'] = ({
     stateDir,
     git,
@@ -114,7 +119,7 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     logger,
   }): UseCaseDeps => ({
     stateDir,
-    stateStore: createJsonStateStore({ stateDir, fs: fileSystem }),
+    stateStore: createJsonStateStore({ stateDir, fs: fileSystem, redaction }),
     git,
     claude,
     clock,
@@ -184,11 +189,14 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
    * 入口定位仓库；业务用例只能获得各自命令门面传入的最小依赖。
    */
   async function createRepositoryCommandDeps(): Promise<RepositoryCommandDeps> {
-    const git = createGitAdapter({ processExecutor });
+    const git = createGitAdapter({
+      processExecutor,
+      redact: (text) => redaction.redactText(text),
+    });
     const root = (await git.resolveRepositoryRoot(options.cwd)).replace(/\\/g, '/');
     const stateDir = `${root}/${STATE_DIR_NAME}`;
     return {
-      stateStore: createJsonStateStore({ stateDir, fs: fileSystem }),
+      stateStore: createJsonStateStore({ stateDir, fs: fileSystem, redaction }),
       git,
       reporter: createMarkdownReporter({ stateDir, fileSystem, redaction }),
       clock,

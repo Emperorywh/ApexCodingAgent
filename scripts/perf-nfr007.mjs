@@ -42,6 +42,7 @@ import { createNodeFileSystem } from '../dist/adapters/filesystem/node-file-syst
 import { createSystemClock } from '../dist/adapters/clock/system-clock.js';
 import { createRedactor } from '../dist/adapters/redaction/redactor.js';
 import { createInterruptController } from '../dist/application/interrupt.js';
+import { createNullLogger } from '../dist/application/ports/logger.js';
 import { createMarkdownReporter } from '../dist/adapters/reporter/markdown-reporter.js';
 import { createRunArchiver } from '../dist/adapters/state/run-archiver.js';
 import { createStartRun } from '../dist/application/usecases/start-run.js';
@@ -277,6 +278,11 @@ async function createFixture() {
     lastError: null,
     finalCommit: null,
     reportPath: null,
+    /*
+     * 性能夹具必须与当前 RunJson 写入契约完全一致；resumePoint 是显式
+     * 运行事实，基准脚本不使用旧格式读取迁移来掩盖 fixture 漂移。
+     */
+    resumePoint: null,
     createdAt: generatedAt,
     updatedAt: generatedAt,
     terminalAt: null,
@@ -419,6 +425,7 @@ function createFakeGitPort(fixture) {
     ensureStateDirectoryExcluded: mustNotReach('ensureStateDirectoryExcluded'),
     createRunBranch: mustNotReach('createRunBranch'),
     assertSessionStart: mustNotReach('assertSessionStart'),
+    assertResumePosition: mustNotReach('assertResumePosition'),
     assertSessionEnd: mustNotReach('assertSessionEnd'),
     createTaskCheckpoint: mustNotReach('createTaskCheckpoint'),
     createIntermediateCheckpoint: mustNotReach('createIntermediateCheckpoint'),
@@ -460,11 +467,23 @@ function createMetric4StartRun(fixture, fileSystem) {
     interrupt,
     wait,
     interruptWaitMs,
+    /*
+     * Metric 4 在现有非终态 Run 门禁处结束，不会真正调度心跳；仍完整提供
+     * 当前 RunCommandDeps 契约，防止性能脚本靠缺失依赖误走异常分支。
+     */
+    scheduleInterval: () => () => {},
     makeGitPort: () => fakeGit,
     makeClaudePort: () => fakeClaude,
-    makeBoundDeps: ({ stateDir, git, claude, capabilityReport }) => ({
+    makeLogger: () => createNullLogger(),
+    makeStateStore: (stateDir) =>
+      createJsonStateStore({ stateDir, fs: fileSystem, redaction }),
+    makeBoundDeps: ({ stateDir, git, claude, capabilityReport, logger }) => ({
       stateDir,
-      stateStore: createJsonStateStore({ stateDir, fs: fileSystem }),
+      /*
+       * 性能 Harness 复用生产 State Store 契约，写入前安全断言不能因基准
+       * 测试而旁路；语料本身不含秘密，因此不会改变被测工作量的性质。
+       */
+      stateStore: createJsonStateStore({ stateDir, fs: fileSystem, redaction }),
       git,
       claude,
       clock,
@@ -473,9 +492,11 @@ function createMetric4StartRun(fixture, fileSystem) {
       reporter: createMarkdownReporter({ stateDir, fileSystem, redaction }),
       archiver: createRunArchiver({ stateDir, fs: fileSystem, clock }),
       output,
+      logger,
       interrupt,
       wait,
       interruptWaitMs,
+      sessionHeartbeatMs: 15_000,
       capabilityReport,
     }),
   });
@@ -561,7 +582,16 @@ async function main() {
 
   try {
     const fileSystem = createNodeFileSystem();
-    const store = createJsonStateStore({ stateDir: fixture.stateDir, fs: fileSystem });
+    const redaction = createRedactor();
+    /*
+     * 预检读与采样读使用同一生产 Redactor 配置，确保新安全依赖没有被
+     * 性能脚本遗漏，也不以 identity 替身低估真实读写成本。
+     */
+    const store = createJsonStateStore({
+      stateDir: fixture.stateDir,
+      fs: fileSystem,
+      redaction,
+    });
 
     // Pre-flight gates (before any sampling): one real consistent read and one
     // real CLI `status` must succeed on the fixture.
@@ -632,10 +662,12 @@ async function main() {
       fullAccess: false,
       claudeCliPath: null,
       gitCliPath: null,
+      verbose: false,
       environment: {
         platform: process.platform,
         release: os.release(),
         nodeVersion: process.version,
+        agentVersion: 'nfr007-performance-harness',
       },
     };
     results[METRICS[3].key] = await measureMetric(

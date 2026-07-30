@@ -19,6 +19,7 @@ import {
   SESSION_ID,
   createTempRepo,
   mkFacts,
+  redactGitText,
   seedRepo,
   type TempRepo,
 } from './helpers.js';
@@ -31,7 +32,10 @@ let start: SessionStartFact;
 
 beforeEach(async () => {
   repo = await createTempRepo();
-  port = createGitAdapter({ processExecutor: createTestProcessExecutor() });
+  port = createGitAdapter({
+    processExecutor: createTestProcessExecutor(),
+    redact: redactGitText,
+  });
   const baseCommit = await seedRepo(repo);
   await port.createRunBranch(repo.root, RUN_ID);
   facts = mkFacts({ baseCommit, expectedHead: await repo.head() });

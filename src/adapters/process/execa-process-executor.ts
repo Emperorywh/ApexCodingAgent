@@ -155,9 +155,17 @@ export function createExecaProcessExecutor(): ProcessExecutor {
         const subprocess = execa(normalized.command, [...normalized.args], {
           ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
           ...(request.timeoutMs === undefined ? {} : { timeout: request.timeoutMs }),
+          /*
+           * 长文本通过标准输入传输，不参与 Windows CreateProcess 命令行组装。
+           *
+           * 未提供输入的 Git 与能力探测命令继续显式关闭 stdin；提供输入时
+           * 交给 Execa 写入并关闭管道，保持一次请求对应一次完整输入。
+           */
+          ...(request.stdinText === undefined
+            ? { stdin: 'ignore' as const }
+            : { input: request.stdinText }),
           shell: false,
           windowsHide: true,
-          stdin: 'ignore',
           /**
            * 生成器只消费而不产出数据，Execa 因此不会再次缓存完整输出。
            *

@@ -58,6 +58,12 @@ export interface FakeClaudeScenario {
 
 export interface RecordedInvocation {
   readonly argv: string[];
+  /**
+   * Fake CLI 从标准输入收到的完整 Session prompt。
+   *
+   * 能力探测不携带业务输入，因此该字段固定为空字符串。
+   */
+  readonly stdin: string;
   readonly cwd: string;
   readonly env: Record<string, string | null>;
 }

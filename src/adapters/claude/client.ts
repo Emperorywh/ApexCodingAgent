@@ -237,7 +237,6 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       '--verbose',
       '--json-schema',
       JSON.stringify(getSchemaJson(resultSchema)),
-      request.prompt,
     ];
 
     const streamCollector = createClaudeStreamCollector({
@@ -286,6 +285,13 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         command: claudePath,
         args,
         cwd: request.cwd,
+        /*
+         * 正式 Session 的上下文规模随计划和验收证据增长，不能进入 argv。
+         *
+         * Claude print 模式支持从管道读取文本；统一走 stdin 后，Planning、
+         * Execution、Final Review 和续接会话均不再受命令行长度限制。
+         */
+        stdinText: request.prompt,
         collectOutput: false,
         onStart: (process) => {
           activeProcess = process;

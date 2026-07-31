@@ -75,7 +75,7 @@ afterEach(async () => {
 });
 
 describe('argument array contract (SPEC §7.2)', () => {
-  it('passes the exact argv array, including a shell-hostile prompt, without shell interpolation', async () => {
+  it('passes control options in argv and transports the prompt through stdin', async () => {
     await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('execution') });
     const prompt = 'Implement "A" & <B> | %PATH% $HOME `tick` ; rm -rf /';
     const fact = await runtime.invoke(mkRequest(harness, { prompt }));
@@ -94,9 +94,30 @@ describe('argument array contract (SPEC §7.2)', () => {
       '--verbose',
       '--json-schema',
       JSON.stringify(getSchemaJson('TaskExecutionResult')),
-      prompt,
     ]);
+    expect(records[0]!.stdin).toBe(prompt);
     expect(records[0]!.cwd).toBe(harness.root);
+  }, TEST_TIMEOUT);
+
+  it('starts a session when the prompt exceeds the Windows command-line limit', async () => {
+    await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('final_review') });
+    const prompt = `最终复核上下文\n${'验收证据与任务定义。'.repeat(8_192)}`;
+    const fact = await runtime.invoke(
+      mkRequest(harness, { type: 'final_review', prompt }),
+    );
+
+    /**
+     * 回归输入显著超过 Windows CreateProcess 的命令行上限。
+     *
+     * 成功结果证明 prompt 未参与 argv 组装，同时 Fake CLI 收到的 stdin
+     * 必须与原文本完全一致，不能通过截断来规避长度错误。
+     */
+    expect(prompt.length).toBeGreaterThan(32_767);
+    expect(fact.exitCode).toBe(0);
+    const records = await harness.readRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]!.argv).not.toContain(prompt);
+    expect(records[0]!.stdin).toBe(prompt);
   }, TEST_TIMEOUT);
 
   it('returns the full success fact and writes the session log', async () => {
@@ -261,8 +282,8 @@ describe('argument array contract (SPEC §7.2)', () => {
       '--verbose',
       '--json-schema',
       JSON.stringify(getSchemaJson('TaskExecutionResult')),
-      'Implement the task',
     ]);
+    expect(records[0]!.stdin).toBe('Implement the task');
   }, TEST_TIMEOUT);
 
   it('maps an explicit missing transcript diagnosis to CLAUDE_RESUME_UNAVAILABLE', async () => {
@@ -665,7 +686,7 @@ describe('failure handling (SPEC §9.6)', () => {
   it('maps a synchronous spawn argument failure to CLAUDE_START_FAILED', async () => {
     await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('execution') });
     const error = await expectApexErrorAsync(
-      () => runtime.invoke(mkRequest(harness, { prompt: 'invalid\u0000prompt' })),
+      () => runtime.invoke(mkRequest(harness, { sessionId: 'invalid\u0000session' })),
       'CLAUDE_START_FAILED',
     );
     expect(error).toBeInstanceOf(ClaudeInvocationError);

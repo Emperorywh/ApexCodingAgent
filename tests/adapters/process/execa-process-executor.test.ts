@@ -39,6 +39,33 @@ describe('createExecaProcessExecutor', () => {
     expect(Buffer.concat(stderrChunks).toString('utf8')).toBe('stderr-value\n');
   });
 
+  it('writes complete text to stdin and closes the input stream', async () => {
+    const stdinText = '第一行\nvalue & <tag> | %PATH% $HOME `tick`\n最后一行';
+    const outcome = await createExecaProcessExecutor().execute({
+      command: process.execPath,
+      args: [
+        '-e',
+        'process.stdin.pipe(process.stdout)',
+      ],
+      stdinText,
+      collectOutput: true,
+    });
+
+    /**
+     * 标准输入必须逐字节到达子进程，且 EOF 必须正常关闭会话。
+     *
+     * 这里同时覆盖中文、换行和 Shell 特殊字符，防止传输层重新引入
+     * Shell 解释或文本转义协议。
+     */
+    expect(outcome).toMatchObject({
+      kind: 'exited',
+      code: 0,
+      stdout: stdinText,
+      stderr: '',
+      streamFailed: false,
+    });
+  });
+
   it('returns non-zero exit codes without converting them to spawn failures', async () => {
     const outcome = await createExecaProcessExecutor().execute({
       command: process.execPath,

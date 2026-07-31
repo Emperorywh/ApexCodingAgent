@@ -33,8 +33,8 @@
  *   "writeFiles": [{ "path": "src/a.ts", "content": "…", "append": false }],
  *   "commands": [{ "argv": ["git", "add", "."] }]   // 以 cwd 同步执行
  *
- * 每次调用向 APEX_FAKE_CLAUDE_RECORD 追加一行 argv、cwd 和筛选后的 env，
- * 供集成测试断言精确的进程调用事实。
+ * 每次调用向 APEX_FAKE_CLAUDE_RECORD 追加一行 argv、stdin、cwd 和筛选
+ * 后的 env，供集成测试断言精确的进程调用事实。
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -48,6 +48,14 @@ if (scenarioPath === undefined || scenarioPath === '') {
 const scenarioFile = JSON.parse(readFileSync(scenarioPath, 'utf8'));
 
 const argv = process.argv.slice(2);
+const isProbe = argv.includes('--version') || argv.includes('--help');
+/*
+ * 正式 Session 使用管道传递 prompt；探测调用关闭 stdin，不能在这里等待。
+ *
+ * 一次性读到 EOF 与真实 print 模式的输入生命周期一致，也让集成测试能够
+ * 证明长提示词没有退回 Windows 命令行参数。
+ */
+const stdin = isProbe ? '' : readFileSync(0, 'utf8');
 
 const recordPath = process.env.APEX_FAKE_CLAUDE_RECORD;
 
@@ -57,7 +65,11 @@ function recordInvocation(scenario) {
   for (const name of scenario.recordEnv ?? []) {
     env[name] = process.env[name] ?? null;
   }
-  appendFileSync(recordPath, JSON.stringify({ argv, cwd: process.cwd(), env }) + '\n', 'utf8');
+  appendFileSync(
+    recordPath,
+    JSON.stringify({ argv, stdin, cwd: process.cwd(), env }) + '\n',
+    'utf8',
+  );
 }
 
 /** 序列场景：按 counter 文件取出本次 Session 的场景元素。 */
@@ -77,7 +89,6 @@ function pickScenario() {
   return scenarioFile.sequence[index];
 }
 
-const isProbe = argv.includes('--version') || argv.includes('--help');
 const scenario = isProbe ? scenarioFile : pickScenario();
 recordInvocation(scenario);
 

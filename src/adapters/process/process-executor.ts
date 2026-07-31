@@ -21,6 +21,13 @@ export interface ProcessExecutionRequest {
   readonly args: readonly string[];
   readonly cwd?: string;
   readonly timeoutMs?: number;
+  /**
+   * 需要完整写入子进程标准输入的文本。
+   *
+   * 未提供时关闭标准输入，避免子进程意外继承终端并等待交互；
+   * 提供时由执行器负责写入全部内容并关闭输入流。
+   */
+  readonly stdinText?: string;
   readonly collectOutput: boolean;
   readonly onStart?: (process: ActiveProcess) => void;
   readonly onStdoutChunk?: (chunk: Uint8Array) => void | Promise<void>;

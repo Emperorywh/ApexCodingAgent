@@ -6,9 +6,21 @@
 
 - **ApexCodingAgent**（npm 包 `apex-coding-agent`，CLI 命令 `ApexCodingAgent`）：运行在 Windows 终端中的 Claude Code 长任务编排器。用户准备一份 `SPEC.md` 需求文档后，本工具驱动 Claude Code 先制定计划，再逐项执行任务，每一步保存 Git 检查点，最后做整体检查并生成报告。
 - 产品形态：全局安装的 CLI，`bin` 指向 `dist/interfaces/cli/main.js`，发布内容仅 `dist/`。
-- 实现基准：源码注释大量引用 `SPEC §x.y`（如 SPEC §6.1 状态机、§11 状态持久化、§15 错误模型、§17 CLI）。该 SPEC 文档（`docs/SPEC.md`）未随仓库发布，`docs/` 目录为空；以源码中的引述为准。
+- 实现基准：`docs/SPEC.md` 是权威目标规格（状态：**待实施**，全量重构，不兼容现有运行状态和报告）。当前 `src/` 实现的仍是旧设计，与 SPEC 存在差异；新开发以 SPEC 为准，差异见下文「目标规格与当前实现的差异」。源码注释中的 `SPEC §x.y` 引述部分指向旧版编号，重构时按新 SPEC 章节更新。
 - 平台约束：**仅支持 Windows**（package.json `os: ["win32"]`），Node.js 22.x 或 24.x。
 - 文档与注释主要使用**中文**（domain 层部分文件使用英文注释）；仓库制品（代码注释、文档）沿用这一习惯。
+
+## 目标规格与当前实现的差异（docs/SPEC.md）
+
+SPEC 处于待实施状态，以下是相对当前代码的关键变化（实施顺序见 SPEC §22）：
+
+- 运行态聚合为单一 `state.json`（Run、Task runtime、Plan 引用、Evidence/Review 索引、Issue、恢复信息），不再使用 `run.json` + `tasks.json` 双文件；新增 `plans/`、`evidence/`。
+- 流程增加独立 Plan Review；Execution 只产出 Candidate Checkpoint，Task 完成必须由独立 Task Review 接受；后续变更经 Impact Analyzer 使历史 Review 失效并在新 HEAD 上重验；Final Review 是 Run 完成的唯一门槛。
+- 新增 Evidence Store（类型化 Evidence、Artifact 哈希、预算）与 `SandboxPort` / `CommandPolicyPort` / `VerificationPort` / `VisualEvidencePort` 端口；沙箱机制与降级矩阵见 SPEC §5.2。
+- Task 状态机为七态：`pending / executing / review_pending / reviewing / completed / failed / skipped`，其中 `failed → pending` 仅 resume 可触发；Run 六态不变。
+- CLI 新增 `attest`（导入人工证据）与 `answer`（导入用户决定）；心跳、单实例与两级中断语义见 SPEC §15.6。
+- 错误码集中登记（SPEC §15.3 注册表）：新 errorCode 必须先入表再使用。
+- SPEC §2.3 澄清：禁止的是内核对象与自实现进程追踪协议；`spawn` 进程句柄与 `taskkill /T` 等系统工具调用不属于禁用（但 `src/` 实现仍须规避扫描词表的字面命中）。
 
 ## 技术栈
 
@@ -45,13 +57,15 @@
 
 ## CLI 命令与退出码
 
-命令（详见 `README.md`）：`start [--verbose] [--full-access] [--claude-cli-path <路径>] [--git-cli-path <路径>] [spec 路径]`、`resume [--force] [--full-access]`、`status`、`report`、`abandon --force`。
+命令（详见 `README.md`）：`start [--verbose] [--full-access] [--claude-cli-path <路径>] [--git-cli-path <路径>] [spec 路径]`、`resume [--force] [--full-access]`、`status`、`report`、`abandon --force`。SPEC §17.1 新增（待实施）：`attest <attestation-json-path>`、`answer <user-decision-json-path>`。
 
 退出码（`src/interfaces/cli/run.ts`）：`0` 成功；`1` start/resume 的 Run 正常持久化为 `failed`；`2` 用法错误（`CLI_USAGE_INVALID`）；`3` 启动前置校验失败（未创建或修改 Run）；`4` status/report/abandon/resume 命令级失败（如 `abandon` 缺 `--force` 的 `ABANDON_REQUIRES_FORCE`）；`130` 第一次中断已处理并结束（优先于 `1`）。CLI 失败只输出稳定的、已脱敏的 `errorCode`，绝不透传工具原始退出码。
 
 ## 运行时产物（被编排的目标仓库内）
 
 `.apex-coding-agent/` 位于目标 Git 仓库根：`run.json`（Run 状态）、`tasks.json`（任务计划）、`sessions/`、`logs/apex-debug.log`、`report.md`（最终报告）、`history/`（每次运行结束后的归档）、`heartbeat.json`（前台运行每 5 秒写入存活信号，超过 30 秒未更新判定旧进程崩溃，`resume` 可自动接管）。每次运行在**单独的 Git 分支**中进行并自动创建本地提交，不改动用户原分支；认证/网络/额度/执行失败**不自动重试**。
+
+目标结构（SPEC §4.4，待实施）：单一 `state.json` 聚合 + `plans/`、`sessions/`、`evidence/records`、`evidence/artifacts`、`logs/`、`report.md`、`history/`、`heartbeat.json`。
 
 ## 代码风格约定
 

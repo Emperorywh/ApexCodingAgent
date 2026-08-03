@@ -106,6 +106,20 @@ export async function beginSession<T extends SessionType>(
   input: BeginSessionInput<T>,
   options?: BeginSessionOptions,
 ): Promise<ActiveSessionHandle<T>> {
+  /**
+   * 驱动器循环顶部的检查只能覆盖当时的状态；会话用例在读取仓库事实、
+   * 构造提示词期间都可能收到中断。这里是所有 Session 共用的真正启动边界：
+   * 已请求中断时不得分配 ID、追加 Episode 或写入 activeSession。
+   */
+  if (deps.interrupt.requested) {
+    throw new ApexError({
+      code: 'RUN_INTERRUPTED',
+      stage: input.type,
+      message: 'foreground interrupt requested before Session start',
+      taskId: input.taskId,
+    });
+  }
+
   const startedAt = formatRfc3339InSystemTimeZone(deps.clock.now());
   const sessionId = globalThis.crypto.randomUUID();
   const activeSession: ActiveSession = {

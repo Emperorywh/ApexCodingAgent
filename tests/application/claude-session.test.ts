@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRedactor } from '../../src/adapters/redaction/redactor.js';
 import { createInterruptController } from '../../src/application/interrupt.js';
 import {
+  beginSession,
   invokeSession,
   writeCompletedSessionRecord,
   type ActiveSessionHandle,
@@ -17,6 +18,41 @@ import type { UseCaseDeps } from '../../src/application/usecase-deps.js';
 import type { RunJson } from '../../src/domain/schemas/run-json.js';
 import type { SessionRecord } from '../../src/domain/schemas/session-record.js';
 import { mkRun, mkResult } from '../domain/fixtures.js';
+
+describe('beginSession interrupt gate', () => {
+  it('已请求中断时不创建 Session 事实', async () => {
+    const interrupt = createInterruptController();
+    const writeRun = vi.fn();
+    const deps = {
+      interrupt,
+      stateStore: { writeRun },
+      clock: { now: () => new Date('2026-07-28T00:00:00.000Z') },
+      logger: { log: vi.fn() },
+    } as unknown as UseCaseDeps;
+    const input: BeginSessionInput<'planning'> = {
+      type: 'planning',
+      taskId: null,
+      planRevision: 1,
+      specSha256: 'a'.repeat(64),
+      prompt: 'plan',
+      permissionMode: 'plan',
+      repositoryRoot: 'C:/repo',
+    };
+
+    /**
+     * 中断事实先于统一 Session 启动边界存在时，beginSession 必须直接拒绝，
+     * 不能把尚未启动的会话写成 activeSession 后再交给 invokeSession 收尾。
+     */
+    interrupt.request();
+
+    await expect(beginSession(deps, mkRun(), input)).rejects.toMatchObject({
+      errorCode: 'RUN_INTERRUPTED',
+      sessionId: null,
+      taskId: null,
+    });
+    expect(writeRun).not.toHaveBeenCalled();
+  });
+});
 
 describe('invokeSession interrupt gate', () => {
   it('已请求中断时不启动新的 Claude 进程', async () => {

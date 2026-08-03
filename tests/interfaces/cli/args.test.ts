@@ -26,6 +26,7 @@ describe('parseCliArgs (§17)', () => {
       fullAccess: false,
       claudeCliPath: null,
       gitCliPath: null,
+      pushRemote: null,
       verbose: false,
     });
     expect(
@@ -37,6 +38,8 @@ describe('parseCliArgs (§17)', () => {
         'C:/tools/claude.exe',
         '--git-cli-path',
         'C:/tools/git.exe',
+        '--push-remote',
+        'upstream',
       ]),
     ).toEqual({
       kind: 'start',
@@ -44,6 +47,7 @@ describe('parseCliArgs (§17)', () => {
       fullAccess: true,
       claudeCliPath: 'C:/tools/claude.exe',
       gitCliPath: 'C:/tools/git.exe',
+      pushRemote: 'upstream',
       verbose: false,
     });
     expect(parseCliArgs(['start', '--verbose'])).toEqual({
@@ -52,6 +56,7 @@ describe('parseCliArgs (§17)', () => {
       fullAccess: false,
       claudeCliPath: null,
       gitCliPath: null,
+      pushRemote: null,
       verbose: true,
     });
     expect(parseCliArgs(['start', '-v'])).toEqual({
@@ -60,6 +65,7 @@ describe('parseCliArgs (§17)', () => {
       fullAccess: false,
       claudeCliPath: null,
       gitCliPath: null,
+      pushRemote: null,
       verbose: true,
     });
     expect(parseCliArgs(['status'])).toEqual({ kind: 'status' });
@@ -104,6 +110,7 @@ describe('parseCliArgs (§17)', () => {
     expectUsageInvalid(['start', '--nope']);
     expectUsageInvalid(['start', 'a', 'b']); // 最多一个 [spec-path]
     expectUsageInvalid(['start', '--claude-cli-path']); // 缺值
+    expectUsageInvalid(['start', '--push-remote']); // 缺值
     expectUsageInvalid(['start', '--full-access=true']); // boolean 选项不接受值
     expectUsageInvalid(['status', 'extra']);
     expectUsageInvalid(['status', '--force']);

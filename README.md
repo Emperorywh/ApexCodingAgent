@@ -49,11 +49,12 @@ ApexCodingAgent --help
 
 ### 1. 准备项目
 
-你的项目必须是一个 Git 仓库。进入项目目录，并确认除了本次需求文档以外，没有尚未提交的修改：
+你的项目必须是一个 Git 仓库，并配置一个可写的 Git 远程。进入项目目录，并确认除了本次需求文档以外，没有尚未提交的修改：
 
 ```powershell
 cd C:\你的项目目录
 git status
+git remote -v
 ```
 
 如果项目还不是 Git 仓库，可以先执行：
@@ -62,7 +63,16 @@ git status
 git init
 git add .
 git commit -m "项目初始版本"
+git remote add origin <你的远程仓库地址>
 ```
+
+默认情况下，ApexCodingAgent 会自动推送到 `origin`。如果仓库使用其他远程名，可以在启动时显式指定：
+
+```powershell
+ApexCodingAgent start --push-remote upstream
+```
+
+启动前只会读取本地远程配置；远程分支会在第一个 Checkpoint 成功后创建。
 
 ### 2. 编写需求文档
 
@@ -174,19 +184,21 @@ ApexCodingAgent start --verbose
 | `ApexCodingAgent start` | 使用当前目录及子目录内的 `SPEC.md` 开始任务 |
 | `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
 | `ApexCodingAgent start --verbose` | 开始任务，并把调试日志同步输出到终端 |
+| `ApexCodingAgent start --push-remote <名称>` | 指定自动推送目标（默认 `origin`） |
 | `ApexCodingAgent resume` | 从中断点继续一个被中断的任务（不重做已完成步骤）；旧进程已崩溃的残留任务自动接管 |
 | `ApexCodingAgent resume --force` | 旧进程可能仍在运行时，人工确认后接管残留的任务 |
 | `ApexCodingAgent status` | 查看当前进度或失败原因 |
 | `ApexCodingAgent report` | 重新生成最终报告 |
 | `ApexCodingAgent abandon --force` | 放弃一个已经无法继续的任务 |
 
-`start` 和 `resume` 还支持 `--claude-cli-path <路径>` 与 `--git-cli-path <路径>`，用于指定 Claude 或 Git 命令的位置（默认使用 PATH 中的 `claude` 和 `git`）。
+`start` 和 `resume` 还支持 `--claude-cli-path <路径>` 与 `--git-cli-path <路径>`，用于指定 Claude 或 Git 命令的位置（默认使用 PATH 中的 `claude` 和 `git`）。`start` 的 `--push-remote <名称>` 会被保存到本次 Run，之后 `resume` 继续使用同一个远程。
 
 ## 使用时需要注意
 
 - `start` 会一直在前台运行，请不要关闭终端或让电脑休眠。
 - 开始前请提交或移除与本次任务无关的修改；`SPEC.md` 本身不要暂存。
-- 每次运行都会在单独的 Git 分支中进行，并自动创建本地 Git 提交，不会改动你原来的分支。
+- 每次运行都会在单独的 Git 分支中进行；每个 Task、中间 Checkpoint 和 Final Review Checkpoint 都会先创建本地提交，再自动推送到远程的同名 Run 分支，不会改动你原来的分支。
+- 自动推送只允许 fast-forward 更新，不会强制推送；远程不存在、认证失败、网络失败或远程分支发生冲突时，Run 会以稳定错误码停止，且不会自动重试。
 - Claude Code、网络或额度出现问题时，任务会停止。使用 `ApexCodingAgent status` 查看原因，解决问题后重新运行 `ApexCodingAgent start`。
 - 认证、网络、额度或普通执行失败不会自动重试，需要人工处理后重新开始或恢复。
 

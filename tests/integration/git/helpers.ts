@@ -47,7 +47,15 @@ export interface TempRepo {
 }
 
 export async function createTempRepo(): Promise<TempRepo> {
-  const root = await mkdtemp(join(tmpdir(), 'apex-g3-'));
+  /*
+   * 每个工作仓库配一个同沙箱内的 bare origin。
+   * 真实本地远程让 Checkpoint 自动推送测试经过 Git 传输层，而不是替换端口。
+   */
+  const sandbox = await mkdtemp(join(tmpdir(), 'apex-g3-'));
+  const root = join(sandbox, 'worktree');
+  const remoteRoot = join(sandbox, 'origin.git');
+  await mkdir(root, { recursive: true });
+  await execFileAsync('git', ['init', '--bare', remoteRoot], { cwd: sandbox, timeout: 30_000 });
   const gitRaw = async (...args: string[]): Promise<GitCallResult> => {
     try {
       const { stdout, stderr } = await execFileAsync('git', args, {
@@ -81,6 +89,7 @@ export async function createTempRepo(): Promise<TempRepo> {
   await git('config', 'user.name', 'Apex Test');
   await git('config', 'user.email', 'apex-test@example.invalid');
   await git('config', 'commit.gpgsign', 'false');
+  await git('remote', 'add', 'origin', remoteRoot);
 
   return {
     root,
@@ -101,7 +110,7 @@ export async function createTempRepo(): Promise<TempRepo> {
      * Windows 不允许删除仍作为子进程 cwd 的目录；git 进程退出略滞后于
      * 测试结束时 rmdir 会报 EBUSY，用重试吸收这个竞争窗口。
      */
-    cleanup: () => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
+    cleanup: () => rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),
   };
 }
 

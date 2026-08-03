@@ -44,6 +44,7 @@ import {
 import { toErrorRecord } from './error-record.js';
 import { readCompletePlanRevisionHistory } from './plan-revision-history.js';
 import { invokeResumableSession } from './resumable-session.js';
+import { publishCheckpoint } from './publish-checkpoint.js';
 
 export type RunFinalReviewResult =
   /** Run 已持久化为 completed（含 report.md 与 Final Commit）。 */
@@ -110,6 +111,7 @@ export function createRunFinalReview(deps: UseCaseDeps): {
     handle: ActiveSessionHandle<'final_review'>,
     error: ApexError,
     checkpoint: CheckpointOutcome,
+    specSha256After: string = handle.specSha256,
   ): Promise<RunFinalReviewResult> {
     await ensureFailedSessionRecord(deps, handle, error);
     const at = now();
@@ -120,18 +122,34 @@ export function createRunFinalReview(deps: UseCaseDeps): {
         handle.run.finalReviewEpisodes,
         handle.sessionId,
         {
-          specSha256After: handle.specSha256,
+          specSha256After,
           endedAt: at,
           decision: 'session_error',
           summary,
           reviewedTaskIds: [],
           changedAreas: [],
-          checkpointRole: 'final-review-intermediate',
-          checkpoint: checkpoint.finalOid,
-          checkpointReason: checkpoint.reason,
+          checkpointRole: checkpoint.noChanges ? null : 'final-review-intermediate',
+          checkpoint: checkpoint.noChanges ? null : checkpoint.finalOid,
+          checkpointReason: checkpoint.noChanges
+            ? `remote_publication_failed_after_${checkpoint.reason}`
+            : checkpoint.reason,
           error: toErrorRecord(error, at, deps.redaction),
         },
       ),
+      intermediateCheckpoints: checkpoint.noChanges
+        ? handle.run.intermediateCheckpoints
+        : [
+            ...handle.run.intermediateCheckpoints,
+            {
+              oid: checkpoint.finalOid,
+              role: 'final-review-intermediate' as const,
+              sourceSessionId: handle.sessionId,
+              taskId: null,
+              planRevision: handle.planRevision,
+              summary: 'remote publication failed after local Final Review checkpoint',
+              ownerTaskId: null,
+            },
+          ],
       repository: { ...handle.run.repository, expectedHead: checkpoint.finalOid },
     };
     return failTerminal(closed, error);
@@ -175,6 +193,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
       });
     } catch (error) {
       return failWithSession(handle, error as ApexError);
+    }
+    try {
+      await publishCheckpoint(deps, run, checkpoint, 'final-review-intermediate');
+    } catch (error) {
+      return failAfterCheckpoint(handle, error as ApexError, checkpoint, specSha256After);
     }
     deps.logger.log('debug', 'final_review.spec_changed', {
       sessionId: handle.sessionId,
@@ -385,6 +408,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
       } catch (error) {
         return failWithSession(handle, error as ApexError);
       }
+      try {
+        await publishCheckpoint(deps, run, checkpoint, 'final-review-intermediate');
+      } catch (error) {
+        return failAfterCheckpoint(handle, error as ApexError, checkpoint, specAfter.sha256);
+      }
       let next = closeEpisode(handle.run, handle.sessionId, {
         decision: 'replan_required',
         summary: deps.redaction.redactText(result.summary) || 'replan required',
@@ -443,6 +471,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
       });
     } catch (error) {
       return failWithSession(handle, error as ApexError);
+    }
+    try {
+      await publishCheckpoint(deps, run, checkpoint, 'final-review-final');
+    } catch (error) {
+      return failAfterCheckpoint(handle, error as ApexError, checkpoint, specAfter.sha256);
     }
     /**
      * Checkpoint 可能耗时并允许外部编辑 SPEC，因此在真正生成报告之前再次

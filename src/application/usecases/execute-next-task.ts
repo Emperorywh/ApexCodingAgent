@@ -38,7 +38,7 @@ import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import { buildExecutionPrompt, buildExecutionResultRepairPrompt, buildExecutionResumePrompt } from '../prompts/execution.js';
-import type { SessionStartFact, SpecFact } from '../ports/GitPort.js';
+import type { CheckpointOutcome, SessionStartFact, SpecFact } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import {
   ensureFailedSessionRecord,
@@ -49,6 +49,7 @@ import {
 import { toErrorRecord } from './error-record.js';
 import { invokeResumableSession } from './resumable-session.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
+import { publishCheckpoint } from './publish-checkpoint.js';
 
 export type ExecuteNextTaskResult =
   /** Task completed 且 Checkpoint 成功。 */
@@ -180,6 +181,60 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       handle.specSha256,
     );
     next = markTaskFailed(next, taskId, taskFailureReason, error);
+    return failTerminal(next, error);
+  }
+
+  /**
+   * 本地 Checkpoint 已形成、远程发布失败后的事实保全。
+   *
+   * 有实际变更时把 OID 记录为 Task 中间 Checkpoint，并同步 expectedHead；
+   * Task 仍以 checkpoint_failed 终止，不能声称远程交付已经成功。
+   */
+  async function failAfterCheckpoint(
+    handle: ActiveSessionHandle<'execution'>,
+    error: ApexError,
+    checkpoint: CheckpointOutcome,
+    specSha256After: string,
+  ): Promise<ExecuteNextTaskResult> {
+    const taskId = handle.taskId!;
+    await ensureFailedSessionRecord(deps, handle, error);
+    const hasLocalChanges = !checkpoint.noChanges;
+    let next = closeEpisode(
+      handle.run,
+      taskId,
+      handle.sessionId,
+      {
+        outcome: 'failed',
+        summary: deps.redaction.redactText(error.message) || error.errorCode,
+        acceptanceEvidence: [],
+        finalCheckpoint: null,
+        intermediateCheckpoint: hasLocalChanges ? checkpoint.finalOid : null,
+        checkpointReason: hasLocalChanges
+          ? checkpoint.reason
+          : `remote_publication_failed_after_${checkpoint.reason}`,
+        error: toErrorRecord(error, now(), deps.redaction),
+      },
+      specSha256After,
+    );
+    next = {
+      ...next,
+      intermediateCheckpoints: hasLocalChanges
+        ? [
+            ...next.intermediateCheckpoints,
+            {
+              oid: checkpoint.finalOid,
+              role: 'task-intermediate' as const,
+              sourceSessionId: handle.sessionId,
+              taskId,
+              planRevision: handle.planRevision,
+              summary: `remote publication failed after local checkpoint for ${taskId}`,
+              ownerTaskId: null,
+            },
+          ]
+        : next.intermediateCheckpoints,
+      repository: { ...next.repository, expectedHead: checkpoint.finalOid },
+    };
+    next = markTaskFailed(next, taskId, 'checkpoint_failed', error);
     return failTerminal(next, error);
   }
 
@@ -476,6 +531,17 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
             const settled = await failWithSession(handle, error as ApexError, 'checkpoint_failed');
             return { kind: 'settled', settled };
           }
+          try {
+            await publishCheckpoint(deps, run, checkpoint, 'task-intermediate');
+          } catch (error) {
+            const settled = await failAfterCheckpoint(
+              handle,
+              error as ApexError,
+              checkpoint,
+              specAfter.sha256,
+            );
+            return { kind: 'settled', settled };
+          }
           deps.logger.log('debug', 'execution.spec_changed', {
             boundary: 'after_session',
             taskId: readyTaskId,
@@ -623,6 +689,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       } catch (error) {
         return failWithSession(handle, error as ApexError, 'checkpoint_failed');
       }
+      try {
+        await publishCheckpoint(deps, run, checkpoint, 'task-intermediate');
+      } catch (error) {
+        return failAfterCheckpoint(handle, error as ApexError, checkpoint, specAfter.sha256);
+      }
       let next = closeEpisode(
         handle.run,
         readyTaskId,
@@ -692,6 +763,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       });
     } catch (error) {
       return failWithSession(handle, error as ApexError, 'checkpoint_failed');
+    }
+    try {
+      await publishCheckpoint(deps, run, checkpoint, 'task-final');
+    } catch (error) {
+      return failAfterCheckpoint(handle, error as ApexError, checkpoint, specAfter.sha256);
     }
     deps.logger.log('debug', 'execution.task.checkpointed', {
       taskId: readyTaskId,

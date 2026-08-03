@@ -357,6 +357,39 @@ describe('e2e claude failure mapping (§9.6)', () => {
     },
     180_000,
   );
+
+  it(
+    'push failure preserves the local checkpoint fact and fails with GIT_PUSH_FAILED',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario(
+          scenarioAfterPlan({
+            writeFiles: [{ path: 'src/publish.ts', content: 'export const published = false;\n' }],
+            commands: [{ argv: ['git', 'remote', 'remove', 'origin'] }],
+            stdoutLines: streamOf(executionCompleted()),
+          }),
+        );
+
+        const result = await harness.start();
+        expect(result.kind).toBe('failed');
+        if (result.kind !== 'failed') return;
+        const task = result.run.tasks['TASK-001']!;
+        const episode = task.executionEpisodes[0]!;
+        expect(result.run.lastError?.errorCode).toBe('GIT_PUSH_FAILED');
+        expect(task.status).toBe('failed');
+        expect(episode.outcome).toBe('failed');
+        expect(episode.intermediateCheckpoint).toMatch(/^[0-9a-f]{40}$/);
+        expect(result.run.intermediateCheckpoints[0]?.oid).toBe(episode.intermediateCheckpoint);
+        expect(result.run.repository.expectedHead).toBe(episode.intermediateCheckpoint);
+        expect(await harness.repo.git('show', 'HEAD:src/publish.ts')).toContain('false');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
 });
 
 describe('e2e planning and protected-path failures (G3 invariants)', () => {
@@ -450,6 +483,27 @@ describe('e2e planning and protected-path failures (G3 invariants)', () => {
 });
 
 describe('e2e startup validation (§8.1)', () => {
+  it(
+    'missing push remote refuses to start before creating run.json',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.repo.git('remote', 'remove', 'origin');
+        await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP, sequence: [] });
+
+        const result = await harness.start();
+        expect(result.kind).toBe('startup-failed');
+        if (result.kind !== 'startup-failed') return;
+        expect(result.error.errorCode).toBe('GIT_REMOTE_INVALID');
+        await expect(harness.readRunJson()).rejects.toThrow();
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
   it(
     'dirty working tree refuses to start with WORKING_TREE_DIRTY and creates no run',
     async () => {

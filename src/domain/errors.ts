@@ -40,6 +40,11 @@ export const ERROR_CODE_TO_CLASS = {
   GIT_WORKTREE_REQUIRED: 'startup_validation',
   GIT_HEAD_REQUIRED: 'startup_validation',
   BASE_BRANCH_REQUIRED: 'startup_validation',
+  /*
+   * 自动推送在 Run 创建前要求远程目标可解析；该错误不会产生或修改
+   * Run，避免工作完成后才发现目标远程根本不存在。
+   */
+  GIT_REMOTE_INVALID: 'startup_validation',
   CLAUDE_CAPABILITY_MISSING: 'startup_validation',
   CLAUDE_INSTALLATION_UNHEALTHY: 'startup_validation',
   SETTINGS_INVALID: 'startup_validation',
@@ -69,6 +74,11 @@ export const ERROR_CODE_TO_CLASS = {
   GIT_HISTORY_DIVERGED: 'git_error',
   PLANNING_SIDE_EFFECT_DETECTED: 'git_error',
   PROTECTED_PATH_CHANGED: 'git_error',
+  /*
+   * 本地 Checkpoint 已形成、但发布到远程失败时使用独立错误码，调用方
+   * 可以明确区分“提交失败”和“远程交付失败”。
+   */
+  GIT_PUSH_FAILED: 'git_error',
   // state_error
   STATE_WRITE_FAILED: 'state_error',
   STATE_VALIDATION_FAILED: 'state_error',

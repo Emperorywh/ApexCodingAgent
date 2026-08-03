@@ -68,7 +68,10 @@ describe('e2e happy path', () => {
         expect(run.terminalAt).not.toBeNull();
         expect(run.lastError).toBeNull();
         expect(run.runSettings.executionPermissionMode).toBe('auto');
+        expect(run.runSettings.pushRemote).toBe('origin');
         expect(run.repository.runBranch).toBe(`apex-coding-agent/${run.runId}`);
+        expect(await harness.repo.git('rev-parse', `refs/remotes/origin/${run.repository.runBranch}`))
+          .toBe(run.finalCommit);
         expect(Object.keys(run.tasks).sort()).toEqual(['TASK-001', 'TASK-002']);
         for (const taskId of ['TASK-001', 'TASK-002']) {
           const state = run.tasks[taskId]!;
@@ -220,6 +223,7 @@ describe('e2e happy path', () => {
             executionPermissionMode: 'bypassPermissions',
             claudeCliPath: null,
             gitCliPath: null,
+            pushRemote: 'origin',
           }),
           'utf8',
         );

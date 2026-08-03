@@ -27,6 +27,7 @@ import {
   createTaskCheckpoint,
 } from './checkpoint.js';
 import { ApexError } from '../../domain/errors.js';
+import { assertPushRemote, publishRunBranch } from './push.js';
 
 export type GitAdapterOptions = GitRunnerOptions;
 
@@ -34,6 +35,7 @@ export function createGitAdapter(options: GitAdapterOptions): GitPort {
   const git = createGitRunner(options);
   return {
     assertAvailable: () => assertGitAvailable(git, process.cwd()),
+    assertPushRemote: (root, remote) => assertPushRemote(git, root, remote),
     resolveRepositoryRoot: (cwd) => resolveRepositoryRoot(git, cwd),
     readHead: (root) => readHeadFact(git, root),
     assertStateDirectoryUntracked: (root) =>
@@ -61,6 +63,7 @@ export function createGitAdapter(options: GitAdapterOptions): GitPort {
     createTaskCheckpoint: (root, input) => createTaskCheckpoint(git, root, input),
     createIntermediateCheckpoint: (root, input) => createIntermediateCheckpoint(git, root, input),
     createFinalReviewCheckpoint: (root, input) => createFinalReviewCheckpoint(git, root, input),
+    publishRunBranch: (root, input) => publishRunBranch(git, root, input),
     readRepositoryStatus: (root) => readRepositoryStatusFact(git, root),
   };
 }

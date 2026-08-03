@@ -9,6 +9,12 @@ import { validate } from '../../domain/schemas/index.js';
 import type { SettingsJson } from '../../domain/schemas/settings-json.js';
 import type { FileSystemPort } from '../ports/file-system.js';
 
+/*
+ * 自动推送的内置远程目标集中定义在配置边界。
+ * StartRun 只负责按 CLI、settings.json、内置默认的顺序解析一次并快照。
+ */
+export const DEFAULT_PUSH_REMOTE = 'origin';
+
 function settingsInvalid(message: string, cause?: unknown): ApexError {
   return new ApexError({ code: 'SETTINGS_INVALID', stage: 'settings', message, cause });
 }

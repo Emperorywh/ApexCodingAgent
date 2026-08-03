@@ -75,7 +75,13 @@ describe('e2e archive on next start (§4.4)', () => {
         // settings.json 在归档后必须保留（§4.4）。
         await writeFile(
           join(harness.stateDir, 'settings.json'),
-          JSON.stringify({ schemaVersion: 1, executionPermissionMode: 'auto', claudeCliPath: null, gitCliPath: null }),
+          JSON.stringify({
+            schemaVersion: 1,
+            executionPermissionMode: 'auto',
+            claudeCliPath: null,
+            gitCliPath: null,
+            pushRemote: 'origin',
+          }),
           'utf8',
         );
 

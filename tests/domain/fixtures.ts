@@ -135,7 +135,12 @@ export function mkRun(overrides: Partial<RunJson> = {}): RunJson {
     spec: { path: 'docs/SPEC.md', sha256: SHA256_A },
     planRevision: 0,
     tasksSha256: null,
-    runSettings: { executionPermissionMode: 'auto', claudeCliPath: null, gitCliPath: null },
+    runSettings: {
+      executionPermissionMode: 'auto',
+      claudeCliPath: null,
+      gitCliPath: null,
+      pushRemote: 'origin',
+    },
     repository: {
       root: 'C:/repo',
       baseBranch: 'main',

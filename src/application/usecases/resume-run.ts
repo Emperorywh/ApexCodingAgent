@@ -217,6 +217,11 @@ export function createResumeRun(deps: RunCommandDeps): {
             `but run.json belongs to ${root}`,
         });
       }
+      /*
+       * Resume 必须沿用原 Run 的远程快照，并在写入任何恢复事实前复核。
+       * 这样 settings.json 后续变化不会让同一个 Run 静默改投其他远程。
+       */
+      await git.assertPushRemote(root, run.runSettings.pushRemote);
 
       const claude = deps.makeClaudePort(claudeCliPath);
       const capabilityReport = await probeClaudeCapabilities(

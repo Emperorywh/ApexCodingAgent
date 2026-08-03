@@ -2,8 +2,9 @@
  * GitPort (SPEC §5.2 Application Ports). Every Git fact the Coordinator reads
  * and every Git mutation it performs goes through this port. The
  * implementation lives in `src/adapters/git/` and shells out to the `git`
- * executable with argument arrays (SPEC §7.2); it never pushes, merges,
- * resets, rebases, stashes, cleans or deletes branches (SPEC §12.6).
+ * executable with argument arrays (SPEC §7.2). Checkpoint publication is the
+ * only remote mutation; it never merges, resets, rebases, stashes, cleans or
+ * deletes branches (SPEC §12.6).
  *
  * Error mapping (SPEC §15.3): implementations throw `ApexError` with stable
  * codes. Startup-time checks use the `startup_validation` codes
@@ -101,6 +102,13 @@ export interface CheckpointOutcome {
   readonly reason: string;
 }
 
+/** 已形成的本地 Checkpoint 发布到固定 Run 远程分支时的完整输入。 */
+export interface PublishRunBranchInput {
+  readonly remote: string;
+  readonly runBranch: string;
+  readonly checkpointOid: string;
+}
+
 /** SPEC §12.2 input. `facts.expectedHead` equals `sessionStartHead`. */
 export interface TaskCheckpointInput {
   readonly facts: SessionGitFacts;
@@ -136,6 +144,12 @@ export interface FinalReviewCheckpointInput {
 export interface GitPort {
   /** SPEC §8.1 item 6: the git executable runs. Throws `GIT_UNAVAILABLE`. */
   assertAvailable(): Promise<void>;
+
+  /**
+   * 自动推送启动门禁：远程名必须安全且存在非空 URL。
+   * 该检查只读取本地 Git 配置，不访问网络、不修改远程。
+   */
+  assertPushRemote(root: string, remote: string): Promise<void>;
 
   /**
    * SPEC §8.1 item 7: resolves `cwd` to the absolute top level of its
@@ -281,6 +295,12 @@ export interface GitPort {
     root: string,
     input: FinalReviewCheckpointInput,
   ): Promise<CheckpointOutcome>;
+
+  /**
+   * 发布已经形成的本地 Checkpoint；只允许同名 Run 分支的 fast-forward
+   * 更新，并验证当前分支与 checkpointOid 后再接触远程。
+   */
+  publishRunBranch(root: string, input: PublishRunBranchInput): Promise<void>;
 
   /** 只读仓库状态（报告用）：HEAD 事实与 status --porcelain 行；不做任何不变量断言。 */
   readRepositoryStatus(root: string): Promise<RepositoryStatusFact>;

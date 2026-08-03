@@ -14,7 +14,11 @@ import {
   intermediateCheckpointSchema,
   type IntermediateCheckpoint,
 } from './intermediate-checkpoint.js';
-import { EXECUTION_PERMISSION_MODES, type ExecutionPermissionMode } from './settings-json.js';
+import {
+  EXECUTION_PERMISSION_MODES,
+  GIT_REMOTE_NAME_PATTERN,
+  type ExecutionPermissionMode,
+} from './settings-json.js';
 import {
   taskRuntimeStateSchema,
   type TaskRuntimeState,
@@ -40,6 +44,7 @@ export interface RunSettings {
   executionPermissionMode: ExecutionPermissionMode;
   claudeCliPath: string | null;
   gitCliPath: string | null;
+  pushRemote: string;
 }
 
 export interface RepositoryFact {
@@ -164,7 +169,7 @@ export const runJsonSchema = {
     runSettings: {
       type: 'object',
       additionalProperties: false,
-      required: ['executionPermissionMode', 'claudeCliPath', 'gitCliPath'],
+      required: ['executionPermissionMode', 'claudeCliPath', 'gitCliPath', 'pushRemote'],
       properties: {
         executionPermissionMode: {
           type: 'string',
@@ -172,6 +177,7 @@ export const runJsonSchema = {
         },
         claudeCliPath: { type: ['string', 'null'], minLength: 1 },
         gitCliPath: { type: ['string', 'null'], minLength: 1 },
+        pushRemote: { type: 'string', pattern: GIT_REMOTE_NAME_PATTERN.source },
       },
     },
     repository: {

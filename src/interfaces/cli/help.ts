@@ -8,7 +8,7 @@ export const HELP_TEXT = `ApexCodingAgent — 围绕 Claude Code 的前台长时
 
 用法:
   ApexCodingAgent start [spec-path] [--full-access] [--verbose]
-      [--claude-cli-path <path>] [--git-cli-path <path>]
+      [--claude-cli-path <path>] [--git-cli-path <path>] [--push-remote <name>]
   ApexCodingAgent resume [--full-access] [--force] [--verbose]
       [--claude-cli-path <path>] [--git-cli-path <path>]
   ApexCodingAgent status
@@ -34,6 +34,9 @@ start 参数与选项:
                             （默认 auto；启用时显示风险提示；Planning 恒为 plan）
   --claude-cli-path <path>  Claude CLI 入口（默认: PATH 中的 claude）
   --git-cli-path <path>     Git CLI 入口（默认: PATH 中的 git）
+  --push-remote <name>      自动推送的 Git 远程（默认: origin）；每个 Task、
+                            中间 Checkpoint 与 Final Review Checkpoint 都会
+                            发布到同名 Run 分支
   -v, --verbose             把调试日志镜像到 stderr（调试日志始终写入
                             .apex-coding-agent/logs/apex-debug.log 并随 Run 归档）
   -h, --help                显示本帮助

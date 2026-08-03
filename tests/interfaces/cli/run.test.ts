@@ -43,7 +43,12 @@ function makeRunJson(overrides: Partial<RunJson> = {}): RunJson {
     spec: { path: 'SPEC.md', sha256: 'a'.repeat(64) },
     planRevision: 0,
     tasksSha256: null,
-    runSettings: { executionPermissionMode: 'auto', claudeCliPath: null, gitCliPath: null },
+    runSettings: {
+      executionPermissionMode: 'auto',
+      claudeCliPath: null,
+      gitCliPath: null,
+      pushRemote: 'origin',
+    },
     repository: {
       root: '/repo',
       baseBranch: 'main',
@@ -284,7 +289,7 @@ describe('runCli exit codes (§17)', () => {
     expect(stderr.join('\n')).toContain('SPEC_NOT_FOUND');
   });
 
-  it('start 把 --verbose 透传进 StartRunInput', async () => {
+  it('start 把 --verbose 与 --push-remote 透传进 StartRunInput', async () => {
     const run = makeRunJson({ status: 'completed', terminalAt: '2026-01-01T01:00:00Z' });
     let received: StartRunInput | null = null;
     const { runtime } = makeRuntime({
@@ -295,9 +300,10 @@ describe('runCli exit codes (§17)', () => {
         },
       },
     });
-    const code = await runCli(['start', '--verbose'], runtime);
+    const code = await runCli(['start', '--verbose', '--push-remote', 'upstream'], runtime);
     expect(code).toBe(CLI_EXIT.ok);
     expect(received!.verbose).toBe(true);
+    expect(received!.pushRemote).toBe('upstream');
 
     const quiet = makeRuntime({
       startRun: {
@@ -309,6 +315,7 @@ describe('runCli exit codes (§17)', () => {
     });
     expect(await runCli(['start'], quiet.runtime)).toBe(CLI_EXIT.ok);
     expect(received!.verbose).toBe(false);
+    expect(received!.pushRemote).toBeNull();
   });
 
   it('start wires the first interrupt signal to the interrupt controller', async () => {    const run = makeRunJson({

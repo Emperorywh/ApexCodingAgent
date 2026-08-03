@@ -86,7 +86,12 @@ async function fabricateInterruptedRun(
     spec: { path: 'SPEC.md', sha256: spec.sha256 },
     planRevision: 1,
     tasksSha256,
-    runSettings: { executionPermissionMode: 'auto', claudeCliPath: null, gitCliPath: null },
+    runSettings: {
+      executionPermissionMode: 'auto',
+      claudeCliPath: null,
+      gitCliPath: null,
+      pushRemote: 'origin',
+    },
     repository: {
       root: harness.repo.root,
       baseBranch: 'main',

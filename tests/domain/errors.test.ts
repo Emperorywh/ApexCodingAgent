@@ -32,6 +32,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'GIT_WORKTREE_REQUIRED',
     'GIT_HEAD_REQUIRED',
     'BASE_BRANCH_REQUIRED',
+    'GIT_REMOTE_INVALID',
     'CLAUDE_CAPABILITY_MISSING',
     'CLAUDE_INSTALLATION_UNHEALTHY',
     'SETTINGS_INVALID',
@@ -58,6 +59,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'GIT_HISTORY_DIVERGED',
     'PLANNING_SIDE_EFFECT_DETECTED',
     'PROTECTED_PATH_CHANGED',
+    'GIT_PUSH_FAILED',
   ],
   state_error: ['STATE_WRITE_FAILED', 'STATE_VALIDATION_FAILED'],
   report_error: ['FINAL_REPORT_GENERATION_FAILED'],
@@ -76,8 +78,8 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
 };
 
 describe('error model (§15)', () => {
-  it('defines exactly 53 stable error codes and 9 error classes', () => {
-    expect(ERROR_CODES).toHaveLength(53);
+  it('defines exactly 55 stable error codes and 9 error classes', () => {
+    expect(ERROR_CODES).toHaveLength(55);
     expect(ERROR_CLASSES).toHaveLength(9);
   });
 
@@ -92,7 +94,7 @@ describe('error model (§15)', () => {
 
   it('covers every expected code exactly once', () => {
     const allExpected = Object.values(EXPECTED_TABLE).flat();
-    expect(allExpected).toHaveLength(53);
+    expect(allExpected).toHaveLength(55);
     expect([...ERROR_CODES].sort()).toEqual([...allExpected].sort());
   });
 

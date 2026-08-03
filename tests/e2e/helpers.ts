@@ -267,6 +267,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         fullAccess: false,
         claudeCliPath: null,
         gitCliPath: null,
+        pushRemote: null,
         verbose: false,
         environment,
         ...input,

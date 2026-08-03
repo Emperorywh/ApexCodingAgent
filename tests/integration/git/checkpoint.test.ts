@@ -18,6 +18,7 @@ import {
   RUN_ID,
   SESSION_ID,
   createTempRepo,
+  expectApexErrorAsync,
   mkFacts,
   redactGitText,
   seedRepo,
@@ -85,6 +86,12 @@ describe('task checkpoint (§12.2)', () => {
     expect(outcome.finalOid).toBe(await repo.head());
     expect(outcome.noChanges).toBe(false);
     expect(outcome.reason).toBe('committed_remaining_changes');
+    await port.publishRunBranch(repo.root, {
+      remote: 'origin',
+      runBranch: facts.runBranch,
+      checkpointOid: outcome.finalOid,
+    });
+    expect(await repo.git('rev-parse', `refs/remotes/origin/${RUN_BRANCH}`)).toBe(outcome.finalOid);
 
     // Claude's commit stays reachable; the Coordinator commit holds the rest.
     expect((await repo.gitRaw('merge-base', '--is-ancestor', claudeOid, 'HEAD')).code).toBe(0);
@@ -181,6 +188,42 @@ describe('task checkpoint (§12.2)', () => {
     expect(outcome.coordinatorCommit).toBeNull();
     expect(outcome.finalOid).toBe(claudeOid);
     expect(outcome.noChanges).toBe(false);
+  });
+
+  it('maps remote publication failure to GIT_PUSH_FAILED after preserving the local commit', async () => {
+    await repo.writeFile('src/index.ts', 'export const value = 99;\n');
+    const outcome = await port.createTaskCheckpoint(repo.root, taskInput());
+    await repo.git('remote', 'remove', 'origin');
+
+    await expectApexErrorAsync(
+      () =>
+        port.publishRunBranch(repo.root, {
+          remote: 'origin',
+          runBranch: facts.runBranch,
+          checkpointOid: outcome.finalOid,
+        }),
+      'GIT_PUSH_FAILED',
+    );
+
+    /*
+     * 推送失败不能回滚或丢弃已形成的本地 Checkpoint；远程交付失败与本地
+     * 工作保存是两个可观察事实，后续报告可以据此排障。
+     */
+    expect(await repo.git('show', 'HEAD:src/index.ts')).toContain('99');
+  });
+});
+
+describe('push remote validation', () => {
+  it('accepts a configured remote and rejects missing or unsafe names', async () => {
+    await expect(port.assertPushRemote(repo.root, 'origin')).resolves.toBeUndefined();
+    await expectApexErrorAsync(
+      () => port.assertPushRemote(repo.root, 'missing'),
+      'GIT_REMOTE_INVALID',
+    );
+    await expectApexErrorAsync(
+      () => port.assertPushRemote(repo.root, '--upload-pack=evil'),
+      'GIT_REMOTE_INVALID',
+    );
   });
 });
 

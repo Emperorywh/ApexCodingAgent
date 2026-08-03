@@ -22,7 +22,7 @@ import type { LoggerPort } from '../ports/logger.js';
 import type { RunCommandDeps } from '../run-command-deps.js';
 import { createRunDriver } from '../run-driver.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
-import { loadSettings } from './settings.js';
+import { DEFAULT_PUSH_REMOTE, loadSettings } from './settings.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 import { createNullLogger } from '../ports/logger.js';
 import {
@@ -50,6 +50,8 @@ export interface StartRunInput {
   readonly claudeCliPath: string | null;
   /** 显式 --git-cli-path；null 表示未提供。 */
   readonly gitCliPath: string | null;
+  /** 显式 --push-remote；null 表示按 settings.json 与内置默认解析。 */
+  readonly pushRemote: string | null;
   /** 显式 --verbose：调试日志（恒写 logs/apex-debug.log）同时镜像到 stderr。 */
   readonly verbose: boolean;
   readonly environment: EnvironmentFacts;
@@ -155,12 +157,14 @@ export function createStartRun(deps: RunCommandDeps): {
         : 'auto';
       const claudeCliPath = input.claudeCliPath ?? settings?.claudeCliPath ?? null;
       const gitCliPath = input.gitCliPath ?? settings?.gitCliPath ?? null;
+      const pushRemote = input.pushRemote ?? settings?.pushRemote ?? DEFAULT_PUSH_REMOTE;
       logger = deps.makeLogger({ stateDir, verbose: input.verbose });
       logger.log('debug', 'startup.settings_resolved', {
         settingsFound: settings !== null,
         executionPermissionMode,
         claudeCliPath,
         gitCliPath,
+        pushRemote,
         verbose: input.verbose,
       });
       if (executionPermissionMode === 'bypassPermissions') {
@@ -194,6 +198,11 @@ export function createStartRun(deps: RunCommandDeps): {
       await git.assertStateDirectoryUntracked(root);
       await git.assertSpecNotStaged(root, spec.gitPath);
       await git.assertWorkingTreeClean(root, spec.gitPath);
+      /*
+       * 远程配置检查必须早于第一个 run.json 写入。不存在或不安全的远程名
+       * 属于启动门禁失败，不能留下半个声称会自动发布的 Run。
+       */
+      await git.assertPushRemote(root, pushRemote);
 
       const bound = deps.makeBoundDeps({ stateDir, git, claude, capabilityReport, logger });
 
@@ -253,7 +262,7 @@ export function createStartRun(deps: RunCommandDeps): {
         spec: { path: spec.gitPath, sha256: spec.sha256 },
         planRevision: 0,
         tasksSha256: null,
-        runSettings: { executionPermissionMode, claudeCliPath, gitCliPath },
+        runSettings: { executionPermissionMode, claudeCliPath, gitCliPath, pushRemote },
         repository: {
           root,
           baseBranch,

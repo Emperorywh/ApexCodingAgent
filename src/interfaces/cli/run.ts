@@ -101,6 +101,7 @@ async function runStart(
       fullAccess: command.fullAccess,
       claudeCliPath: command.claudeCliPath,
       gitCliPath: command.gitCliPath,
+      pushRemote: command.pushRemote,
       verbose: command.verbose,
       environment: runtime.environment,
     });

@@ -172,6 +172,7 @@ const VALID: Record<SchemaName, () => unknown> = {
     executionPermissionMode: 'auto',
     claudeCliPath: null,
     gitCliPath: null,
+    pushRemote: 'origin',
   }),
 };
 
@@ -370,6 +371,18 @@ describe('custom formats and enums', () => {
     expectInvalid('RunArchiveManifest', {
       ...(VALID.RunArchiveManifest() as object),
       runStatus: 'running',
+    });
+  });
+
+  it('Git 远程名只接受安全的显式名称', () => {
+    expectInvalid('SettingsJson', {
+      ...(VALID.SettingsJson() as object),
+      pushRemote: '--upload-pack=evil',
+    });
+    const run = mkRun();
+    expectInvalid('RunJson', {
+      ...run,
+      runSettings: { ...run.runSettings, pushRemote: 'team/origin' },
     });
   });
 

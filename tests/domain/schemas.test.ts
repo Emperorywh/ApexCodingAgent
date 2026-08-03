@@ -358,6 +358,47 @@ describe('custom formats and enums', () => {
     );
   });
 
+  it('TaskPlanDraft 将 Git 相对路径规则编码为外部可执行的标准 pattern', () => {
+    /**
+     * Claude CLI 不需要理解本地注册的自定义 format；同一领域正则会随
+     * --json-schema 发送到外部边界，在首次结构化输出时即可拒绝非法目录写法。
+     */
+    const schema = getSchemaJson('TaskPlanDraft') as {
+      readonly properties: {
+        readonly tasks: {
+          readonly items: {
+            readonly properties: {
+              readonly likelyPaths: {
+                readonly items: { readonly pattern: string; readonly description: string };
+              };
+            };
+          };
+        };
+      };
+    };
+    const pathItemSchema = schema.properties.tasks.items.properties.likelyPaths.items;
+    const externalPattern = new RegExp(pathItemSchema.pattern);
+
+    expect(pathItemSchema.description).toContain('目录均不得以斜杠结尾');
+    expect(externalPattern.test('src/assets')).toBe(true);
+    expect(externalPattern.test('src/domain/**')).toBe(true);
+    expect(externalPattern.test('src/assets/')).toBe(false);
+    expect(externalPattern.test('e2e/')).toBe(false);
+    expect(externalPattern.test('src/features/factory-map/')).toBe(false);
+    expect(externalPattern.test('../src/index.ts')).toBe(false);
+
+    expectValid(
+      'TaskPlanDraft',
+      mkDraft([
+        mkTask('TASK-001', [], { likelyPaths: ['src/assets', 'src/domain/**'] }),
+      ]),
+    );
+    expectInvalid(
+      'TaskPlanDraft',
+      mkDraft([mkTask('TASK-001', [], { likelyPaths: ['src/assets/'] })]),
+    );
+  });
+
   it('rfc3339 format requires an explicit valid time zone', () => {
     const record = VALID.ErrorRecord() as Record<string, unknown>;
     /*

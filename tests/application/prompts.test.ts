@@ -178,6 +178,8 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('verificationPlan 必须逐条覆盖 acceptanceCriteria');
     expect(prompt).toContain('不能依赖长期后台服务');
     expect(prompt).toContain('likelyPaths 只是提示，不是强制文件范围');
+    expect(prompt).toContain('文件和目录均不得以斜杠结尾');
+    expect(prompt).toContain('不得包含 . 或 .. 路径段');
     // 返回结构
     expect(prompt).toContain('retainedCheckpointDispositions');
     expect(prompt).toContain('targetContextBudget');

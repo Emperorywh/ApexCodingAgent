@@ -6,6 +6,7 @@
  * rules) live in `src/domain/plan.ts`.
  */
 import { GIT_OID_PATTERN, TASK_ID_PATTERN } from '../ids.js';
+import { GIT_RELATIVE_PATH_PATTERN } from '../paths.js';
 import type { JSONSchemaType } from 'ajv';
 
 export const TASK_TARGET_CONTEXT_TOKENS_MAX = 240_000;
@@ -146,7 +147,13 @@ export const plannedTaskSchema = {
     },
     likelyPaths: {
       type: 'array',
-      items: { type: 'string', format: 'git-relative-path' },
+      items: {
+        type: 'string',
+        format: 'git-relative-path',
+        pattern: GIT_RELATIVE_PATH_PATTERN.source,
+        description:
+          '仓库根目录下的 Git 相对路径；使用正斜杠，文件和目录均不得以斜杠结尾，且不得包含 . 或 .. 路径段',
+      },
     },
     budget: {
       type: 'object',

@@ -1,5 +1,5 @@
 /**
- * The 17 built-in schemas (SPEC §11.5): positive and negative examples,
+ * The 18 built-in schemas (SPEC §11.5): positive and negative examples,
  * including additionalProperties rejection, explicit-null required fields,
  * custom formats (uuid/sha256/git-oid/rfc3339) and schemaVersion constants.
  */
@@ -36,6 +36,12 @@ function expectInvalid(name: SchemaName, data: unknown): void {
 
 const VALID: Record<SchemaName, () => unknown> = {
   TaskPlanDraft: () => mkDraft([mkTask('TASK-001'), mkTask('TASK-002', ['TASK-001'])]),
+  PlanReviewResult: () => ({
+    decision: 'approved',
+    summary: '独立计划复核通过',
+    taskAssessments: [{ taskId: 'TASK-001', decision: 'approved', issues: [] }],
+    issues: [],
+  }),
   TaskExecutionResult: () => mkResult(),
   TaskReviewResult: () => ({
     decision: 'approved',
@@ -150,6 +156,7 @@ const VALID: Record<SchemaName, () => unknown> = {
     specSha256: SHA256_A,
     generatedAt: T0,
     plannerSessionId: UUID_1,
+    planReviewerSessionId: UUID_2,
     summary: 'Overall goal',
     assumptions: [],
     retainedCheckpointDispositions: [],
@@ -165,6 +172,7 @@ const VALID: Record<SchemaName, () => unknown> = {
     specSha256: SHA256_A,
     generatedAt: T0,
     plannerSessionId: UUID_2,
+    planReviewerSessionId: UUID_1,
     summary: 'Overall goal',
     assumptions: [],
     retainedCheckpointDispositions: [],
@@ -205,8 +213,8 @@ const VALID: Record<SchemaName, () => unknown> = {
 };
 
 describe('schema registry (§11.5)', () => {
-  it('registers exactly the 17 built-in schemas, all at version 1', () => {
-    expect(SCHEMA_NAMES).toHaveLength(17);
+  it('registers exactly the 18 built-in schemas, all at version 1', () => {
+    expect(SCHEMA_NAMES).toHaveLength(18);
     for (const name of SCHEMA_NAMES) {
       expect(getSchemaVersion(name)).toBe(1);
       expect(getSchemaJson(name)).toBeTypeOf('object');
@@ -439,10 +447,18 @@ describe('custom formats and enums', () => {
     }
   });
 
-  it('TaskPlanDraft structural rules: estimatedSize, acceptanceCriteria, unique dependsOn', () => {
+  it('TaskPlanDraft structural rules: budget, acceptanceCriteria, unique dependsOn', () => {
     expectInvalid(
       'TaskPlanDraft',
-      mkDraft([mkTask('TASK-001', [], { estimatedSize: 'huge' as never })]),
+      mkDraft([
+        mkTask('TASK-001', [], {
+          budget: {
+            targetContextBudget: 250_000,
+            hardContextLimit: 300_000,
+            maxAgentTurns: 64,
+          },
+        }),
+      ]),
     );
     expectInvalid('TaskPlanDraft', mkDraft([mkTask('TASK-001', [], { acceptanceCriteria: [] })]));
     expectInvalid(

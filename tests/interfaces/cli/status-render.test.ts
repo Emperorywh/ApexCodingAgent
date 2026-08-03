@@ -20,6 +20,7 @@ import {
   T0,
   T1,
   UUID_1,
+  UUID_2,
 } from '../../domain/fixtures.js';
 
 describe('renderStatus', () => {
@@ -41,6 +42,7 @@ describe('renderStatus', () => {
       specSha256: SHA256_A,
       generatedAt: T0,
       plannerSessionId: UUID_1,
+      planReviewerSessionId: UUID_2,
       summary: 'Revision 2',
       assumptions: [],
       retainedCheckpointDispositions: [],
@@ -105,6 +107,7 @@ describe('renderStatus', () => {
       specSha256: SHA256_A,
       generatedAt: T0,
       plannerSessionId: UUID_1,
+      planReviewerSessionId: UUID_2,
       summary: 'Initial plan',
       assumptions: [],
       retainedCheckpointDispositions: [],
@@ -146,6 +149,7 @@ describe('renderStatus', () => {
       specSha256: SHA256_A,
       generatedAt: T0,
       plannerSessionId: UUID_1,
+      planReviewerSessionId: UUID_2,
       summary: 'Initial plan',
       assumptions: [],
       retainedCheckpointDispositions: [],

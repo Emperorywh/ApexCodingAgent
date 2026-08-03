@@ -30,7 +30,8 @@ function redactedSummary(error: ApexError, redaction: RedactionPort): string {
  *
  * RUN_INTERRUPTED 时在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：
  * 中断前状态、被中断 Task 与 Claude Session ID，供 resume 命令重开 Run
- * 并续接被中断的 Planning、Execution、Task Review 或 Final Review 会话；其余错误
+ * 并续接被中断的 Planning、Plan Review、Execution、Task Review 或 Final Review
+ * 会话；其余错误
  * 一律 resumePoint=null。
  *
  * 中断落在「候选已持久化、Reviewer 尚未启动」的窗口时（无 activeSession
@@ -67,11 +68,14 @@ export function toTerminalFailedRun(
             failure: toErrorRecord(error, at, redaction),
           },
         };
+  const preservePlanningFacts = error.errorCode === 'RUN_INTERRUPTED';
   return {
     ...run,
     status: applyRunEvent(run.status, 'RUN_ERROR'),
     activeSession: null,
     currentTaskId: null,
+    planCandidate: preservePlanningFacts ? run.planCandidate : null,
+    planReviewFeedback: preservePlanningFacts ? run.planReviewFeedback : null,
     tasks,
     lastError: toErrorRecord(error, at, redaction),
     terminalAt: at,

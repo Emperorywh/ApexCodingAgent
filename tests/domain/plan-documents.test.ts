@@ -62,6 +62,17 @@ describe('Plan Revision Snapshot rules', () => {
       'STATE_VALIDATION_FAILED',
     );
   });
+
+  it('requires Planner and Plan Reviewer to be different sessions', () => {
+    expectApexError(
+      () =>
+        assertPlanRevisionSnapshotRules({
+          ...mkSnapshot(1),
+          planReviewerSessionId: UUID_1,
+        }),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
 });
 
 describe('Plan Revision document coherence', () => {

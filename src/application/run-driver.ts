@@ -1,7 +1,7 @@
 /**
  * Run 驱动器（SPEC §5.4 运行模型、§2.4 中断收尾的应用层部分、§17 start
- * 进度摘要）：前台串行调度循环 planning → 每个 Task 的 execution →
- * 独立 task_review → final_review → 终态。
+ * 进度摘要）：前台串行调度循环 planning → 独立 plan_review → 每个 Task
+ * 的 execution → 独立 task_review → final_review → 终态。
  *
  * - 顶层 Task 串行、同一时刻最多一个 Claude Session；每次状态迁移输出一行
  *   经脱敏的进度摘要。
@@ -21,6 +21,8 @@ import type { ResumePoint, RunJson } from '../domain/schemas/run-json.js';
 import {
   renderFinalReviewStarted,
   renderPlanCommitted,
+  renderPlanReviewChangesRequired,
+  renderPlanReviewStarted,
   renderReplanRequested,
   renderRunCompleted,
   renderSpecReplanning,
@@ -31,6 +33,7 @@ import {
 import type { UseCaseDeps } from './usecase-deps.js';
 import { createExecuteNextTask, type ExecutionResumeHint } from './usecases/execute-next-task.js';
 import { createGeneratePlanRevision } from './usecases/generate-plan-revision.js';
+import { createReviewPlanCandidate } from './usecases/review-plan-candidate.js';
 import { createRunFinalReview } from './usecases/run-final-review.js';
 import { createReviewTask } from './usecases/review-task.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './usecases/run-transitions.js';
@@ -63,6 +66,7 @@ const INITIAL_TRIGGER: PlanRevisionTrigger = {
 
 export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): RunDriver {
   const generatePlanRevision = createGeneratePlanRevision(deps);
+  const reviewPlanCandidate = createReviewPlanCandidate(deps);
   const executeNextTask = createExecuteNextTask(deps);
   const reviewTask = createReviewTask(deps);
   const runFinalReview = createRunFinalReview(deps);
@@ -71,6 +75,8 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
   const resumePoint = options?.resume ?? null;
   let planningResumeSessionId =
     resumePoint?.sessionType === 'planning' ? resumePoint.sessionId : null;
+  let planReviewResumeSessionId =
+    resumePoint?.sessionType === 'plan_review' ? resumePoint.sessionId : null;
   let planningResumePending = resumePoint?.fromStatus === 'planning';
   let executionResumeHint: ExecutionResumeHint | null =
     resumePoint !== null &&
@@ -164,6 +170,42 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
         switch (run.status) {
           case 'planning': {
             /**
+             * 已持久化草稿必须先经过全新只读 Reviewer；只有没有候选时才允许
+             * 启动下一趟 Planner，确保 Revision 提交点永远位于独立复核之后。
+             */
+            if (run.planCandidate !== null) {
+              trigger = run.planCandidate.trigger;
+              const review = await reviewPlanCandidate.execute(
+                planReviewResumeSessionId === null
+                  ? undefined
+                  : { resumeFromSessionId: planReviewResumeSessionId },
+              );
+              planReviewResumeSessionId = null;
+              planningResumePending = false;
+              if (review.kind === 'committed') {
+                deps.logger.log('debug', 'driver.plan_committed', {
+                  runId: review.run.runId,
+                  planRevision: review.run.planRevision,
+                  taskCount: Object.keys(review.run.tasks).length,
+                  approvedByIndependentReview: true,
+                });
+                progress(
+                  renderPlanCommitted(
+                    review.run.planRevision,
+                    Object.keys(review.run.tasks).length,
+                  ),
+                );
+                trigger = INITIAL_TRIGGER;
+              } else if (review.kind === 'changes-required') {
+                progress(renderPlanReviewChangesRequired(review.reviewAttempt));
+              } else if (review.kind === 'spec-changed') {
+                progress(renderSpecReplanning());
+              } else {
+                return review.run;
+              }
+              break;
+            }
+            /**
              * 首个 Revision 的领域不变量要求 trigger=initial；中断只改变
              * 会话执行方式，不改变“这是初始计划”的业务事实。已有 Revision
              * 后恢复 Planning 才使用 run_resumed 记录本次触发来源。
@@ -183,18 +225,13 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
             );
             planningResumeSessionId = null;
             planningResumePending = false;
-            if (result.kind === 'committed') {
-              deps.logger.log('debug', 'driver.plan_committed', {
+            if (result.kind === 'review-needed') {
+              const stagedRevision = result.run.planCandidate?.planRevision ?? run.planRevision + 1;
+              deps.logger.log('debug', 'driver.plan_review_needed', {
                 runId: run.runId,
-                planRevision: result.run.planRevision,
+                planRevision: stagedRevision,
               });
-              progress(
-                renderPlanCommitted(
-                  result.run.planRevision,
-                  Object.keys(result.run.tasks).length,
-                ),
-              );
-              trigger = INITIAL_TRIGGER;
+              progress(renderPlanReviewStarted(stagedRevision));
             } else if (result.kind === 'spec-changed') {
               progress(renderSpecReplanning());
             } else {

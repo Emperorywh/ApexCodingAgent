@@ -424,3 +424,28 @@ describe('task review side-effect detection', () => {
     );
   });
 });
+
+describe('plan review side-effect detection', () => {
+  it('使用独立稳定错误码拒绝 Plan Reviewer 对工作树的修改', async () => {
+    const facts = await seedWithRunBranch();
+    const start = await port.assertSessionStart(repo.root, facts, {
+      readOnlySessionType: 'plan_review',
+    });
+    await repo.writeFile('src/index.ts', 'export const value = 2;\n');
+
+    await expectApexErrorAsync(
+      () => port.assertSessionEnd(repo.root, facts, start),
+      'PLAN_REVIEW_SIDE_EFFECT_DETECTED',
+    );
+  });
+
+  it('SPEC 是受保护路径：Plan Reviewer 改写 SPEC 不触发只读门禁', async () => {
+    const facts = await seedWithRunBranch();
+    const start = await port.assertSessionStart(repo.root, facts, {
+      readOnlySessionType: 'plan_review',
+    });
+    await repo.writeFile('SPEC.md', '# Spec v2\n');
+
+    await port.assertSessionEnd(repo.root, facts, start);
+  });
+});

@@ -249,12 +249,13 @@ export function createResumeRun(deps: RunCommandDeps): {
 
     /**
      * 完整 Git 预检必须发生在任何 Session Record 或 run.json 写入之前。
-     * Planning/Task Review 严格只读；Execution/Final Review 的活动
+     * Planning/Plan Review/Task Review 严格只读；Execution/Final Review 的活动
      * Session 可以保留 expectedHead 之上的安全提交。
      */
     try {
       if (
         (classification.point.sessionType === 'planning' ||
+          classification.point.sessionType === 'plan_review' ||
           classification.point.sessionType === 'task_review') &&
         classification.point.sessionId !== null
       ) {

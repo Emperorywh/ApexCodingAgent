@@ -99,6 +99,22 @@ describe('argument array contract (SPEC §7.2)', () => {
     expect(records[0]!.cwd).toBe(harness.root);
   }, TEST_TIMEOUT);
 
+  it('passes the Task turn budget as an explicit Claude CLI option', async () => {
+    await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('execution') });
+    const fact = await runtime.invoke(mkRequest(harness, { maxTurns: 64 }));
+    expect(fact.exitCode).toBe(0);
+
+    /**
+     * Task 预算必须在进程边界转化为显式参数，避免预算只停留在计划文档中，
+     * 却没有真正约束执行 Session 的最大代理轮次。
+     */
+    const records = await harness.readRecords();
+    expect(records).toHaveLength(1);
+    const optionIndex = records[0]!.argv.indexOf('--max-turns');
+    expect(optionIndex).toBeGreaterThanOrEqual(0);
+    expect(records[0]!.argv[optionIndex + 1]).toBe('64');
+  }, TEST_TIMEOUT);
+
   it('starts a session when the prompt exceeds the Windows command-line limit', async () => {
     await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('final_review') });
     const prompt = `最终复核上下文\n${'验收证据与任务定义。'.repeat(8_192)}`;
@@ -207,12 +223,22 @@ describe('argument array contract (SPEC §7.2)', () => {
     await harness.writeScenario({
       version: FAKE_VERSION,
       stdoutLines: streamLines('execution'),
-      sleepMs: 1_000,
+      sleepMs: 3_000,
     });
     const invocation = runtime.invoke(mkRequest(harness));
+    let invocationSettled = false;
+    void invocation.then(
+      () => {
+        invocationSettled = true;
+      },
+      () => {
+        invocationSettled = true;
+      },
+    );
 
     let streamedLog: string | null = null;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
+    const observationDeadline = Date.now() + 15_000;
+    while (Date.now() < observationDeadline && !invocationSettled) {
       try {
         const candidate = await harness.readSessionLog(SESSION_ID);
         if (candidate.includes('"type":"result"')) {
@@ -226,7 +252,8 @@ describe('argument array contract (SPEC §7.2)', () => {
     }
 
     /**
-     * Fake Claude 在输出完整事件后仍保持存活，因此此时读到结果行可以证明日志是增量落盘，
+     * Fake Claude 在输出完整事件后继续存活三秒，观测循环则允许全量并发测试下的
+     * 进程启动排队。只有在调用尚未结束时读到结果行，才能证明日志是增量落盘，
      * 而不是在子进程退出后一次性写入；最终结果仍需正常完成并通过结构校验。
      */
     expect(streamedLog).not.toBeNull();
@@ -381,6 +408,9 @@ describe('session type × outcome matrix (SPEC §22.2)', () => {
     { sessionType: 'planning', outcome: 'success' },
     { sessionType: 'planning', outcome: 'schema-error', expectedCode: 'CLAUDE_RESULT_INVALID' },
     { sessionType: 'planning', outcome: 'nonzero-exit', expectedCode: 'CLAUDE_EXIT_NONZERO' },
+    { sessionType: 'plan_review', outcome: 'success' },
+    { sessionType: 'plan_review', outcome: 'schema-error', expectedCode: 'PLAN_REVIEW_RESULT_INVALID' },
+    { sessionType: 'plan_review', outcome: 'nonzero-exit', expectedCode: 'CLAUDE_EXIT_NONZERO' },
     { sessionType: 'execution', outcome: 'success' },
     { sessionType: 'execution', outcome: 'schema-error', expectedCode: 'CLAUDE_RESULT_INVALID' },
     { sessionType: 'execution', outcome: 'nonzero-exit', expectedCode: 'CLAUDE_EXIT_NONZERO' },
@@ -397,7 +427,8 @@ describe('session type × outcome matrix (SPEC §22.2)', () => {
       await harness.writeScenario(scenarioFor(sessionType, outcome));
       const request = mkRequest(harness, {
         type: sessionType,
-        permissionMode: sessionType === 'planning' ? 'plan' : 'auto',
+        permissionMode:
+          sessionType === 'planning' || sessionType === 'plan_review' ? 'plan' : 'auto',
       });
 
       if (expectedCode === undefined) {
@@ -409,12 +440,16 @@ describe('session type × outcome matrix (SPEC §22.2)', () => {
         } else {
           expect(
             (fact.structuredResult as { readonly decision: string }).decision,
-          ).toBe(sessionType === 'task_review' ? 'approved' : 'completed');
+          ).toBe(
+            sessionType === 'task_review' || sessionType === 'plan_review'
+              ? 'approved'
+              : 'completed',
+          );
         }
         const records = await harness.readRecords();
         const modeIndex = records[0]!.argv.indexOf('--permission-mode');
         expect(records[0]!.argv[modeIndex + 1]).toBe(
-          sessionType === 'planning' ? 'plan' : 'auto',
+          sessionType === 'planning' || sessionType === 'plan_review' ? 'plan' : 'auto',
         );
         return;
       }
@@ -720,7 +755,7 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
     const report = await runtime.probeCapabilities();
     expect(report.version).toBe(FAKE_VERSION);
-    expect(report.capabilities).toHaveLength(9);
+    expect(report.capabilities).toHaveLength(10);
   }, TEST_TIMEOUT);
 
   it('lists missing capabilities with the actual version', async () => {
@@ -760,7 +795,7 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
       });
       const report = await shimmedRuntime.probeCapabilities();
       expect(report.version).toBe(FAKE_VERSION);
-      expect(report.capabilities).toHaveLength(9);
+      expect(report.capabilities).toHaveLength(10);
     } finally {
       if (savedPath === undefined) delete process.env[pathKey];
       else process.env[pathKey] = savedPath;

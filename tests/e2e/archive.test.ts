@@ -106,11 +106,11 @@ describe('e2e archive on next start (§4.4)', () => {
         expect(archivedTasks.runId).toBe(run1.runId);
         expect((await stat(join(archiveDir, 'plans', '1.json'))).isFile()).toBe(true);
         const archivedSessions = await readdir(join(archiveDir, 'sessions'));
-        expect(archivedSessions.filter((name) => name.endsWith('.json'))).toHaveLength(4);
+        expect(archivedSessions.filter((name) => name.endsWith('.json'))).toHaveLength(5);
         const archivedLogs = await readdir(join(archiveDir, 'logs'));
         expect(
           archivedLogs.filter((name) => name.endsWith('.log') && name !== 'apex-debug.log'),
-        ).toHaveLength(4);
+        ).toHaveLength(5);
         // 调试日志随 logs/ 目录一并归档（§4.4）。
         expect(archivedLogs).toContain('apex-debug.log');
         const report = await readFile(join(archiveDir, 'report.md'), 'utf8');
@@ -144,7 +144,7 @@ describe('e2e archive on next start (§4.4)', () => {
         expect(rootRun.runId).toBe(run2.runId);
         expect((await stat(join(harness.stateDir, 'settings.json'))).isFile()).toBe(true);
         const rootSessions = await readdir(join(harness.stateDir, 'sessions'));
-        expect(rootSessions.filter((name) => name.endsWith('.json'))).toHaveLength(4);
+        expect(rootSessions.filter((name) => name.endsWith('.json'))).toHaveLength(5);
         // Run 2 的 Base 是旧 Run Branch（工作区停留在其上，§8.3）。
         expect(rootRun.repository.baseBranch).toBe(run1.repository.runBranch);
       } finally {

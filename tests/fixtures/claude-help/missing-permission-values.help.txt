@@ -5,6 +5,7 @@ Claude Code - starts an interactive session by default, use -p/--print for non-i
 Options:
   -p, --print                     print response and exit (useful for pipes)
   --output-format <format>        output format: text, json, stream-json (default: "text")
+  --max-turns <number>            limit the number of agentic turns in print mode
   --json-schema <schema>          JSON Schema for structured output validation
   --verbose                       enable verbose logging
   --session-id <uuid>             use a specific session ID (must be a valid UUID)

@@ -1019,3 +1019,183 @@ describe('Error Record rules (§15.3)', () => {
     );
   });
 });
+
+describe('Planning 瞬态事实规则（planCandidate/planReviewFeedback）', () => {
+  const OTHER_SHA256 = 'c'.repeat(64);
+  const candidate = {
+    planRevision: 1,
+    plannerSessionId: UUID_1,
+    specSha256: SHA256_A,
+    trigger: { type: 'initial' as const, reason: 'initial plan', sourceSessionId: null },
+    reviewAttempt: 1,
+  };
+  const feedback = {
+    planRevision: 1,
+    plannerSessionId: UUID_1,
+    reviewerSessionId: UUID_2,
+    reviewAttempt: 1,
+  };
+  const interruptedPlanning = {
+    status: 'failed' as const,
+    terminalAt: T1,
+    lastError: mkErrorRecord({
+      errorCode: 'RUN_INTERRUPTED',
+      errorClass: 'run_error',
+      stage: 'planning',
+      sessionId: null,
+      taskId: null,
+    }),
+  };
+
+  it('planning 状态允许携带指向下一个 Revision 的候选或反馈', () => {
+    expect(() => assertRunJsonRules(mkRun({ planCandidate: candidate }))).not.toThrow();
+    expect(() => assertRunJsonRules(mkRun({ planReviewFeedback: feedback }))).not.toThrow();
+  });
+
+  it('候选与反馈互斥，不得同时存在', () => {
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          mkRun({ planCandidate: candidate, planReviewFeedback: feedback }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('planning 与 RUN_INTERRUPTED 终态之外不得携带瞬态 Planning 事实', () => {
+    expectApexError(
+      () => assertRunJsonRules(runningRun({ planCandidate: candidate })),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          mkRun({ status: 'abandoned', terminalAt: T1, planReviewFeedback: feedback }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          mkRun({
+            status: 'failed',
+            terminalAt: T1,
+            planCandidate: candidate,
+            lastError: mkErrorRecord({
+              errorCode: 'PLAN_INVALID',
+              errorClass: 'plan_error',
+              stage: 'planning',
+              sessionId: null,
+              taskId: null,
+            }),
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('RUN_INTERRUPTED 终态且恢复点为 planning 时可携带候选供 resume 消费', () => {
+    expect(() =>
+      assertRunJsonRules(
+        mkRun({
+          ...interruptedPlanning,
+          planCandidate: candidate,
+          resumePoint: {
+            fromStatus: 'planning',
+            taskId: null,
+            sessionId: null,
+            sessionType: null,
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('候选与反馈必须指向下一个尚未提交的 Revision', () => {
+    expectApexError(
+      () => assertRunJsonRules(mkRun({ planCandidate: { ...candidate, planRevision: 2 } })),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        assertRunJsonRules(mkRun({ planReviewFeedback: { ...feedback, planRevision: 3 } })),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('plan_review 活动会话必须精确匹配已持久化候选', () => {
+    const session: ActiveSession = {
+      sessionId: UUID_2,
+      type: 'plan_review',
+      taskId: null,
+      planRevision: 1,
+      specSha256: SHA256_A,
+      startedAt: T0,
+    };
+    expect(() =>
+      assertRunJsonRules(mkRun({ planCandidate: candidate, activeSession: session })),
+    ).not.toThrow();
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          mkRun({
+            planCandidate: candidate,
+            activeSession: { ...session, specSha256: OTHER_SHA256 },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () => assertRunJsonRules(mkRun({ activeSession: session })),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('planning 活动会话不得与已持久化候选共存', () => {
+    const session: ActiveSession = {
+      sessionId: UUID_1,
+      type: 'planning',
+      taskId: null,
+      planRevision: 1,
+      specSha256: SHA256_A,
+      startedAt: T0,
+    };
+    expect(() => assertRunJsonRules(mkRun({ activeSession: session }))).not.toThrow();
+    expectApexError(
+      () => assertRunJsonRules(mkRun({ planCandidate: candidate, activeSession: session })),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('planning resumePoint 允许 planning 或 plan_review 会话类型', () => {
+    expect(() =>
+      assertRunJsonRules(
+        mkRun({
+          ...interruptedPlanning,
+          planCandidate: candidate,
+          resumePoint: {
+            fromStatus: 'planning',
+            taskId: null,
+            sessionId: UUID_2,
+            sessionType: 'plan_review',
+          },
+        }),
+      ),
+    ).not.toThrow();
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          mkRun({
+            ...interruptedPlanning,
+            resumePoint: {
+              fromStatus: 'planning',
+              taskId: null,
+              sessionId: UUID_2,
+              sessionType: 'final_review',
+            },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+});

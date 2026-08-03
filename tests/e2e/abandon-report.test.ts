@@ -34,6 +34,7 @@ import { seedRepo } from '../integration/git/helpers.js';
 const NOW = '2026-07-28T00:00:00.000Z';
 const RUN_ID = 'RUN-123e4567-e89b-42d3-a456-426614174000';
 const SESSION_ID = '123e4567-e89b-42d3-a456-426614174001';
+const REVIEWER_SESSION_ID = '123e4567-e89b-42d3-a456-426614174002';
 
 interface FabricatedState {
   readonly run: RunJson;
@@ -56,11 +57,26 @@ async function fabricateInterruptedRun(
     id: 'TASK-001',
     title: '实现功能 A',
     objective: '完成 TASK-001 的目标',
+    nonGoals: ['不处理功能 A 之外的需求'],
     dependsOn: [],
     acceptanceCriteria: ['TASK-001 的验收条件'],
-    verificationHints: ['npm test'],
+    verificationPlan: [
+      {
+        id: 'VERIFY-001',
+        kind: 'command' as const,
+        criterionIndexes: [0],
+        procedure: '运行测试门禁',
+        expectedEvidence: '命令成功退出',
+        command: 'npm test',
+        timeoutSeconds: 900,
+      },
+    ],
     likelyPaths: ['src/index.ts'],
-    estimatedSize: 'small' as const,
+    budget: {
+      targetContextBudget: 200_000,
+      hardContextLimit: 300_000,
+      maxAgentTurns: 64,
+    },
     context: '端到端测试任务',
   };
   const tasksDoc: TasksJson = {
@@ -71,6 +87,7 @@ async function fabricateInterruptedRun(
     specSha256: spec.sha256,
     generatedAt: NOW,
     plannerSessionId: SESSION_ID,
+    planReviewerSessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     summary: '计划摘要',
     assumptions: [],
     retainedCheckpointDispositions: [],
@@ -101,6 +118,8 @@ async function fabricateInterruptedRun(
       expectedHead: head,
     },
     currentTaskId: 'TASK-001',
+    planCandidate: null,
+    planReviewFeedback: null,
     activeSession: {
       sessionId: SESSION_ID,
       type: 'execution',
@@ -174,6 +193,78 @@ async function fabricateInterruptedRun(
     await store.writeSessionRecord(record);
   }
   return { run, tasks: tasksDoc };
+}
+
+/**
+ * 通过真实 StateStore 构造“进程死在候选已持久化窗口”的非终态状态：
+ * status planning、planRevision 0（无 tasks.json）、planCandidate 指向
+ * 下一 Revision。可选模拟崩溃在 Plan Review 会话中途（activeSession 仍在）。
+ */
+async function fabricateCrashedPlanningRun(
+  harness: E2EHarness,
+  options: { readonly withActiveReview?: boolean } = {},
+): Promise<RunJson> {
+  const deps = harness.makeBoundDeps();
+  const head = await harness.repo.head();
+  const spec = await deps.git.readSpecFact(harness.repo.root, 'SPEC.md');
+  const store = deps.stateStore;
+  await harness.fileSystem.mkdir(harness.stateDir, { recursive: true });
+
+  const run: RunJson = {
+    schemaVersion: 1,
+    stateRevision: 1,
+    runId: RUN_ID,
+    status: 'planning',
+    spec: { path: 'SPEC.md', sha256: spec.sha256 },
+    planRevision: 0,
+    tasksSha256: null,
+    runSettings: {
+      executionPermissionMode: 'auto',
+      claudeCliPath: null,
+      gitCliPath: null,
+      pushRemote: 'origin',
+    },
+    repository: {
+      root: harness.repo.root,
+      baseBranch: 'main',
+      baseBranchRef: 'refs/heads/main',
+      baseCommit: head,
+      runBranch: `apex-coding-agent/${RUN_ID}`,
+      expectedHead: head,
+    },
+    currentTaskId: null,
+    activeSession:
+      options.withActiveReview === true
+        ? {
+            sessionId: REVIEWER_SESSION_ID,
+            type: 'plan_review',
+            taskId: null,
+            planRevision: 1,
+            specSha256: spec.sha256,
+            startedAt: NOW,
+          }
+        : null,
+    planCandidate: {
+      planRevision: 1,
+      plannerSessionId: SESSION_ID,
+      specSha256: spec.sha256,
+      trigger: { type: 'initial', reason: 'initial plan', sourceSessionId: null },
+      reviewAttempt: 1,
+    },
+    planReviewFeedback: null,
+    tasks: {},
+    intermediateCheckpoints: [],
+    finalReviewEpisodes: [],
+    lastError: null,
+    finalCommit: null,
+    reportPath: null,
+    resumePoint: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    terminalAt: null,
+  };
+  await store.writeRun(run);
+  return run;
 }
 
 function makeAbandon(harness: E2EHarness): {
@@ -297,6 +388,64 @@ describe('e2e abandon --force (§17)', () => {
         // run.json 无法通过 Schema 校验 → COMMAND_STATE_INVALID。
         await writeFile(join(harness.stateDir, 'run.json'), '{"schemaVersion":1,"bogus":true}', 'utf8');
         await expectApexError(() => makeAbandon(harness).execute(true), 'COMMAND_STATE_INVALID');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'abandon 丢弃崩溃在候选窗口的 Run 的瞬态 Planning 事实，持久化结果仍通过领域校验',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await fabricateCrashedPlanningRun(harness);
+        const { execute } = makeAbandon(harness);
+
+        const { run } = await execute(true);
+        expect(run.status).toBe('abandoned');
+        expect(run.planCandidate).toBeNull();
+        expect(run.planReviewFeedback).toBeNull();
+        expect(run.lastError?.errorCode).toBe('RUN_ABANDONED_BY_USER');
+
+        // readRun 走完整 Schema + 领域不变量：abandoned 不得残留候选/反馈。
+        const persisted = await harness.makeBoundDeps().stateStore.readRun();
+        expect(persisted?.status).toBe('abandoned');
+        expect(persisted?.planCandidate).toBeNull();
+        expect(persisted?.planReviewFeedback).toBeNull();
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'abandon 收尾崩溃在 Plan Review 会话中的 Run：补写失败 Record 并丢弃候选',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await fabricateCrashedPlanningRun(harness, { withActiveReview: true });
+        const { execute } = makeAbandon(harness);
+
+        const { run } = await execute(true);
+        expect(run.status).toBe('abandoned');
+        expect(run.activeSession).toBeNull();
+        expect(run.planCandidate).toBeNull();
+
+        // 孤儿 Reviewer 会话按不可变协议补写 exitCode=null 的失败 Record。
+        const record = await harness.readSessionRecord(REVIEWER_SESSION_ID);
+        expect(record.type).toBe('plan_review');
+        expect(record.status).toBe('failed');
+        expect(record.exitCode).toBeNull();
+        expect(record.error?.errorCode).toBe('RUN_ABANDONED_BY_USER');
+
+        const persisted = await harness.makeBoundDeps().stateStore.readRun();
+        expect(persisted?.status).toBe('abandoned');
+        expect(persisted?.planCandidate).toBeNull();
       } finally {
         await harness.cleanup();
       }

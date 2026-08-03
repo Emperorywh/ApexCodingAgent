@@ -126,7 +126,11 @@ export async function createFakeClaudeEnv(): Promise<FakeClaudeEnv> {
       await rm(`${scenarioPath}.counter`, { force: true });
       await writeFile(
         scenarioPath,
-        JSON.stringify({ autoApproveTaskReviews: true, ...scenario }, null, 2),
+        JSON.stringify(
+          { autoApprovePlanReviews: true, autoApproveTaskReviews: true, ...scenario },
+          null,
+          2,
+        ),
         'utf8',
       );
     },

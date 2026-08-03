@@ -4,6 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  renderPlanReviewChangesRequired,
+  renderPlanReviewStarted,
   renderSessionStarted,
   renderTaskReviewChangesRequired,
   renderTaskReviewStarted,
@@ -35,5 +37,32 @@ describe('Task Review 进度呈现', () => {
       planRevision: 2,
     });
     expect(line).toBe(`◆ 任务独立复核 TASK-001 · 计划版本 2 · 会话 ${UUID_1.slice(0, 8)}`);
+  });
+});
+
+describe('Plan Review 进度呈现', () => {
+  it('renderPlanReviewStarted 输出计划版本号与开始符号', () => {
+    const line = renderPlanReviewStarted(2);
+    expect(line).toBe('◇ 计划草稿已生成 · 开始独立复核 · 计划版本 2');
+    expect(line).toContain('计划版本 2');
+    expect(line).toContain('◇');
+  });
+
+  it('renderPlanReviewChangesRequired 输出反馈轮次与返工符号', () => {
+    const line = renderPlanReviewChangesRequired(1);
+    expect(line).toBe('↻ 计划独立复核未通过 · 正在重新规划 · 第 1 轮反馈');
+    expect(line).toContain('第 1 轮反馈');
+    expect(line).toContain('↻');
+  });
+
+  it('plan_review 会话开始行渲染为「计划独立复核」', () => {
+    expect(sessionDisplayName('plan_review')).toBe('计划独立复核');
+    const line = renderSessionStarted({
+      sessionId: UUID_1,
+      type: 'plan_review',
+      taskId: null,
+      planRevision: 1,
+    });
+    expect(line).toContain('计划独立复核');
   });
 });

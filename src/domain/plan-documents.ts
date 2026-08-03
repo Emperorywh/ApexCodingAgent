@@ -50,6 +50,10 @@ function dispositionsEqual(
  * 校验单个不可变 Snapshot 的 Revision 与触发来源条件。
  */
 export function assertPlanRevisionSnapshotRules(snapshot: PlanRevisionSnapshot): void {
+  assertCondition(
+    snapshot.plannerSessionId !== snapshot.planReviewerSessionId,
+    'planner and plan reviewer must use different sessions',
+  );
   if (snapshot.planRevision === 1) {
     assertCondition(
       snapshot.parentPlanRevision === null,
@@ -104,6 +108,10 @@ export function assertPlanRevisionDocumentsCoherent(
   assertCondition(
     snapshot.plannerSessionId === tasks.plannerSessionId,
     'plan plannerSessionId mismatch',
+  );
+  assertCondition(
+    snapshot.planReviewerSessionId === tasks.planReviewerSessionId,
+    'plan planReviewerSessionId mismatch',
   );
   assertCondition(snapshot.summary === tasks.summary, 'plan summary mismatch');
   assertCondition(

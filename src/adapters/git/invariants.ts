@@ -314,8 +314,15 @@ export async function assertReadOnlySessionSnapshotUnchanged(
   const errorCode =
     sessionType === 'planning'
       ? 'PLANNING_SIDE_EFFECT_DETECTED'
-      : 'TASK_REVIEW_SIDE_EFFECT_DETECTED';
-  const label = sessionType === 'planning' ? 'planning' : 'task review';
+      : sessionType === 'plan_review'
+        ? 'PLAN_REVIEW_SIDE_EFFECT_DETECTED'
+        : 'TASK_REVIEW_SIDE_EFFECT_DETECTED';
+  const label =
+    sessionType === 'planning'
+      ? 'planning'
+      : sessionType === 'plan_review'
+        ? 'plan review'
+        : 'task review';
   if (current.head !== snapshot.head) {
     throw new ApexError({
       code: errorCode,

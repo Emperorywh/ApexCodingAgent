@@ -149,6 +149,8 @@ export function claudeResultInvalid(
   const errorCode =
     sessionType === 'final_review'
       ? 'FINAL_REVIEW_RESULT_INVALID'
+      : sessionType === 'plan_review'
+        ? 'PLAN_REVIEW_RESULT_INVALID'
       : sessionType === 'task_review'
         ? 'TASK_REVIEW_RESULT_INVALID'
         : 'CLAUDE_RESULT_INVALID';

@@ -7,6 +7,7 @@
  */
 import { ApexError, isApexError } from './errors.js';
 import type { FinalReviewResult } from './schemas/final-review-result.js';
+import type { PlanReviewResult } from './schemas/plan-review-result.js';
 import type { TaskExecutionResult } from './schemas/task-execution-result.js';
 import type { TaskReviewResult } from './schemas/task-review-result.js';
 import type { PlannedTask } from './schemas/task-plan-draft.js';
@@ -33,6 +34,15 @@ export function isTaskReviewResultInvalid(error: unknown): boolean {
 
 function finalReviewInvalid(message: string): ApexError {
   return new ApexError({ code: 'FINAL_REVIEW_RESULT_INVALID', stage: 'final_review', message });
+}
+
+/** 独立 Plan Review 结果的稳定契约错误。 */
+function planReviewInvalid(message: string): ApexError {
+  return new ApexError({
+    code: 'PLAN_REVIEW_RESULT_INVALID',
+    stage: 'plan_review',
+    message,
+  });
 }
 
 /** 独立 Task 复核结果的稳定契约错误。 */
@@ -194,6 +204,59 @@ export function validateTaskReviewResultSemantics(
     throw taskReviewInvalid(
       'changes_required requires an unsatisfied criterion, failed test, or non-empty issue',
     );
+  }
+}
+
+/**
+ * 独立 Plan Review 的领域门禁。
+ *
+ * 每个草稿 Task 必须被精确评估一次；Task 的 assessment 决策必须与其 issues
+ * 一致；整体 approved 只有在所有 Task 批准且计划级 issues 为空时成立。
+ */
+export function validatePlanReviewResultSemantics(
+  result: PlanReviewResult,
+  taskIds: readonly string[],
+): void {
+  const expected = new Set(taskIds);
+  const seen = new Set<string>();
+  for (const [index, assessment] of result.taskAssessments.entries()) {
+    if (!expected.has(assessment.taskId)) {
+      throw planReviewInvalid(`task assessment references unknown task ${assessment.taskId}`);
+    }
+    if (seen.has(assessment.taskId)) {
+      throw planReviewInvalid(`task assessment duplicates task ${assessment.taskId}`);
+    }
+    if (taskIds[index] !== assessment.taskId) {
+      throw planReviewInvalid(
+        `task assessment at index ${index} must reference ${taskIds[index] ?? 'no task'}`,
+      );
+    }
+    seen.add(assessment.taskId);
+    if (assessment.decision === 'approved' && assessment.issues.length > 0) {
+      throw planReviewInvalid(
+        `approved task assessment ${assessment.taskId} requires an empty issues list`,
+      );
+    }
+    if (assessment.decision === 'changes_required' && assessment.issues.length === 0) {
+      throw planReviewInvalid(
+        `changes_required task assessment ${assessment.taskId} requires at least one issue`,
+      );
+    }
+  }
+  if (seen.size !== expected.size) {
+    const missing = taskIds.filter((taskId) => !seen.has(taskId));
+    throw planReviewInvalid(`task assessments are missing: ${missing.join(', ')}`);
+  }
+
+  const hasRejectedTask = result.taskAssessments.some(
+    (assessment) => assessment.decision === 'changes_required',
+  );
+  const hasIssues = hasRejectedTask || result.issues.length > 0;
+  if (result.decision === 'approved' && hasIssues) {
+    throw planReviewInvalid('approved plan review requires every task approved and no plan issues');
+  }
+  if (result.decision === 'changes_required' && !hasIssues) {
+    throw planReviewInvalid('changes_required plan review requires at least one observable issue');
   }
 }
 

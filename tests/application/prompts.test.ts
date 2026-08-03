@@ -30,6 +30,10 @@ import {
   type TaskReviewPromptInput,
   type TaskReviewRepairPromptInput,
 } from '../../src/application/prompts/task-review.js';
+import {
+  buildPlanReviewPrompt,
+  buildPlanReviewResumePrompt,
+} from '../../src/application/prompts/plan-review.js';
 import type { IntermediateCheckpoint } from '../../src/domain/schemas/intermediate-checkpoint.js';
 import type { PlanRevisionTrigger } from '../../src/domain/schemas/plan-revision-snapshot.js';
 import type { PlannedTask } from '../../src/domain/schemas/task-plan-draft.js';
@@ -42,16 +46,42 @@ const SPEC_SHA256 = 'a'.repeat(64);
 const OID_COMPLETED = 'c'.repeat(40);
 const OID_INTERMEDIATE = 'd'.repeat(40);
 const UUID_1 = '11111111-1111-4111-8111-111111111111';
+const UUID_2 = '22222222-2222-4222-8222-222222222222';
+
+/**
+ * Prompt 测试使用与生产 Schema 相同的结构化验证步骤和预算。
+ * 两个 Task 仅改变验收条件覆盖范围，避免重复维护契约字段。
+ */
+function verificationPlan(criterionIndexes: number[]): PlannedTask['verificationPlan'] {
+  return [
+    {
+      id: 'VERIFY-001',
+      kind: 'command',
+      criterionIndexes,
+      procedure: '运行仓库测试门禁',
+      expectedEvidence: '命令成功退出',
+      command: 'npm test',
+      timeoutSeconds: 900,
+    },
+  ];
+}
+
+const DEFAULT_BUDGET: PlannedTask['budget'] = {
+  targetContextBudget: 200_000,
+  hardContextLimit: 300_000,
+  maxAgentTurns: 64,
+};
 
 const completedDefinition: PlannedTask = {
   id: 'TASK-001',
   title: '建立领域模型',
   objective: '实现 Domain 层类型与不变量',
+  nonGoals: ['不实现应用层编排'],
   dependsOn: [],
   acceptanceCriteria: ['npm run typecheck 通过', 'domain 单测全部通过'],
-  verificationHints: ['npm run typecheck'],
+  verificationPlan: verificationPlan([0, 1]),
   likelyPaths: ['src/domain/**'],
-  estimatedSize: 'medium',
+  budget: DEFAULT_BUDGET,
   context: '全新系统，先落地领域层。',
 };
 
@@ -59,11 +89,12 @@ const pendingDefinition: PlannedTask = {
   id: 'TASK-002',
   title: '实现应用层编排',
   objective: '实现 Coordinator 状态机',
+  nonGoals: ['不修改领域层公共契约'],
   dependsOn: ['TASK-001'],
   acceptanceCriteria: ['状态迁移单测通过'],
-  verificationHints: ['npx vitest run'],
+  verificationPlan: verificationPlan([0]),
   likelyPaths: ['src/application/**'],
-  estimatedSize: 'large',
+  budget: DEFAULT_BUDGET,
   context: '依赖 TASK-001 的领域模型。',
 };
 
@@ -101,6 +132,7 @@ const previousPlan: TasksJson = {
   specSha256: SPEC_SHA256,
   generatedAt: '2026-07-28T00:00:00.000Z',
   plannerSessionId: UUID_1,
+  planReviewerSessionId: UUID_2,
   summary: '第一版计划',
   assumptions: [],
   retainedCheckpointDispositions: [],
@@ -124,6 +156,7 @@ const planningBase: PlanningPromptInput = {
   skippedTasks: [],
   replanTrigger: null,
   unabsorbedCheckpoints: [],
+  planReviewFeedback: null,
 };
 
 describe('buildPlanningPrompt（SPEC §24）', () => {
@@ -142,12 +175,12 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
      * Planning 必须提前把自动验证与人工界面验收分开，避免后续执行 Agent
      * 把长期后台服务误当作验收命令，并在任务间遗留资源。
      */
-    expect(prompt).toContain('verificationHints 必须区分可自动运行的检查与用户手动验证');
+    expect(prompt).toContain('verificationPlan 必须逐条覆盖 acceptanceCriteria');
     expect(prompt).toContain('不能依赖长期后台服务');
     expect(prompt).toContain('likelyPaths 只是提示，不是强制文件范围');
     // 返回结构
     expect(prompt).toContain('retainedCheckpointDispositions');
-    expect(prompt).toContain('estimatedSize');
+    expect(prompt).toContain('targetContextBudget');
     expect(prompt).toContain('不要返回 Markdown');
   });
 
@@ -207,6 +240,36 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('REPLAN_TRIGGER');
     expect(prompt).not.toContain('PREVIOUS_PLAN_TASKS');
   });
+
+  it('独立 Plan Review 打回后注入原草稿与结构化问题', () => {
+    const prompt = buildPlanningPrompt({
+      ...planningBase,
+      planReviewFeedback: {
+        rejectedDraft: {
+          summary: '范围过大的草稿',
+          assumptions: [],
+          retainedCheckpointDispositions: [],
+          tasks: [pendingDefinition],
+        },
+        review: {
+          decision: 'changes_required',
+          summary: '任务需要继续拆分',
+          taskAssessments: [
+            {
+              taskId: 'TASK-002',
+              decision: 'changes_required',
+              issues: ['objective 包含两个独立交付物'],
+            },
+          ],
+          issues: [],
+        },
+      },
+    });
+    expect(prompt).toContain('PLAN_REVIEW_FEEDBACK');
+    expect(prompt).toContain('范围过大的草稿');
+    expect(prompt).toContain('objective 包含两个独立交付物');
+    expect(prompt).toContain('完整的新 TaskPlanDraft');
+  });
 });
 
 describe('buildPlanningResumePrompt（Planning 断点续接）', () => {
@@ -220,6 +283,38 @@ describe('buildPlanningResumePrompt（Planning 断点续接）', () => {
     expect(prompt).toContain('只读边界');
     expect(prompt).toContain('完整 TaskPlanDraft');
     expect(prompt).not.toContain(REPOSITORY_ROOT);
+  });
+});
+
+describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
+  it('使用全新只读上下文复核任务边界、验证覆盖和预算', () => {
+    const prompt = buildPlanReviewPrompt({
+      repositoryRoot: REPOSITORY_ROOT,
+      runBranch: RUN_BRANCH,
+      specPath: SPEC_PATH,
+      specSha256: SPEC_SHA256,
+      planRevision: 2,
+      draft: {
+        summary: '候选计划',
+        assumptions: [],
+        retainedCheckpointDispositions: [],
+        tasks: [pendingDefinition],
+      },
+    });
+    expect(prompt).toContain('独立 Plan Reviewer');
+    expect(prompt).toContain('不得尝试恢复生成该草稿的 Planning Session');
+    expect(prompt).toContain('nonGoals');
+    expect(prompt).toContain('verificationPlan');
+    expect(prompt).toContain('hardContextLimit 必须为 300000');
+    expect(prompt).toContain('本会话严格只读');
+    expect(prompt).toContain('PlanReviewResult');
+  });
+
+  it('恢复提示只续接 Reviewer 自己的上下文', () => {
+    const prompt = buildPlanReviewResumePrompt();
+    expect(prompt).toContain('只续接 Reviewer 自己的复核上下文');
+    expect(prompt).toContain('不得恢复或引用 Planning Session');
+    expect(prompt).toContain('完整 PlanReviewResult');
   });
 });
 

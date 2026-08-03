@@ -5,8 +5,8 @@
  * 流程：重算 SPEC SHA（§3.2 启动前边界）→ Planning 前置 Git 不变量
  * （§8.3，含 Planning 快照）→ §6.3 会话生命周期（先写 activeSession 再启动
  * 进程）→ 写 completed Session Record → Planning 副作用检测 → SPEC 结束后
- * 重算（变化则丢弃草稿、保持 planning 由驱动器重跑）→ ApplyPlanRevision
- * 提交 Revision → Run 转 running。
+ * 重算（变化则丢弃草稿、保持 planning 由驱动器重跑）→ 确定性校验草稿 →
+ * 持久化候选引用。Revision 只由后续独立 Plan Review 批准后提交。
  *
  * 失败语义：会话未启动的启动期失败直接终态 failed；会话启动后的失败先
  * 尽力写失败 Session Record（已完成 Record 不可变、不补写），再清槽并把
@@ -15,8 +15,9 @@
 import { ApexError } from '../../domain/errors.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
+import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
-import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
+import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 import {
   buildPlanningPrompt,
@@ -25,7 +26,7 @@ import {
   type SkippedTaskSummary,
 } from '../prompts/planning.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
-import { applyPlanRevision } from './apply-plan-revision.js';
+import { preparePlanRevisionMerge } from './apply-plan-revision.js';
 import {
   ensureFailedSessionRecord,
   sessionGitFacts,
@@ -37,8 +38,8 @@ import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js'
 import { sanitizePlanRevisionTrigger } from './plan-revision-trigger.js';
 
 export type GeneratePlanRevisionResult =
-  /** Revision 已提交，Run 转 running。 */
-  | { readonly kind: 'committed'; readonly run: RunJson }
+  /** 草稿已通过确定性校验并持久化引用，等待独立 Plan Review。 */
+  | { readonly kind: 'review-needed'; readonly run: RunJson }
   /** SPEC 在 Planning 期间变化：草稿已丢弃，Run 保持 planning，由驱动器重跑。 */
   | { readonly kind: 'spec-changed'; readonly run: RunJson }
   /** Run 已持久化为 failed。 */
@@ -70,6 +71,49 @@ function skippedTaskSummaries(run: RunJson): SkippedTaskSummary[] {
   return Object.values(run.tasks)
     .filter((state) => state.status === 'skipped')
     .map((state) => ({ taskId: state.taskId, skipReason: state.skipReason! }));
+}
+
+/**
+ * 从两个不可变 Session Record 恢复上一轮计划复核反馈。
+ *
+ * run.json 只保存引用；这里严格核对类型、状态与 Revision，任何交叉引用
+ * 损坏都响亮失败，不回退为没有反馈的新规划。
+ */
+async function readPlanReviewFeedback(
+  deps: UseCaseDeps,
+  run: RunJson,
+): Promise<{
+  readonly rejectedDraft: TaskPlanDraft;
+  readonly review: PlanReviewResult;
+} | null> {
+  const ref = run.planReviewFeedback;
+  if (ref === null) return null;
+  const [planner, reviewer] = await Promise.all([
+    deps.stateStore.readSessionRecord(ref.plannerSessionId),
+    deps.stateStore.readSessionRecord(ref.reviewerSessionId),
+  ]);
+  if (
+    planner === null ||
+    planner.type !== 'planning' ||
+    planner.status !== 'completed' ||
+    planner.planRevision !== ref.planRevision ||
+    planner.structuredResult === null ||
+    reviewer === null ||
+    reviewer.type !== 'plan_review' ||
+    reviewer.status !== 'completed' ||
+    reviewer.planRevision !== ref.planRevision ||
+    reviewer.structuredResult === null
+  ) {
+    throw new ApexError({
+      code: 'STATE_VALIDATION_FAILED',
+      stage: 'planning',
+      message: `plan review feedback for revision ${ref.planRevision} has invalid session references`,
+    });
+  }
+  return {
+    rejectedDraft: planner.structuredResult as TaskPlanDraft,
+    review: reviewer.structuredResult as PlanReviewResult,
+  };
 }
 
 export function createGeneratePlanRevision(deps: UseCaseDeps): {
@@ -118,6 +162,13 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
         message: `GeneratePlanRevision requires a planning run, got ${run?.status ?? 'none'}`,
       });
     }
+    if (run.planCandidate !== null) {
+      throw new ApexError({
+        code: 'STATE_VALIDATION_FAILED',
+        stage: 'planning',
+        message: 'GeneratePlanRevision cannot replace a candidate awaiting independent review',
+      });
+    }
     const tasks = await deps.stateStore.readTasks();
     const root = run.repository.root;
     deps.logger.log('debug', 'planning.begin', {
@@ -144,6 +195,12 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       return failTerminal(run, error as ApexError);
     }
 
+    let planReviewFeedback;
+    try {
+      planReviewFeedback = await readPlanReviewFeedback(deps, run);
+    } catch (error) {
+      return failTerminal(run, error as ApexError);
+    }
     const prompt = buildPlanningPrompt({
       repositoryRoot: root,
       runBranch: run.repository.runBranch,
@@ -158,6 +215,7 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
         if (checkpoint.ownerTaskId === null) return true;
         return run.tasks[checkpoint.ownerTaskId]?.status !== 'completed';
       }),
+      planReviewFeedback,
     });
 
     const sessionBase = {
@@ -227,19 +285,31 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     }
 
     try {
-      const committed = await applyPlanRevision(deps, handle.run, tasks, {
-        draft: deps.redaction.redactStructured(fact.structuredResult),
-        trigger: safeTrigger,
-        plannerSessionId: handle.sessionId,
-        specSha256: specBefore.sha256,
-        repositoryRoot: root,
-      });
-      deps.logger.log('debug', 'planning.committed', {
+      const draft = deps.redaction.redactStructured(fact.structuredResult);
+      preparePlanRevisionMerge(handle.run, tasks, draft);
+      const reviewAttempt = (run.planReviewFeedback?.reviewAttempt ?? 0) + 1;
+      const staged: RunJson = {
+        ...handle.run,
+        activeSession: null,
+        planCandidate: {
+          planRevision: run.planRevision + 1,
+          plannerSessionId: handle.sessionId,
+          specSha256: specBefore.sha256,
+          trigger: safeTrigger,
+          reviewAttempt,
+        },
+        planReviewFeedback: null,
+        stateRevision: handle.run.stateRevision + 1,
+        updatedAt: now(),
+      };
+      await deps.stateStore.writeRun(staged);
+      deps.logger.log('debug', 'planning.candidate_staged', {
         sessionId: handle.sessionId,
-        planRevision: committed.planRevision,
-        taskCount: Object.keys(committed.tasks).length,
+        planRevision: staged.planCandidate!.planRevision,
+        taskCount: draft.tasks.length,
+        reviewAttempt,
       });
-      return { kind: 'committed', run: committed };
+      return { kind: 'review-needed', run: staged };
     } catch (error) {
       return failWithSession(handle, error as ApexError);
     }

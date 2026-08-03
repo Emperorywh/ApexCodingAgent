@@ -50,6 +50,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'CLAUDE_RESUME_UNAVAILABLE',
     'CLAUDE_RESULT_INVALID',
     'CLAUDE_REPORTED_FAILURE',
+    'PLAN_REVIEW_RESULT_INVALID',
     'TASK_REVIEW_RESULT_INVALID',
     'FINAL_REVIEW_RESULT_INVALID',
   ],
@@ -57,6 +58,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'PLAN_INVALID',
     'PLAN_REVISION_CONFLICT',
     'PLAN_REVISION_LIMIT_EXCEEDED',
+    'PLAN_REVIEW_REWORK_LIMIT_EXCEEDED',
     'TASK_REVIEW_REWORK_LIMIT_EXCEEDED',
   ],
   git_error: [
@@ -64,6 +66,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
     'GIT_FACT_CONFLICT',
     'GIT_HISTORY_DIVERGED',
     'PLANNING_SIDE_EFFECT_DETECTED',
+    'PLAN_REVIEW_SIDE_EFFECT_DETECTED',
     'TASK_REVIEW_SIDE_EFFECT_DETECTED',
     'PROTECTED_PATH_CHANGED',
     'GIT_PUSH_FAILED',
@@ -85,8 +88,8 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
 };
 
 describe('error model (§15)', () => {
-  it('defines exactly 57 stable error codes and 9 error classes', () => {
-    expect(ERROR_CODES).toHaveLength(58);
+  it('defines exactly 61 stable error codes and 9 error classes', () => {
+    expect(ERROR_CODES).toHaveLength(61);
     expect(ERROR_CLASSES).toHaveLength(9);
   });
 
@@ -101,7 +104,7 @@ describe('error model (§15)', () => {
 
   it('covers every expected code exactly once', () => {
     const allExpected = Object.values(EXPECTED_TABLE).flat();
-    expect(allExpected).toHaveLength(58);
+    expect(allExpected).toHaveLength(61);
     expect([...ERROR_CODES].sort()).toEqual([...allExpected].sort());
   });
 

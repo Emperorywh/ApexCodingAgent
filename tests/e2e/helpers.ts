@@ -74,7 +74,8 @@ export interface SequenceScenario {
   readonly stderrText?: string;
   readonly exitCode?: number;
   readonly sleepMs?: number;
-  /** 默认测试设施可自动为新增的独立 Task Review 调用生成批准结果。 */
+  /** 默认测试设施可分别为两个独立 Reviewer 生成批准结果。 */
+  readonly autoApprovePlanReviews?: boolean;
   readonly autoApproveTaskReviews?: boolean;
 }
 
@@ -252,7 +253,11 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       await rm(`${scenarioPath}.counter`, { force: true });
       await writeFile(
         scenarioPath,
-        JSON.stringify({ autoApproveTaskReviews: true, ...scenario }, null, 2),
+        JSON.stringify(
+          { autoApprovePlanReviews: true, autoApproveTaskReviews: true, ...scenario },
+          null,
+          2,
+        ),
         'utf8',
       );
     },
@@ -469,13 +474,51 @@ export function planDraft(
       id: task.id,
       title: task.title ?? `实现 ${task.id}`,
       objective: `完成 ${task.id} 的目标`,
+      nonGoals: [`不处理 ${task.id} 之外的需求`],
       dependsOn: task.dependsOn ?? [],
       acceptanceCriteria: task.acceptanceCriteria ?? [`${task.id} 的验收条件`],
-      verificationHints: ['npm test'],
+      verificationPlan: [
+        {
+          id: 'VERIFY-001',
+          kind: 'command',
+          criterionIndexes: (task.acceptanceCriteria ?? [`${task.id} 的验收条件`]).map(
+            (_criterion, index) => index,
+          ),
+          procedure: '运行完整测试门禁',
+          expectedEvidence: '命令成功退出并覆盖所有验收条件',
+          command: 'npm test',
+          timeoutSeconds: 900,
+        },
+      ],
       likelyPaths: ['src/index.ts'],
-      estimatedSize: 'small',
+      budget: {
+        targetContextBudget: 200_000,
+        hardContextLimit: 300_000,
+        maxAgentTurns: 64,
+      },
       context: '端到端测试任务',
     })),
+  };
+}
+
+/**
+ * 构造合法的独立 Plan Review 批准结果。
+ * 每个草稿 Task 都有且只有一条评估，保证测试数据遵守精确覆盖规则。
+ */
+export function planReviewApproved(
+  taskIds: readonly string[],
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    decision: 'approved',
+    summary: '独立计划复核通过',
+    taskAssessments: taskIds.map((taskId) => ({
+      taskId,
+      decision: 'approved',
+      issues: [],
+    })),
+    issues: [],
+    ...overrides,
   };
 }
 

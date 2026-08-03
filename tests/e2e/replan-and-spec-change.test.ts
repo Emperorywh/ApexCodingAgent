@@ -126,13 +126,15 @@ describe('e2e replan_required', () => {
           '实现功能 A（含配置层）',
         );
 
-        // Session Record：6 个（2 planning + 3 execution[同一 Task 两次] + 1 final review）。
+        // 每个 Planning 后都有独立 Plan Review，因此两个 Revision 共增加两个 Reviewer。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(8);
+        expect(records).toHaveLength(10);
         expect(records.map((record) => record.type)).toEqual([
           'planning',
+          'plan_review',
           'execution',
           'planning',
+          'plan_review',
           'execution',
           'task_review',
           'execution',
@@ -225,10 +227,9 @@ describe('e2e replan_required', () => {
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('PLAN_REVISION_CONFLICT');
         expect(result.run.tasks['TASK-002']!.status).toBe('skipped');
-        // 不自动重试：共 5 个 Session（2 Planning + 2 Execution + 被拒绝的
-        // 第三次 Planning），失败后不再消耗更多会话。
+        // 两个已提交 Revision 各有独立 Plan Review；非法第三版在确定性校验处失败。
         const records = await harness.readRecords();
-        expect(records.filter((record) => record.argv.includes('--session-id'))).toHaveLength(5);
+        expect(records.filter((record) => record.argv.includes('--session-id'))).toHaveLength(7);
       } finally {
         await harness.cleanup();
       }

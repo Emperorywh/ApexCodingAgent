@@ -1,5 +1,5 @@
 /**
- * Central registry of the 17 built-in schemas (SPEC §11.5), all versioned at
+ * Central registry of the 18 built-in schemas (SPEC §11.5), all versioned at
  * `schemaVersion: 1`. Exposes the single `validate(schemaName, data)` entry
  * used by every layer; cross-field conditional rules beyond JSON Schema live
  * in `src/domain/invariants.ts`, `plan.ts` and `results.ts`.
@@ -13,6 +13,7 @@ import { finalReviewResultSchema } from './final-review-result.js';
 import { createAjv } from './formats.js';
 import { intermediateCheckpointSchema } from './intermediate-checkpoint.js';
 import { planRevisionSnapshotSchema } from './plan-revision-snapshot.js';
+import { planReviewResultSchema } from './plan-review-result.js';
 import { runArchiveManifestSchema } from './run-archive-manifest.js';
 import { runJsonSchema } from './run-json.js';
 import { sessionRecordSchema } from './session-record.js';
@@ -27,6 +28,7 @@ import { tasksJsonSchema } from './tasks-json.js';
 
 export const SCHEMA_NAMES = [
   'TaskPlanDraft',
+  'PlanReviewResult',
   'TaskExecutionResult',
   'TaskReviewResult',
   'FinalReviewResult',
@@ -56,6 +58,7 @@ interface SchemaDefinition {
 
 const SCHEMA_DEFINITIONS: Record<SchemaName, SchemaDefinition> = {
   TaskPlanDraft: { schemaVersion: SCHEMA_VERSION, schema: taskPlanDraftSchema },
+  PlanReviewResult: { schemaVersion: SCHEMA_VERSION, schema: planReviewResultSchema },
   TaskExecutionResult: { schemaVersion: SCHEMA_VERSION, schema: taskExecutionResultSchema },
   TaskReviewResult: { schemaVersion: SCHEMA_VERSION, schema: taskReviewResultSchema },
   FinalReviewResult: { schemaVersion: SCHEMA_VERSION, schema: finalReviewResultSchema },

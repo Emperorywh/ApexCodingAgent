@@ -42,14 +42,15 @@ ${toJson(input.task)}
 
 复核要求：
 1. 独立阅读 CURRENT_TASK、SPEC、相关源码、测试和仓库状态，不采信候选结果的自我判断。
-2. 对每项 acceptanceCriteria 按原索引给出一条 acceptanceEvidence，并引用可观察的仓库或测试事实。
-3. 自主运行与验收范围相称的测试或静态验证；不要仅复述 Execution Session 报告的 tests。
+2. 同时核对 objective 与 nonGoals，确认候选实现没有用范围外改动掩盖未完成目标。
+3. 按 verificationPlan 独立覆盖每项 acceptanceCriteria；command/static_analysis 应取得相应证据，manual 步骤不得伪造成已由 Agent 自动执行。
+4. 对每项 acceptanceCriteria 按原索引给出一条 acceptanceEvidence，并引用可观察的仓库或测试事实；不要仅复述 Execution Session 报告的 tests。
 ${VERIFICATION_POLICY}
-4. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。运行测试前先确认其产物已被 .gitignore 覆盖；若仍产生未被忽略的新文件，必须在返回结果前清理干净——会话前后的 Git 快照对任何工作树、索引或未跟踪文件差异都会判定为越权写入并终止整个 Run。
-5. 全部验收条件均 satisfied、不存在 failed test 且 issues 为空时，返回 approved。
-6. 当前 Task 边界内可以修复的问题，返回 changes_required，并在 issues 中逐条给出准确、可执行的问题；至少存在一项 not_satisfied、failed test 或 issue。
-7. 只有仓库事实、架构前置条件或需求变化使当前计划不再正确时，才返回 replan_required 和非空 replanReason。
-8. 不得因为候选结果声称 completed 就降低证据标准；不确定或证据不足时不能批准。
+5. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。运行测试前先确认其产物已被 .gitignore 覆盖；若仍产生未被忽略的新文件，必须在返回结果前清理干净——会话前后的 Git 快照对任何工作树、索引或未跟踪文件差异都会判定为越权写入并终止整个 Run。
+6. 全部验收条件均 satisfied、不存在 failed test 且 issues 为空时，返回 approved。
+7. 当前 Task 边界内可以修复的问题，返回 changes_required，并在 issues 中逐条给出准确、可执行的问题；至少存在一项 not_satisfied、failed test 或 issue。
+8. 只有仓库事实、架构前置条件、需求变化或实际范围证明预算不成立时，才返回 replan_required 和非空 replanReason。
+9. 不得因为候选结果声称 completed 就降低证据标准；不确定或证据不足时不能批准。
 
 返回 TaskReviewResult 结构化结果：
 - decision: "approved" | "changes_required" | "replan_required"

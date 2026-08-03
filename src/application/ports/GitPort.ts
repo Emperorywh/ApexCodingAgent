@@ -67,7 +67,7 @@ export interface ReadOnlySessionSnapshot {
   readonly statusEntries: readonly string[];
 }
 
-export type ReadOnlySessionType = 'planning' | 'task_review';
+export type ReadOnlySessionType = 'planning' | 'plan_review' | 'task_review';
 
 /** Facts captured at session start; threaded into {@link GitPort.assertSessionEnd}. */
 export interface SessionStartFact {

@@ -78,16 +78,69 @@ function recordInvocation(scenario) {
  * 该测试设施分支只为既有 E2E 场景自动补齐新增的独立复核调用；生产代码
  * 仍然真实启动一个全新 Session，且显式复核测试可以关闭自动批准。
  */
-function isTaskReviewInvocation() {
+function requestedSchema() {
   const schemaIndex = argv.indexOf('--json-schema');
-  if (schemaIndex < 0 || schemaIndex + 1 >= argv.length) return false;
+  if (schemaIndex < 0 || schemaIndex + 1 >= argv.length) return null;
   try {
-    const schema = JSON.parse(argv[schemaIndex + 1]);
-    const decisions = schema?.properties?.decision?.enum;
-    return Array.isArray(decisions) && decisions.includes('approved');
+    return JSON.parse(argv[schemaIndex + 1]);
   } catch {
-    return false;
+    return null;
   }
+}
+
+function isPlanReviewInvocation() {
+  return requestedSchema()?.properties?.taskAssessments !== undefined;
+}
+
+function isTaskReviewInvocation() {
+  const schema = requestedSchema();
+  const decisions = schema?.properties?.decision?.enum;
+  return (
+    schema?.properties?.taskAssessments === undefined &&
+    Array.isArray(decisions) &&
+    decisions.includes('approved')
+  );
+}
+
+/**
+ * 从候选引用指向的不可变 Planning Session Record 生成完整批准结果。
+ * 自动场景仍会真实经过独立进程、Schema 校验和只读 Git 不变量。
+ *
+ * 候选引用与其指向的 Planning Session Record 在 Reviewer 会话启动前必须
+ * 已经落盘；读取失败说明编排时序或持久化已损坏，直接抛错让本次调用以
+ * 非零退出失败，而不是猜测任务集合掩盖真实故障。
+ */
+function automaticPlanReviewScenario() {
+  const run = JSON.parse(
+    readFileSync(`${process.cwd()}/.apex-coding-agent/run.json`, 'utf8'),
+  );
+  const record = JSON.parse(
+    readFileSync(
+      `${process.cwd()}/.apex-coding-agent/sessions/${run.planCandidate.plannerSessionId}.json`,
+      'utf8',
+    ),
+  );
+  const taskIds = record.structuredResult.tasks.map((task) => task.id);
+  return {
+    stdoutLines: [
+      { type: 'system', subtype: 'init', session_id: '{sessionId}', model: 'fake-plan-review-model' },
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: '{sessionId}',
+        structured_output: {
+          decision: 'approved',
+          summary: '独立计划复核通过',
+          taskAssessments: taskIds.map((taskId) => ({
+            taskId,
+            decision: 'approved',
+            issues: [],
+          })),
+          issues: [],
+        },
+      },
+    ],
+  };
 }
 
 /** 从当前持久化计划生成与验收标准数量一致的独立批准结果。 */
@@ -132,6 +185,9 @@ function automaticTaskReviewScenario() {
 /** 序列场景：按 counter 文件取出本次 Session 的场景元素。 */
 function pickScenario() {
   if (!Array.isArray(scenarioFile.sequence)) return scenarioFile;
+  if (scenarioFile.autoApprovePlanReviews === true && isPlanReviewInvocation()) {
+    return automaticPlanReviewScenario();
+  }
   if (scenarioFile.autoApproveTaskReviews === true && isTaskReviewInvocation()) {
     return automaticTaskReviewScenario();
   }

@@ -6,7 +6,7 @@
  * （同一 generatedAt 等重复事实），再由 StateStorePort.commitPlanRevision
  * 按 Snapshot → tasks.json → SHA-256 → run.json（提交点）的顺序落盘。
  */
-import { mergePlanRevision } from '../../domain/plan.js';
+import { mergePlanRevision, type PlanMergeResult } from '../../domain/plan.js';
 import { applyRunEvent } from '../../domain/run-state.js';
 import { ApexError } from '../../domain/errors.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
@@ -24,6 +24,8 @@ export interface ApplyPlanRevisionInput {
   readonly draft: TaskPlanDraft;
   readonly trigger: PlanRevisionTrigger;
   readonly plannerSessionId: string;
+  /** 独立批准该草稿的 Plan Review Session。 */
+  readonly planReviewerSessionId: string;
   /** 该 Planning Session 启动前重算的 SPEC SHA。 */
   readonly specSha256: string;
   readonly repositoryRoot: string;
@@ -39,6 +41,26 @@ function unabsorbedCheckpoints(run: RunJson): IntermediateCheckpoint[] {
 }
 
 /**
+ * 在启动独立 Plan Review 前执行与最终提交完全相同的确定性合并校验。
+ *
+ * Reviewer 只处理需要语义判断的任务边界、验证可行性和预算问题；ID、DAG、
+ * Revision 与 Checkpoint 归属等确定性错误不得浪费一个模型会话。
+ */
+export function preparePlanRevisionMerge(
+  run: RunJson,
+  currentTasks: TasksJson | null,
+  draft: TaskPlanDraft,
+): PlanMergeResult {
+  return mergePlanRevision({
+    draft,
+    currentPlanRevision: run.planRevision,
+    currentTasks: currentTasks?.tasks ?? [],
+    taskStates: run.tasks,
+    unabsorbedCheckpoints: unabsorbedCheckpoints(run),
+  });
+}
+
+/**
  * 合并并提交一个 Plan Revision，返回提交后的权威 run（status running，
  * tasksSha256 由 store 计算，提交后通过 readRun 读回）。
  */
@@ -48,13 +70,7 @@ export async function applyPlanRevision(
   currentTasks: TasksJson | null,
   input: ApplyPlanRevisionInput,
 ): Promise<RunJson> {
-  const merge = mergePlanRevision({
-    draft: input.draft,
-    currentPlanRevision: run.planRevision,
-    currentTasks: currentTasks?.tasks ?? [],
-    taskStates: run.tasks,
-    unabsorbedCheckpoints: unabsorbedCheckpoints(run),
-  });
+  const merge = preparePlanRevisionMerge(run, currentTasks, input.draft);
 
   const generatedAt = formatRfc3339InSystemTimeZone(deps.clock.now());
 
@@ -103,6 +119,7 @@ export async function applyPlanRevision(
     specSha256: input.specSha256,
     generatedAt,
     plannerSessionId: input.plannerSessionId,
+    planReviewerSessionId: input.planReviewerSessionId,
     summary: input.draft.summary,
     assumptions: [...input.draft.assumptions],
     retainedCheckpointDispositions: merge.dispositions,
@@ -117,6 +134,7 @@ export async function applyPlanRevision(
     specSha256: snapshot.specSha256,
     generatedAt: snapshot.generatedAt,
     plannerSessionId: snapshot.plannerSessionId,
+    planReviewerSessionId: snapshot.planReviewerSessionId,
     summary: snapshot.summary,
     assumptions: [...snapshot.assumptions],
     retainedCheckpointDispositions: merge.dispositions,
@@ -132,6 +150,8 @@ export async function applyPlanRevision(
     intermediateCheckpoints: nextCheckpoints,
     activeSession: null,
     currentTaskId: null,
+    planCandidate: null,
+    planReviewFeedback: null,
     stateRevision: run.stateRevision + 1,
     updatedAt: generatedAt,
   };

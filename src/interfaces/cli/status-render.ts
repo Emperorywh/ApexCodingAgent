@@ -146,6 +146,8 @@ function sessionTypeLabel(type: SessionType): string {
   switch (type) {
     case 'planning':
       return '规划';
+    case 'plan_review':
+      return '计划独立复核';
     case 'execution':
       return '执行';
     case 'task_review':

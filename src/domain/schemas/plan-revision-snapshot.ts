@@ -43,11 +43,31 @@ export interface PlanRevisionSnapshot {
   specSha256: string;
   generatedAt: string;
   plannerSessionId: string;
+  planReviewerSessionId: string;
   summary: string;
   assumptions: string[];
   retainedCheckpointDispositions: CheckpointDisposition[];
   tasks: PlannedTask[];
 }
+
+/**
+ * Revision 触发事实被计划候选与最终快照共同复用。
+ *
+ * 统一 Schema 可以保证 Reviewer 批准的候选在提交前后保留同一触发来源，
+ * 避免 Plan Review 中断恢复时由应用层重新猜测 trigger。
+ */
+export const planRevisionTriggerSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['type', 'reason', 'sourceSessionId'],
+  properties: {
+    type: { type: 'string', enum: [...PLAN_REVISION_TRIGGER_TYPES] },
+    reason: { type: 'string', minLength: 1 },
+    sourceSessionId: {
+      anyOf: [{ type: 'null' }, { type: 'string', pattern: UUID_PATTERN.source }],
+    },
+  },
+} as const;
 
 /**
  * 计划快照复用已经类型化的计划子结构，避免重复计划字段。
@@ -67,6 +87,7 @@ export const planRevisionSnapshotSchema = {
     'specSha256',
     'generatedAt',
     'plannerSessionId',
+    'planReviewerSessionId',
     'summary',
     'assumptions',
     'retainedCheckpointDispositions',
@@ -77,22 +98,12 @@ export const planRevisionSnapshotSchema = {
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
     planRevision: { type: 'integer', minimum: 1 },
     parentPlanRevision: { anyOf: [{ type: 'null' }, { type: 'integer', minimum: 1 }] },
-    trigger: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['type', 'reason', 'sourceSessionId'],
-      properties: {
-        type: { type: 'string', enum: [...PLAN_REVISION_TRIGGER_TYPES] },
-        reason: { type: 'string', minLength: 1 },
-        sourceSessionId: {
-          anyOf: [{ type: 'null' }, { type: 'string', pattern: UUID_PATTERN.source }],
-        },
-      },
-    },
+    trigger: planRevisionTriggerSchema,
     specPath: { type: 'string', format: 'git-relative-path' },
     specSha256: { type: 'string', format: 'sha256' },
     generatedAt: { type: 'string', format: 'rfc3339' },
     plannerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
+    planReviewerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
     summary: { type: 'string', minLength: 1 },
     assumptions: { type: 'array', items: { type: 'string', minLength: 1 } },
     retainedCheckpointDispositions: {

@@ -273,6 +273,8 @@ export function createStartRun(deps: RunCommandDeps): {
         },
         currentTaskId: null,
         activeSession: null,
+        planCandidate: null,
+        planReviewFeedback: null,
         tasks: {},
         intermediateCheckpoints: [],
         finalReviewEpisodes: [],

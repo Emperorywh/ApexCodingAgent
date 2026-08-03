@@ -4,7 +4,6 @@
  * the Coordinator, never by the model.
  */
 import { RUN_ID_PATTERN, UUID_PATTERN } from '../ids.js';
-import type { JSONSchemaType } from 'ajv';
 import {
   checkpointDispositionSchema,
   plannedTaskSchema,
@@ -20,6 +19,7 @@ export interface TasksJson {
   specSha256: string;
   generatedAt: string;
   plannerSessionId: string;
+  planReviewerSessionId: string;
   summary: string;
   assumptions: string[];
   retainedCheckpointDispositions: CheckpointDisposition[];
@@ -27,7 +27,7 @@ export interface TasksJson {
 }
 
 /**
- * tasks.json 复用计划子结构，并由 Ajv 泛型检查完整的持久化契约。
+ * tasks.json 复用计划子结构，由统一 Schema 注册表完成运行时严格校验。
  *
  * 系统补充的运行事实与模型返回的计划字段由这一顶层 Schema 明确组合。
  */
@@ -42,6 +42,7 @@ export const tasksJsonSchema = {
     'specSha256',
     'generatedAt',
     'plannerSessionId',
+    'planReviewerSessionId',
     'summary',
     'assumptions',
     'retainedCheckpointDispositions',
@@ -55,6 +56,7 @@ export const tasksJsonSchema = {
     specSha256: { type: 'string', format: 'sha256' },
     generatedAt: { type: 'string', format: 'rfc3339' },
     plannerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
+    planReviewerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
     summary: { type: 'string', minLength: 1 },
     assumptions: { type: 'array', items: { type: 'string', minLength: 1 } },
     retainedCheckpointDispositions: {
@@ -63,4 +65,4 @@ export const tasksJsonSchema = {
     },
     tasks: { type: 'array', items: plannedTaskSchema },
   },
-} as const satisfies JSONSchemaType<TasksJson>;
+} as const;

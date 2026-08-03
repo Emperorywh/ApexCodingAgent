@@ -43,7 +43,7 @@ import { toErrorRecord } from './error-record.js';
 
 export interface BeginSessionInput<T extends SessionType> {
   readonly type: T;
-  /** execution/task_review 必填；planning/final_review 为 null。 */
+  /** execution/task_review 必填；planning/plan_review/final_review 为 null。 */
   readonly taskId: string | null;
   /** planning 传"将生成的 Revision 号"；其他传当前 Revision。 */
   readonly planRevision: number;
@@ -52,9 +52,11 @@ export interface BeginSessionInput<T extends SessionType> {
   readonly prompt: string;
   readonly permissionMode: ClaudePermissionModeFor<T>;
   readonly repositoryRoot: string;
+  /** 仅 Execution 从 TaskBudget 注入，运行时通过 --max-turns 强制执行。 */
+  readonly maxTurns?: number | null;
   /**
    * 可选的会话续接来源（SPEC §17 resume）：非空时 Claude 以
-   * `--resume --fork-session` 续接该被中断会话；四类 Session 的首次
+   * `--resume --fork-session` 续接该被中断会话；五类 Session 的首次
    * 恢复调用都通过统一续接协调器传入。
    */
   readonly resumeFromSessionId?: string | null;
@@ -338,6 +340,7 @@ export async function invokeSession<T extends SessionType>(
     capabilityReport: deps.capabilityReport,
     type: input.type,
     permissionMode: input.permissionMode,
+    maxTurns: input.maxTurns ?? null,
     resumeFromSessionId: input.resumeFromSessionId ?? null,
     onStreamActivity: (next) => {
       activity = next;

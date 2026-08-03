@@ -28,7 +28,7 @@ interface FixtureExpectation {
 
 interface StreamFixture {
   readonly description: string;
-  readonly sessionType: 'planning' | 'execution' | 'final_review';
+  readonly sessionType: 'planning' | 'plan_review' | 'execution' | 'task_review' | 'final_review';
   readonly exitCode: number;
   readonly stderr: string;
   readonly stdout: readonly (string | Record<string, unknown>)[];

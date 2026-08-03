@@ -459,6 +459,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
           specSha256: specBefore.sha256,
           permissionMode: run.runSettings.executionPermissionMode,
           repositoryRoot: root,
+          /*
+           * Planning 给出的 Task 回合预算在进程边界强制执行；结果修复也沿用
+           * 同一上限，避免修复分支绕开预算后造成注意力漂移。
+           */
+          maxTurns: taskDef.budget.maxAgentTurns,
         };
         const invocation = await invokeResumableSession(deps, {
           run: sessionRun,

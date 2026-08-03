@@ -84,6 +84,71 @@ describe('TaskPlanDraft validation (§7.5)', () => {
     expectApexError(() => validateTaskPlanDraft(draft, INITIAL_CONTEXT), 'PLAN_INVALID');
   });
 
+  it('requires verificationPlan to cover every acceptance criterion', () => {
+    const task = mkTask('TASK-001', [], {
+      verificationPlan: [
+        {
+          id: 'VERIFY-001',
+          kind: 'command',
+          criterionIndexes: [0],
+          procedure: '运行单元测试',
+          expectedEvidence: '命令通过',
+          command: 'npm test',
+          timeoutSeconds: 900,
+        },
+      ],
+    });
+    expectApexError(
+      () => validateTaskPlanDraft(mkDraft([task]), INITIAL_CONTEXT),
+      'PLAN_INVALID',
+    );
+  });
+
+  it('rejects duplicate verification IDs and kind/command coupling violations', () => {
+    const duplicate = mkTask('TASK-001', [], {
+      verificationPlan: [
+        ...mkTask('TASK-001').verificationPlan,
+        ...mkTask('TASK-001').verificationPlan,
+      ],
+    });
+    expectApexError(
+      () => validateTaskPlanDraft(mkDraft([duplicate]), INITIAL_CONTEXT),
+      'PLAN_INVALID',
+    );
+
+    const invalidStatic = mkTask('TASK-001', [], {
+      verificationPlan: [
+        {
+          id: 'VERIFY-001',
+          kind: 'static_analysis',
+          criterionIndexes: [0, 1],
+          procedure: '检查模块依赖',
+          expectedEvidence: '不存在跨层引用',
+          command: 'npm test',
+          timeoutSeconds: null,
+        },
+      ],
+    });
+    expectApexError(
+      () => validateTaskPlanDraft(mkDraft([invalidStatic]), INITIAL_CONTEXT),
+      'PLAN_INVALID',
+    );
+  });
+
+  it('keeps the target context budget strictly below the hard limit', () => {
+    const task = mkTask('TASK-001', [], {
+      budget: {
+        targetContextBudget: 300_000,
+        hardContextLimit: 300_000,
+        maxAgentTurns: 64,
+      },
+    });
+    expectApexError(
+      () => validateTaskPlanDraft(mkDraft([task]), INITIAL_CONTEXT),
+      'PLAN_INVALID',
+    );
+  });
+
   it('rejects dispositions in the initial plan', () => {
     const draft = mkDraft(
       [mkTask('TASK-001')],

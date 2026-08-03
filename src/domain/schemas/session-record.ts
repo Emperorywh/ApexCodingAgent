@@ -1,7 +1,8 @@
 /**
  * Session Record (SPEC §11.4). Immutable once written. `structuredResult`
  * holds the schema-validated result for the session type (TaskPlanDraft for
- * planning, TaskExecutionResult for execution, FinalReviewResult for final
+ * planning, PlanReviewResult for plan review, TaskExecutionResult for
+ * execution, TaskReviewResult for task review, FinalReviewResult for final
  * review) or `null` on failure; the status/error coupling rules are enforced
  * in `src/domain/invariants.ts`.
  */
@@ -12,6 +13,7 @@ import {
   finalReviewResultSchema,
   type FinalReviewResult,
 } from './final-review-result.js';
+import { planReviewResultSchema, type PlanReviewResult } from './plan-review-result.js';
 import {
   taskExecutionResultSchema,
   type TaskExecutionResult,
@@ -43,7 +45,13 @@ export interface SessionRecord {
   endedAt: string;
   claude: SessionClaudeFact;
   exitCode: number | null;
-  structuredResult: TaskPlanDraft | TaskExecutionResult | TaskReviewResult | FinalReviewResult | null;
+  structuredResult:
+    | TaskPlanDraft
+    | PlanReviewResult
+    | TaskExecutionResult
+    | TaskReviewResult
+    | FinalReviewResult
+    | null;
   logPath: string;
   error: ErrorRecord | null;
 }
@@ -76,7 +84,10 @@ export const sessionRecordSchema = {
   properties: {
     schemaVersion: { type: 'integer', const: 1 },
     sessionId: { type: 'string', pattern: UUID_PATTERN.source },
-    type: { type: 'string', enum: ['planning', 'execution', 'task_review', 'final_review'] },
+    type: {
+      type: 'string',
+      enum: ['planning', 'plan_review', 'execution', 'task_review', 'final_review'],
+    },
     status: { type: 'string', enum: ['completed', 'failed'] },
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
     taskId: { anyOf: [{ type: 'null' }, { type: 'string', pattern: TASK_ID_PATTERN.source }] },
@@ -99,6 +110,7 @@ export const sessionRecordSchema = {
       anyOf: [
         { type: 'null' },
         taskPlanDraftSchema,
+        planReviewResultSchema,
         taskExecutionResultSchema,
         taskReviewResultSchema,
         finalReviewResultSchema,

@@ -10,7 +10,8 @@
  */
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
-import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
+import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
+import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 
 /** completed Task 的不可变摘要：完整定义 + 结果摘要 + 最终 Checkpoint（SPEC §7.1）。 */
@@ -47,6 +48,11 @@ export interface PlanningPromptInput {
   readonly replanTrigger: PlanRevisionTrigger | null;
   /** 尚未被 completed Task 吸收的中间 Checkpoint。 */
   readonly unabsorbedCheckpoints: readonly IntermediateCheckpoint[];
+  /** 上一轮独立 Plan Review 的草稿与结构化反馈；首次尝试为 null。 */
+  readonly planReviewFeedback: {
+    readonly rejectedDraft: TaskPlanDraft;
+    readonly review: PlanReviewResult;
+  } | null;
 }
 
 /** SPEC §24 规范性基线文本（逐条保留，不得删改核心职责与拆分原则）。 */
@@ -70,6 +76,7 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 任务拆分原则：
 
 - 每个任务只承担一个清晰的主要目标。
+- 每个任务必须用 nonGoals 明确排除相邻但不属于本任务的工作。
 - 优先按领域能力、模块边界或可验证的纵向功能拆分。
 - 不要按文件数量机械拆分。
 - 每个任务完成后，仓库应处于可理解、可继续开发的状态。
@@ -93,9 +100,12 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - 所有 Task ID 使用 TASK-001、TASK-002 这样的稳定格式。
 - dependsOn 只能引用本计划内存在的 Task ID。
 - acceptanceCriteria 必须是可观察、可判断的完成结果。
-- verificationHints 不得虚构仓库中不存在的命令。
-- verificationHints 必须区分可自动运行的检查与用户手动验证；仓库代理说明禁止自动界面测试时，只能写明“用户手动验证”，不得把开发服务器命令列为 Agent 必跑项。
+- verificationPlan 必须逐条覆盖 acceptanceCriteria，并区分 command、static_analysis 与 manual。
+- command 验证必须填写真实存在或由仓库事实支持的命令与有界 timeoutSeconds；其他验证的 command 和 timeoutSeconds 必须为 null。
+- manual 验证必须写出用户可执行的具体过程与期望证据；仓库代理说明禁止自动界面测试时，不得把开发服务器命令列为 Agent 必跑项。
 - 需要本地服务的自动验证必须规划为单一有界入口，由同一入口负责启动、就绪检查和结束，不能依赖长期后台服务。
+- 每个 Task 的 budget.hardContextLimit 固定为 300000，targetContextBudget（单位为 token）不得超过 240000，maxAgentTurns 必须在 8..128 内并与范围相称。
+- 预算评估必须包含理解仓库、实现、验证与一次返工余量；不能靠填满硬上限容纳本应拆分的多个目标。
 - likelyPaths 只是提示，不是强制文件范围。
 
 请返回结构化任务计划，包含：
@@ -110,11 +120,12 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - id
 - title
 - objective
+- nonGoals
 - dependsOn
 - acceptanceCriteria
-- verificationHints
+- verificationPlan
 - likelyPaths
-- estimatedSize
+- budget
 - context
 
 不要返回 Markdown。
@@ -206,6 +217,23 @@ function buildReplanSection(input: PlanningPromptInput): string {
   return parts.join('\n');
 }
 
+/** 上一轮独立计划复核反馈：Planner 必须生成新草稿，不得仅解释或争辩。 */
+function buildPlanReviewFeedbackSection(input: PlanningPromptInput): string {
+  const feedback = input.planReviewFeedback;
+  if (feedback === null) return '';
+  return [
+    'PLAN_REVIEW_FEEDBACK（上一轮草稿未通过独立复核）：',
+    '',
+    'REJECTED_DRAFT（JSON）：',
+    toJson(feedback.rejectedDraft),
+    '',
+    'REVIEW_RESULT（JSON）：',
+    toJson(feedback.review),
+    '',
+    '必须逐条解决 taskAssessments 与计划级 issues 后返回一份完整的新 TaskPlanDraft；不要返回局部补丁，也不要只解释原方案。',
+  ].join('\n');
+}
+
 /**
  * 构建 Planning Session 的完整提示词。
  * 初始规划（previousPlan 与 replanTrigger 均为 null）时不出现 REPLAN 小节。
@@ -214,6 +242,9 @@ export function buildPlanningPrompt(input: PlanningPromptInput): string {
   const sections = [PLANNING_BASELINE, buildContextSection(input)];
   if (input.previousPlan !== null || input.replanTrigger !== null) {
     sections.push(buildReplanSection(input));
+  }
+  if (input.planReviewFeedback !== null) {
+    sections.push(buildPlanReviewFeedbackSection(input));
   }
   return sections.join('\n\n');
 }

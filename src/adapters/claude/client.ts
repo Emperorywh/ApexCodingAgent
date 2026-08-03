@@ -49,6 +49,7 @@ const RESUME_UNAVAILABLE_PATTERNS = [
 ] as const;
 const RESULT_SCHEMA_BY_SESSION_TYPE = {
   planning: 'TaskPlanDraft',
+  plan_review: 'PlanReviewResult',
   execution: 'TaskExecutionResult',
   task_review: 'TaskReviewResult',
   final_review: 'FinalReviewResult',
@@ -201,7 +202,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
      * 实现阶段。Git 会话快照仍作为第二道、与模型权限无关的副作用检测。
      */
     const permissionIsValid =
-      request.type === 'planning'
+      request.type === 'planning' || request.type === 'plan_review'
         ? request.permissionMode === 'plan'
         : request.type === 'task_review'
           ? request.permissionMode === 'auto'
@@ -210,6 +211,13 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       throw new TypeError(
         `unsupported claude permission mode ${String(request.permissionMode)} for ${request.type}`,
       );
+    }
+    if (
+      request.maxTurns !== null &&
+      request.maxTurns !== undefined &&
+      (!Number.isInteger(request.maxTurns) || request.maxTurns <= 0)
+    ) {
+      throw new TypeError(`maxTurns must be a positive integer, got ${String(request.maxTurns)}`);
     }
 
     /*
@@ -234,9 +242,14 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
             request.sessionId,
           ]
         : ['--session-id', request.sessionId];
+    const budgetArgs =
+      request.maxTurns === null || request.maxTurns === undefined
+        ? []
+        : ['--max-turns', String(request.maxTurns)];
     const args = [
       '-p',
       ...sessionArgs,
+      ...budgetArgs,
       '--permission-mode',
       request.permissionMode,
       '--output-format',

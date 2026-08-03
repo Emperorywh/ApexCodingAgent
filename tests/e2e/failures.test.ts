@@ -66,14 +66,14 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(run.tasks['TASK-001']!.executionEpisodes[0]!.outcome).toBe('session_error');
         // 失败 Session Record：exitCode 3、无结构化结果。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(2);
-        expect(records[1]!.status).toBe('failed');
-        expect(records[1]!.exitCode).toBe(3);
-        expect(records[1]!.structuredResult).toBeNull();
-        expect(records[1]!.error?.errorCode).toBe('CLAUDE_EXIT_NONZERO');
-        // 不自动重试：只有 2 个 Session。
+        expect(records).toHaveLength(3);
+        expect(records[2]!.status).toBe('failed');
+        expect(records[2]!.exitCode).toBe(3);
+        expect(records[2]!.structuredResult).toBeNull();
+        expect(records[2]!.error?.errorCode).toBe('CLAUDE_EXIT_NONZERO');
+        // 不自动重试：Planner、Plan Reviewer 与失败 Execution 各一个 Session。
         const invocations = await harness.readRecords();
-        expect(invocations.filter((record) => record.argv.includes('--session-id'))).toHaveLength(2);
+        expect(invocations.filter((record) => record.argv.includes('--session-id'))).toHaveLength(3);
       } finally {
         await harness.cleanup();
       }
@@ -99,9 +99,9 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(result.kind).toBe('failed');
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('CLAUDE_RESULT_INVALID');
-        // planning + 执行 + 结果修复：共 3 个 Session。
+        // planning + plan_review + 执行 + 结果修复：共 4 个 Session。
         const invocations = await harness.readRecords();
-        expect(invocations.filter((record) => record.argv.includes('--session-id'))).toHaveLength(3);
+        expect(invocations.filter((record) => record.argv.includes('--session-id'))).toHaveLength(4);
       } finally {
         await harness.cleanup();
       }
@@ -141,8 +141,8 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(task.executionEpisodes[0]!.error?.errorCode).toBe('CLAUDE_REPORTED_FAILURE');
         // decision=failed 是合法结果：Session Record 为 completed 且保留结果。
         const records = await harness.listSessionRecords();
-        expect(records[1]!.status).toBe('completed');
-        expect(records[1]!.structuredResult).toMatchObject({ decision: 'failed' });
+        expect(records[2]!.status).toBe('completed');
+        expect(records[2]!.structuredResult).toMatchObject({ decision: 'failed' });
       } finally {
         await harness.cleanup();
       }
@@ -253,19 +253,19 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(episodes).toHaveLength(1);
         expect(episodes[0]!.outcome).toBe('awaiting_review');
 
-        // planning + 执行 + 独立复核 + final review：共 4 个 Session，无修复会话。
+        // planning + plan_review + 执行 +独立任务复核 + final review：共 5 个 Session。
         const invocations = await harness.readRecords();
         const sessions = invocations.filter((record) => record.argv.includes('--session-id'));
-        expect(sessions).toHaveLength(4);
+        expect(sessions).toHaveLength(5);
         expect(
           harness.outputLines.some((line) => line.includes('starting result-repair session')),
         ).toBe(false);
 
         // Session Record 是模型输出的不可变事实：保留原始占位值，不归一。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(4);
-        expect(records[1]!.status).toBe('completed');
-        expect(records[1]!.structuredResult).toMatchObject({
+        expect(records).toHaveLength(5);
+        expect(records[2]!.status).toBe('completed');
+        expect(records[2]!.structuredResult).toMatchObject({
           decision: 'completed',
           replanReason: '误填的原因',
         });
@@ -349,8 +349,8 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(result.run.activeSession).toBeNull();
         expect(result.run.currentTaskId).toBeNull();
         const records = await harness.listSessionRecords();
-        expect(records[1]!.status).toBe('completed');
-        expect(records[1]!.structuredResult).toMatchObject({ decision: 'completed' });
+        expect(records[2]!.status).toBe('completed');
+        expect(records[2]!.structuredResult).toMatchObject({ decision: 'completed' });
       } finally {
         await harness.cleanup();
       }

@@ -19,6 +19,7 @@ import type {
   CheckpointDisposition,
   PlannedTask,
   TaskPlanDraft,
+  VerificationStep,
 } from './schemas/task-plan-draft.js';
 import type { TaskRuntimeState } from './schemas/task-runtime-state.js';
 
@@ -40,17 +41,78 @@ function planConflict(message: string): ApexError {
 export function plannedTaskEquals(a: PlannedTask, b: PlannedTask): boolean {
   const stringArrayEquals = (x: readonly string[], y: readonly string[]): boolean =>
     x.length === y.length && x.every((value, index) => value === y[index]);
+  const verificationEquals = (x: VerificationStep, y: VerificationStep): boolean =>
+    x.id === y.id &&
+    x.kind === y.kind &&
+    x.procedure === y.procedure &&
+    x.expectedEvidence === y.expectedEvidence &&
+    x.command === y.command &&
+    x.timeoutSeconds === y.timeoutSeconds &&
+    x.criterionIndexes.length === y.criterionIndexes.length &&
+    x.criterionIndexes.every((value, index) => value === y.criterionIndexes[index]);
   return (
     a.id === b.id &&
     a.title === b.title &&
     a.objective === b.objective &&
-    a.estimatedSize === b.estimatedSize &&
     a.context === b.context &&
+    a.budget.targetContextBudget === b.budget.targetContextBudget &&
+    a.budget.hardContextLimit === b.budget.hardContextLimit &&
+    a.budget.maxAgentTurns === b.budget.maxAgentTurns &&
+    stringArrayEquals(a.nonGoals, b.nonGoals) &&
     stringArrayEquals(a.dependsOn, b.dependsOn) &&
     stringArrayEquals(a.acceptanceCriteria, b.acceptanceCriteria) &&
-    stringArrayEquals(a.verificationHints, b.verificationHints) &&
-    stringArrayEquals(a.likelyPaths, b.likelyPaths)
+    stringArrayEquals(a.likelyPaths, b.likelyPaths) &&
+    a.verificationPlan.length === b.verificationPlan.length &&
+    a.verificationPlan.every((step, index) => {
+      const other = b.verificationPlan[index];
+      return other !== undefined && verificationEquals(step, other);
+    })
   );
+}
+
+/**
+ * 校验单个 Task 的结构化验证计划与预算语义。
+ *
+ * JSON Schema 负责基础形状；这里集中维护验收条件覆盖、验证方式字段耦合
+ * 和预算单调性，避免 Planner、Reviewer 与执行器各自解释同一契约。
+ */
+function assertTaskExecutionContract(task: PlannedTask): void {
+  const verificationIds = new Set<string>();
+  const coveredCriteria = new Set<number>();
+  for (const step of task.verificationPlan) {
+    if (verificationIds.has(step.id)) {
+      throw planInvalid(`task ${task.id} has duplicate verification step ${step.id}`);
+    }
+    verificationIds.add(step.id);
+    for (const criterionIndex of step.criterionIndexes) {
+      if (criterionIndex < 0 || criterionIndex >= task.acceptanceCriteria.length) {
+        throw planInvalid(
+          `task ${task.id} verification ${step.id} references acceptance criterion ${criterionIndex} out of range`,
+        );
+      }
+      coveredCriteria.add(criterionIndex);
+    }
+    const isCommand = step.kind === 'command';
+    const hasCommandFields = step.command !== null || step.timeoutSeconds !== null;
+    const hasCompleteCommandFields = step.command !== null && step.timeoutSeconds !== null;
+    if ((isCommand && !hasCompleteCommandFields) || (!isCommand && hasCommandFields)) {
+      throw planInvalid(
+        `task ${task.id} verification ${step.id} must use command and timeout only for kind command`,
+      );
+    }
+  }
+  for (let index = 0; index < task.acceptanceCriteria.length; index += 1) {
+    if (!coveredCriteria.has(index)) {
+      throw planInvalid(
+        `task ${task.id} acceptance criterion ${index} has no verification step`,
+      );
+    }
+  }
+  if (task.budget.targetContextBudget >= task.budget.hardContextLimit) {
+    throw planInvalid(
+      `task ${task.id} target context budget must stay below its hard context limit`,
+    );
+  }
 }
 
 export interface PlanDraftValidationContext {
@@ -177,6 +239,7 @@ export function validateTaskPlanDraft(
     if (numeric === null || numeric > MAX_TASK_ID_NUMBER) {
       throw planInvalid(`task ID number out of range: ${task.id}`);
     }
+    assertTaskExecutionContract(task);
   }
 
   assertGraphShape(draft.tasks);

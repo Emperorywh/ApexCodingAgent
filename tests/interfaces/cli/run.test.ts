@@ -59,6 +59,8 @@ function makeRunJson(overrides: Partial<RunJson> = {}): RunJson {
     },
     currentTaskId: null,
     activeSession: null,
+    planCandidate: null,
+    planReviewFeedback: null,
     tasks: {},
     intermediateCheckpoints: [],
     finalReviewEpisodes: [],

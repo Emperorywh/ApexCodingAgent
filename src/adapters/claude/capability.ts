@@ -81,7 +81,7 @@ function optionExplicitlyContains(
   return new RegExp(`\\b${value}\\b`).test(option.declarationAndDescription);
 }
 
-/** SPEC §8.1 第 5 项要求的九项能力（含 resume 命令依赖的续接两项）。 */
+/** SPEC §8.1 第 5 项要求的能力（含 resume 续接与 Task 回合预算）。 */
 export const REQUIRED_CAPABILITIES: readonly CapabilityCheck[] = [
   {
     id: 'print-mode',
@@ -95,6 +95,13 @@ export const REQUIRED_CAPABILITIES: readonly CapabilityCheck[] = [
     id: 'json-schema',
     present: (catalog) => {
       const option = catalog.get('--json-schema');
+      return option !== undefined && option !== null;
+    },
+  },
+  {
+    id: 'max-turns',
+    present: (catalog) => {
+      const option = catalog.get('--max-turns');
       return option !== undefined && option !== null;
     },
   },

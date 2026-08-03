@@ -20,6 +20,7 @@ import {
   T0,
   T1,
   UUID_1,
+  UUID_2,
 } from '../domain/fixtures.js';
 
 export const STATE_DIR = '/repo/.apex-coding-agent';
@@ -59,6 +60,7 @@ export function mkTasks(planRevision = 1, tasks: PlannedTask[] = DEFAULT_PLAN_TA
     specSha256: SHA256_A,
     generatedAt: T0,
     plannerSessionId: UUID_1,
+    planReviewerSessionId: UUID_2,
     summary: 'Plan summary',
     assumptions: [],
     retainedCheckpointDispositions: [],
@@ -88,6 +90,7 @@ export function mkSnapshot(
     specSha256: SHA256_A,
     generatedAt: T0,
     plannerSessionId: UUID_1,
+    planReviewerSessionId: UUID_2,
     summary: 'Plan summary',
     assumptions: [],
     retainedCheckpointDispositions: [],

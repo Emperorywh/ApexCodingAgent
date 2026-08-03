@@ -148,6 +148,13 @@ export function createAbandonRun(deps: AbandonRunDeps): {
       status: applyRunEvent(next.status, 'RUN_ABANDONED'),
       activeSession: null,
       currentTaskId: null,
+      /*
+       * abandoned 不可恢复：未提交计划候选与复核反馈是瞬态 Planning 事实，
+       * 随清槽一并丢弃；否则领域不变量拒绝它们在 abandoned 存在，崩溃在
+       * 候选窗口的 Run 会永远无法 Abandon。
+       */
+      planCandidate: null,
+      planReviewFeedback: null,
       lastError: toErrorRecord(abandoned, at, deps.redaction),
       terminalAt: at,
       updatedAt: at,

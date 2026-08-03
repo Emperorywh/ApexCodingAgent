@@ -63,12 +63,18 @@ export const ERROR_CODE_TO_CLASS = {
   CLAUDE_RESUME_UNAVAILABLE: 'claude_error',
   CLAUDE_RESULT_INVALID: 'claude_error',
   CLAUDE_REPORTED_FAILURE: 'claude_error',
+  PLAN_REVIEW_RESULT_INVALID: 'claude_error',
   TASK_REVIEW_RESULT_INVALID: 'claude_error',
   FINAL_REVIEW_RESULT_INVALID: 'claude_error',
   // plan_error
   PLAN_INVALID: 'plan_error',
   PLAN_REVISION_CONFLICT: 'plan_error',
   PLAN_REVISION_LIMIT_EXCEEDED: 'plan_error',
+  /*
+   * 同一未提交 Revision 的独立计划复核连续打回达到上限时终止，避免
+   * Planner 与 Reviewer 在没有新增事实的情况下形成无界反馈循环。
+   */
+  PLAN_REVIEW_REWORK_LIMIT_EXCEEDED: 'plan_error',
   /*
    * 独立复核连续打回同一 Task 达到上限：编排器拒绝无界返工循环，
    * 按 plan_error 终止 Run，保留全部 Episode 事实供报告与人工接管。
@@ -79,6 +85,7 @@ export const ERROR_CODE_TO_CLASS = {
   GIT_FACT_CONFLICT: 'git_error',
   GIT_HISTORY_DIVERGED: 'git_error',
   PLANNING_SIDE_EFFECT_DETECTED: 'git_error',
+  PLAN_REVIEW_SIDE_EFFECT_DETECTED: 'git_error',
   TASK_REVIEW_SIDE_EFFECT_DETECTED: 'git_error',
   PROTECTED_PATH_CHANGED: 'git_error',
   /*

@@ -53,7 +53,7 @@ describe('e2e happy path', () => {
         await harness.writeScenario(happySequence());
 
         const result = await harness.start();
-        expect(result.kind).toBe('completed');
+        expect(result.kind, JSON.stringify(result)).toBe('completed');
         if (result.kind !== 'completed') return;
         const run = result.run;
 
@@ -101,11 +101,12 @@ describe('e2e happy path', () => {
         expect(snapshot.trigger).toEqual({ type: 'initial', reason: '初始计划', sourceSessionId: null });
         expect(snapshot.parentPlanRevision).toBeNull();
 
-        // ---- sessions：4 个 completed Record，退出码 0 ----
+        // ---- sessions：Planner 后由全新 Plan Reviewer 批准，再进入任务执行 ----
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(6);
+        expect(records).toHaveLength(7);
         expect(records.map((record) => record.type)).toEqual([
           'planning',
+          'plan_review',
           'execution',
           'task_review',
           'execution',
@@ -118,11 +119,13 @@ describe('e2e happy path', () => {
           expect(record.structuredResult).not.toBeNull();
           expect(record.claude.version).toBe(FAKE_VERSION);
         }
-        expect(records[1]!.taskId).toBe('TASK-001');
         expect(records[2]!.taskId).toBe('TASK-001');
-        expect(records[3]!.taskId).toBe('TASK-002');
+        expect(records[3]!.taskId).toBe('TASK-001');
         expect(records[4]!.taskId).toBe('TASK-002');
+        expect(records[5]!.taskId).toBe('TASK-002');
         expect(tasks.plannerSessionId).toBe(records[0]!.sessionId);
+        expect(tasks.planReviewerSessionId).toBe(records[1]!.sessionId);
+        expect(snapshot.planReviewerSessionId).toBe(records[1]!.sessionId);
 
         // ---- report.md ----
         const report = await harness.readReport();
@@ -161,18 +164,28 @@ describe('e2e happy path', () => {
           ),
         ).toBe(true);
 
-        // ---- 参数数组：planning=plan，execution/final_review=auto，task_review=auto ----
+        // ---- 参数数组：planning/plan_review=plan，其余会话按执行权限运行 ----
         const invocations = await harness.readRecords();
         const sessions = invocations.filter((record) => record.argv.includes('--session-id'));
-        expect(sessions).toHaveLength(6);
+        expect(sessions).toHaveLength(7);
         const permissionOf = (record: (typeof sessions)[number]) =>
           record.argv[record.argv.indexOf('--permission-mode') + 1];
         expect(permissionOf(sessions[0]!)).toBe('plan');
-        expect(permissionOf(sessions[1]!)).toBe('auto');
+        expect(permissionOf(sessions[1]!)).toBe('plan');
         expect(permissionOf(sessions[2]!)).toBe('auto');
         expect(permissionOf(sessions[3]!)).toBe('auto');
         expect(permissionOf(sessions[4]!)).toBe('auto');
         expect(permissionOf(sessions[5]!)).toBe('auto');
+        expect(permissionOf(sessions[6]!)).toBe('auto');
+        for (const executionIndex of [2, 4]) {
+          const invocation = sessions[executionIndex]!;
+          expect(invocation.argv).toContain('--max-turns');
+          expect(invocation.argv[invocation.argv.indexOf('--max-turns') + 1]).toBe('64');
+        }
+        // 回合预算只下沉到 Execution；Planning 与各类 Reviewer 不设置 --max-turns。
+        for (const otherIndex of [0, 1, 3, 5, 6]) {
+          expect(sessions[otherIndex]!.argv).not.toContain('--max-turns');
+        }
         for (const record of sessions) {
           expect(record.cwd).toBe(harness.repo.root);
           expect(record.argv[0]).toBe('-p');
@@ -199,7 +212,7 @@ describe('e2e happy path', () => {
         await harness.writeScenario(happySequence());
 
         const result = await harness.start({ fullAccess: true });
-        expect(result.kind).toBe('completed');
+        expect(result.kind, JSON.stringify(result)).toBe('completed');
         if (result.kind !== 'completed') return;
         expect(result.run.runSettings.executionPermissionMode).toBe('bypassPermissions');
 
@@ -210,11 +223,12 @@ describe('e2e happy path', () => {
         const permissionOf = (record: (typeof sessions)[number]) =>
           record.argv[record.argv.indexOf('--permission-mode') + 1];
         expect(permissionOf(sessions[0]!)).toBe('plan');
-        expect(permissionOf(sessions[1]!)).toBe('bypassPermissions');
-        expect(permissionOf(sessions[2]!)).toBe('auto');
-        expect(permissionOf(sessions[3]!)).toBe('bypassPermissions');
-        expect(permissionOf(sessions[4]!)).toBe('auto');
-        expect(permissionOf(sessions[5]!)).toBe('bypassPermissions');
+        expect(permissionOf(sessions[1]!)).toBe('plan');
+        expect(permissionOf(sessions[2]!)).toBe('bypassPermissions');
+        expect(permissionOf(sessions[3]!)).toBe('auto');
+        expect(permissionOf(sessions[4]!)).toBe('bypassPermissions');
+        expect(permissionOf(sessions[5]!)).toBe('auto');
+        expect(permissionOf(sessions[6]!)).toBe('bypassPermissions');
       } finally {
         await harness.cleanup();
       }

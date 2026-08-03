@@ -150,7 +150,7 @@ describe('e2e resume (§17)', () => {
         // Session Record 链完整：planning、被中断 execution（failed）、
         // 续接 execution、TASK-002 execution、final review。
         const sessionRecords = await harness.listSessionRecords();
-        expect(sessionRecords).toHaveLength(7);
+        expect(sessionRecords).toHaveLength(8);
         const executionRecords = sessionRecords.filter((record) => record.type === 'execution');
         expect(executionRecords).toHaveLength(3);
         expect(executionRecords[0]!.status).toBe('failed');

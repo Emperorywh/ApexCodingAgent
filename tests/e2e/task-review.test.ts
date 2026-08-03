@@ -43,9 +43,15 @@ function isTaskReviewInvocation(record: RecordedInvocation): boolean {
   const schemaText = record.argv[schemaIndex + 1];
   if (schemaText === undefined) return false;
   const schema = JSON.parse(schemaText) as {
-    properties?: { decision?: { enum?: string[] } };
+    properties?: {
+      decision?: { enum?: string[] };
+      taskAssessments?: unknown;
+    };
   };
-  return schema.properties?.decision?.enum?.includes('approved') === true;
+  return (
+    schema.properties?.taskAssessments === undefined &&
+    schema.properties?.decision?.enum?.includes('approved') === true
+  );
 }
 
 /** 从传给 Claude 的 JSON Schema 识别 Execution 调用（decision 枚举含 failed）。 */

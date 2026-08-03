@@ -16,6 +16,7 @@
 import { ApexError, type ApexErrorInit } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
 import type { FinalReviewResult } from '../../domain/schemas/final-review-result.js';
+import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
 import type { TaskReviewResult } from '../../domain/schemas/task-review-result.js';
 import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
@@ -52,6 +53,8 @@ interface ClaudeInvocationRequestBase {
    * §6.3 顺序铁律。resume 命令重开的三类 Session 均可使用。
    */
   readonly resumeFromSessionId?: string | null;
+  /** Execution 的 Task 预算回合上限；其他会话不设置时由 Claude 使用默认值。 */
+  readonly maxTurns?: number | null;
 }
 
 /**
@@ -104,7 +107,7 @@ export interface ClaudeStreamActivity {
  * 调用请求使用判别联合表达合法状态：Session 类型同时决定权限范围和
  * 结果 Schema，调用方无法再构造类型与 Schema 相互矛盾的请求。
  */
-export type ClaudePermissionModeFor<T extends SessionType> = T extends 'planning'
+export type ClaudePermissionModeFor<T extends SessionType> = T extends 'planning' | 'plan_review'
   ? Extract<ClaudePermissionMode, 'plan'>
   : T extends 'task_review'
     ? Extract<ClaudePermissionMode, 'auto'>
@@ -136,6 +139,7 @@ interface ClaudeInvocationFactBase {
 
 export interface ClaudeStructuredResultBySessionType {
   readonly planning: TaskPlanDraft;
+  readonly plan_review: PlanReviewResult;
   readonly execution: TaskExecutionResult;
   readonly task_review: TaskReviewResult;
   readonly final_review: FinalReviewResult;

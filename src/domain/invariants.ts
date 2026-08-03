@@ -427,11 +427,13 @@ export function assertSessionRecordRules(record: SessionRecord): void {
     const schemaName =
       record.type === 'planning'
         ? 'TaskPlanDraft'
-        : record.type === 'execution'
-          ? 'TaskExecutionResult'
-          : record.type === 'task_review'
-            ? 'TaskReviewResult'
-            : 'FinalReviewResult';
+        : record.type === 'plan_review'
+          ? 'PlanReviewResult'
+          : record.type === 'execution'
+            ? 'TaskExecutionResult'
+            : record.type === 'task_review'
+              ? 'TaskReviewResult'
+              : 'FinalReviewResult';
     assertCondition(
       validate(schemaName, record.structuredResult).valid,
       `session record ${record.sessionId} structuredResult does not match ${schemaName}`,
@@ -459,6 +461,35 @@ export function assertRunJsonRules(run: RunJson): void {
       run.tasksSha256 !== null,
       'planRevision > 0 requires the tasks.json SHA-256',
     );
+  }
+
+  /**
+   * 未提交计划草稿与上一轮复核反馈是互斥的瞬态 Planning 事实。
+   *
+   * RUN_INTERRUPTED 会把它们原样保留在可恢复终态；其他状态不得携带，
+   * 且二者始终指向下一个尚未提交的 Revision。
+   */
+  assertCondition(
+    run.planCandidate === null || run.planReviewFeedback === null,
+    'planCandidate and planReviewFeedback must not coexist',
+  );
+  const hasPlanningFact = run.planCandidate !== null || run.planReviewFeedback !== null;
+  const planningFactAllowed =
+    run.status === 'planning' ||
+    (run.status === 'failed' &&
+      run.resumePoint?.fromStatus === 'planning' &&
+      run.lastError?.errorCode === 'RUN_INTERRUPTED');
+  assertCondition(
+    !hasPlanningFact || planningFactAllowed,
+    `plan candidate or feedback is not allowed while run status is ${run.status}`,
+  );
+  for (const revision of [run.planCandidate?.planRevision, run.planReviewFeedback?.planRevision]) {
+    if (revision !== undefined) {
+      assertCondition(
+        revision === run.planRevision + 1,
+        `pending plan fact targets revision ${revision}, expected ${run.planRevision + 1}`,
+      );
+    }
   }
 
   const terminal = isTerminalRunStatus(run.status);
@@ -508,6 +539,20 @@ export function assertRunJsonRules(run: RunJson): void {
           execution.outcome === 'awaiting_review' &&
           execution.finalCheckpoint === task.candidateCheckpoint,
         `active task review ${run.activeSession.sessionId} must match the current candidate and execution`,
+      );
+    }
+    if (run.activeSession.type === 'plan_review') {
+      assertCondition(
+        run.planCandidate !== null &&
+          run.planCandidate.planRevision === run.activeSession.planRevision &&
+          run.planCandidate.specSha256 === run.activeSession.specSha256,
+        `active plan review ${run.activeSession.sessionId} must match the persisted plan candidate`,
+      );
+    }
+    if (run.activeSession.type === 'planning') {
+      assertCondition(
+        run.planCandidate === null,
+        `active planning session ${run.activeSession.sessionId} must not coexist with a plan candidate`,
       );
     }
   }
@@ -604,12 +649,18 @@ export function assertRunJsonRules(run: RunJson): void {
         `${run.resumePoint.fromStatus} resumePoint must keep taskId null`,
       );
       if (run.resumePoint.sessionType !== null) {
-        const expectedType =
-          run.resumePoint.fromStatus === 'planning' ? 'planning' : 'final_review';
-        assertCondition(
-          run.resumePoint.sessionType === expectedType,
-          `${run.resumePoint.fromStatus} resumePoint requires sessionType ${expectedType}`,
-        );
+        if (run.resumePoint.fromStatus === 'planning') {
+          assertCondition(
+            run.resumePoint.sessionType === 'planning' ||
+              run.resumePoint.sessionType === 'plan_review',
+            'planning resumePoint requires sessionType planning or plan_review',
+          );
+        } else {
+          assertCondition(
+            run.resumePoint.sessionType === 'final_review',
+            'final_review resumePoint requires sessionType final_review',
+          );
+        }
       }
     }
     if (run.resumePoint.taskId !== null) {

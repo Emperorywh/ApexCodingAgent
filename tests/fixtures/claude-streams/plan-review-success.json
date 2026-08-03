@@ -1,0 +1,37 @@
+{
+  "description": "Independent Plan Review succeeds with exact Task assessment coverage",
+  "sessionType": "plan_review",
+  "exitCode": 0,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "claude-fake-plan-review"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "structured_output": {
+        "decision": "approved",
+        "summary": "The plan is focused, verifiable, and budgeted",
+        "taskAssessments": [
+          {
+            "taskId": "TASK-001",
+            "decision": "approved",
+            "issues": []
+          }
+        ],
+        "issues": []
+      }
+    }
+  ],
+  "expect": {
+    "kind": "success",
+    "decision": "approved",
+    "model": "claude-fake-plan-review",
+    "provider": null
+  }
+}

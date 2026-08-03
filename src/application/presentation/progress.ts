@@ -14,6 +14,7 @@ const DETAIL_LIMIT = 112;
 
 const SESSION_LABELS: Readonly<Record<SessionType, string>> = {
   planning: '规划',
+  plan_review: '计划独立复核',
   execution: '任务执行',
   task_review: '任务独立复核',
   final_review: '最终复核',
@@ -178,6 +179,16 @@ export function renderSpecReplanning(): string {
 /** 单个 Task 完成后的稳定 Checkpoint 摘要。 */
 export function renderTaskCompleted(taskId: string, checkpoint: string): string {
   return `✓ ${taskId} 完成 · Checkpoint ${checkpoint.slice(0, 12)}`;
+}
+
+/** Planner 草稿已持久化，等待独立计划复核。 */
+export function renderPlanReviewStarted(planRevision: number): string {
+  return `◇ 计划草稿已生成 · 开始独立复核 · 计划版本 ${planRevision}`;
+}
+
+/** 独立计划复核打回后，下一趟 Planner 将消费结构化反馈。 */
+export function renderPlanReviewChangesRequired(attempt: number): string {
+  return `↻ 计划独立复核未通过 · 正在重新规划 · 第 ${attempt} 轮反馈`;
 }
 
 /** Execution 只产生候选交付物，明确提示尚未越过独立复核门禁。 */

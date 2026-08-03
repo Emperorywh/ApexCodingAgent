@@ -16,6 +16,10 @@ import {
   type IntermediateCheckpoint,
 } from './intermediate-checkpoint.js';
 import {
+  planRevisionTriggerSchema,
+  type PlanRevisionTrigger,
+} from './plan-revision-snapshot.js';
+import {
   EXECUTION_PERMISSION_MODES,
   GIT_REMOTE_NAME_PATTERN,
   type ExecutionPermissionMode,
@@ -58,6 +62,36 @@ export interface RepositoryFact {
 }
 
 /**
+ * 同一未提交 Revision 允许的独立计划复核轮次上限。
+ *
+ * 持久化形状（reviewAttempt 上限）与 ReviewPlanCandidate 的终止判定共用
+ * 同一常量，避免 Schema 与用例各自维护字面量而漂移。
+ */
+export const MAX_PLAN_REVIEW_ATTEMPTS = 3;
+
+/**
+ * 已通过确定性计划校验、正在等待独立 Reviewer 的草稿引用。
+ *
+ * 完整草稿只存在不可变 Planning Session Record 中；run.json 保存引用与
+ * 审核轮次即可支持崩溃恢复，避免复制整份计划形成第二事实源。
+ */
+export interface PlanCandidateRef {
+  readonly planRevision: number;
+  readonly plannerSessionId: string;
+  readonly specSha256: string;
+  readonly trigger: PlanRevisionTrigger;
+  readonly reviewAttempt: number;
+}
+
+/** 上一轮 Plan Review 的反馈引用，供下一趟 Planner 精确读取。 */
+export interface PlanReviewFeedbackRef {
+  readonly planRevision: number;
+  readonly plannerSessionId: string;
+  readonly reviewerSessionId: string;
+  readonly reviewAttempt: number;
+}
+
+/**
  * RUN_INTERRUPTED 终态失败时记录的恢复点（SPEC §2.4/§17 resume）：中断前
  * 的非终态状态、被中断的 Task 与 Claude Session（后者供 resume 命令经
  * `--resume --fork-session` 续接对话上下文）。仅 `resume` 命令消费；
@@ -86,6 +120,8 @@ export interface RunJson {
   repository: RepositoryFact;
   currentTaskId: string | null;
   activeSession: ActiveSession | null;
+  planCandidate: PlanCandidateRef | null;
+  planReviewFeedback: PlanReviewFeedbackRef | null;
   tasks: Record<string, TaskRuntimeState>;
   intermediateCheckpoints: IntermediateCheckpoint[];
   finalReviewEpisodes: FinalReviewEpisode[];
@@ -122,6 +158,8 @@ export const runJsonSchema = {
     'repository',
     'currentTaskId',
     'activeSession',
+    'planCandidate',
+    'planReviewFeedback',
     'tasks',
     'intermediateCheckpoints',
     'finalReviewEpisodes',
@@ -182,6 +220,58 @@ export const runJsonSchema = {
       anyOf: [{ type: 'null' }, { type: 'string', pattern: TASK_ID_PATTERN.source }],
     },
     activeSession: { anyOf: [{ type: 'null' }, activeSessionSchema] },
+    planCandidate: {
+      anyOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: [
+            'planRevision',
+            'plannerSessionId',
+            'specSha256',
+            'trigger',
+            'reviewAttempt',
+          ],
+          properties: {
+            planRevision: { type: 'integer', minimum: 1 },
+            plannerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
+            specSha256: { type: 'string', format: 'sha256' },
+            trigger: planRevisionTriggerSchema,
+            reviewAttempt: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_PLAN_REVIEW_ATTEMPTS,
+            },
+          },
+        },
+      ],
+    },
+    planReviewFeedback: {
+      anyOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: [
+            'planRevision',
+            'plannerSessionId',
+            'reviewerSessionId',
+            'reviewAttempt',
+          ],
+          properties: {
+            planRevision: { type: 'integer', minimum: 1 },
+            plannerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
+            reviewerSessionId: { type: 'string', pattern: UUID_PATTERN.source },
+            reviewAttempt: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_PLAN_REVIEW_ATTEMPTS,
+            },
+          },
+        },
+      ],
+    },
     tasks: {
       type: 'object',
       propertyNames: { pattern: TASK_ID_PATTERN.source },
@@ -223,7 +313,13 @@ export const runJsonSchema = {
                 { type: 'null' },
                 {
                   type: 'string',
-                  enum: ['planning', 'execution', 'task_review', 'final_review'],
+                  enum: [
+                    'planning',
+                    'plan_review',
+                    'execution',
+                    'task_review',
+                    'final_review',
+                  ],
                 },
               ],
             },

@@ -7,7 +7,8 @@
  *    Session Record、由调用方关闭本类型 Episode，再启动一次全新会话。
  *
  * 其他启动、流、退出、鉴权、网络和结果错误一律原样交给业务用例收尾，
- * 不进行自动重试。Planning、Execution、Task Review、Final Review 因而共享同一判定。
+ * 不进行自动重试。Planning、Plan Review、Execution、Task Review、Final Review
+ * 因而共享同一判定。
  */
 import { ApexError, isApexError } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';

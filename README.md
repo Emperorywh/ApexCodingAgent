@@ -110,6 +110,10 @@ ApexCodingAgent start
 
 ApexCodingAgent 会在当前目录及其子目录内自动找到唯一的 `SPEC.md` 并开始工作。运行期间请保持这个终端窗口开启。
 
+Planning 会为每个 Task 明确写出 `objective`、`nonGoals`、可判定的 `acceptanceCriteria`、逐条关联验收条件的结构化 `verificationPlan`，以及注意力 `budget`。默认目标上下文不超过 24 万 token，30 万 token 是硬边界；Execution 的 Claude 回合数也会被 Task 的 `maxAgentTurns` 实际限制。范围明显无法在预算内闭环的工作必须继续拆分，而不是依赖 100 万 token 窗口硬撑。
+
+计划不会由 Planner 自己直接提交。每份候选草稿都会先保存到不可变的 Planning Session Record，再交给一个全新的、严格只读的 Plan Review Session，从 SPEC、仓库架构、任务边界、验证覆盖和预算可完成性独立复核。只有 Reviewer 逐个批准全部 Task，Plan Revision 才会提交；`changes_required` 会把结构化问题送回下一趟 Planning，连续三次仍无法通过则响亮失败。
+
 每个 Task 都经过两段相互隔离的会话：Execution Session 负责实现并提交候选 Checkpoint；随后启动一个全新的、只读的 Task Review Session，从仓库、SPEC、验收标准和测试事实独立判断是否完成。Reviewer 不继承 Execution 的对话上下文，只有返回 `approved` 后 Task 才会标记为已完成；返回 `changes_required` 时会让该 Task 重新执行，返回 `replan_required` 时会重新规划。所有 Task 通过后，还会再运行一次整体 Final Review。
 
 如果需求文档使用了其他文件名，或者当前目录子树内有多份 `SPEC.md`，可以直接指定文件（仍可指向仓库内任意位置）：
@@ -152,7 +156,7 @@ ApexCodingAgent report
 ApexCodingAgent resume
 ```
 
-即可从中断的步骤继续，已经完成的步骤不会重做；计划、执行、独立 Task Review 或最终检查中断时，都会只续接被中断阶段自己的 Claude 对话。Task Review 不会续接对应的 Execution 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
+即可从中断的步骤继续，已经完成的步骤不会重做；Planning、独立 Plan Review、Execution、独立 Task Review 或最终检查中断时，都会只续接被中断阶段自己的 Claude 对话。Plan Review 不会续接 Planner 对话，Task Review 也不会续接对应的 Execution 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
 
 如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），任务会停在"正在运行"的状态。前台运行每 5 秒会写入一次存活信号（`heartbeat.json`），进程消失后信号停止更新——超过 30 秒未更新即判定旧进程已崩溃，此时直接运行 `resume` 即可自动接管（无需 `--force`），`start` 也会给出同样的提示；信号仍在更新、缺失或不可读时才需要 `resume --force` 接管，执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
 
@@ -214,6 +218,7 @@ ApexCodingAgent start --full-access
 ```
 
 完全权限模式会扩大 Claude Code 可以执行的操作范围，请谨慎使用。
+独立 Plan Review 始终使用 `plan` 权限且受会话前后 Git 快照校验。
 独立 Task Review 始终保持默认 `auto` 权限且受会话前后 Git 快照校验，不会随 `--full-access` 提升为 `bypassPermissions`。
 
 ## 卸载

@@ -7,11 +7,13 @@ import {
   normalizeExecutionResult,
   normalizeFinalReviewResult,
   normalizeTaskReviewResult,
+  validatePlanReviewResultSemantics,
   validateExecutionResultSemantics,
   validateFinalReviewResultSemantics,
   validateTaskReviewResultSemantics,
 } from '../../src/domain/results.js';
 import type { FinalReviewResult } from '../../src/domain/schemas/final-review-result.js';
+import type { PlanReviewResult } from '../../src/domain/schemas/plan-review-result.js';
 import type { TaskReviewResult } from '../../src/domain/schemas/task-review-result.js';
 import { expectApexError, mkResult, mkTask } from './fixtures.js';
 
@@ -26,6 +28,23 @@ function mkFinalReview(overrides: Partial<FinalReviewResult> = {}): FinalReviewR
     changedAreas: [],
     remainingRisks: [],
     replanReason: null,
+    ...overrides,
+  };
+}
+
+/**
+ * 构造精确覆盖两个候选 Task 的独立计划复核结果。
+ * 领域门禁测试通过覆盖、顺序和 decision/issues 耦合的局部变化验证失败路径。
+ */
+function mkPlanReview(overrides: Partial<PlanReviewResult> = {}): PlanReviewResult {
+  return {
+    decision: 'approved',
+    summary: '独立计划复核通过',
+    taskAssessments: [
+      { taskId: 'TASK-001', decision: 'approved', issues: [] },
+      { taskId: 'TASK-002', decision: 'approved', issues: [] },
+    ],
+    issues: [],
     ...overrides,
   };
 }
@@ -345,6 +364,50 @@ describe('FinalReviewResult semantics (§14.1)', () => {
           reviewedTaskIds: ['TASK-001'],
         }),
         COMPLETED_IDS,
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe('PlanReviewResult semantic gate', () => {
+  const TASK_IDS = ['TASK-001', 'TASK-002'];
+
+  it('accepts only exact ordered Task coverage for approved', () => {
+    expect(() => validatePlanReviewResultSemantics(mkPlanReview(), TASK_IDS)).not.toThrow();
+    expectApexError(
+      () =>
+        validatePlanReviewResultSemantics(
+          mkPlanReview({
+            taskAssessments: [
+              { taskId: 'TASK-002', decision: 'approved', issues: [] },
+              { taskId: 'TASK-001', decision: 'approved', issues: [] },
+            ],
+          }),
+          TASK_IDS,
+        ),
+      'PLAN_REVIEW_RESULT_INVALID',
+    );
+  });
+
+  it('couples approved and changes_required to Task and plan issues', () => {
+    expectApexError(
+      () =>
+        validatePlanReviewResultSemantics(
+          mkPlanReview({ issues: ['仍有计划级问题'] }),
+          TASK_IDS,
+        ),
+      'PLAN_REVIEW_RESULT_INVALID',
+    );
+    expect(() =>
+      validatePlanReviewResultSemantics(
+        mkPlanReview({
+          decision: 'changes_required',
+          taskAssessments: [
+            { taskId: 'TASK-001', decision: 'changes_required', issues: ['需要拆分'] },
+            { taskId: 'TASK-002', decision: 'approved', issues: [] },
+          ],
+        }),
+        TASK_IDS,
       ),
     ).not.toThrow();
   });

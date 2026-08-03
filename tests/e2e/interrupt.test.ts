@@ -71,10 +71,10 @@ describe('e2e foreground interrupt (§2.4)', () => {
         expect(task.executionEpisodes[0]!.error?.errorCode).toBe('RUN_INTERRUPTED');
         // 失败 Session Record：进程被信号结束，exitCode 为 null（不伪造整数）。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(2);
-        expect(records[1]!.status).toBe('failed');
-        expect(records[1]!.exitCode).toBeNull();
-        expect(records[1]!.error?.errorCode).toBe('RUN_INTERRUPTED');
+        expect(records).toHaveLength(3);
+        expect(records[2]!.status).toBe('failed');
+        expect(records[2]!.exitCode).toBeNull();
+        expect(records[2]!.error?.errorCode).toBe('RUN_INTERRUPTED');
         // TASK-002 保持 pending，未启动新 Session。
         expect(run.tasks['TASK-002']!.status).toBe('pending');
         expect(records.filter((record) => record.type === 'execution')).toHaveLength(1);

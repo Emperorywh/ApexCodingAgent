@@ -164,11 +164,26 @@ export function validStructuredResult(sessionType: SessionType): Record<string, 
             id: 'TASK-001',
             title: 'Bootstrap module',
             objective: 'Create the module skeleton',
+            nonGoals: ['Do not implement unrelated modules'],
             dependsOn: [],
             acceptanceCriteria: ['npm test passes'],
-            verificationHints: ['npm test'],
+            verificationPlan: [
+              {
+                id: 'VERIFY-001',
+                kind: 'command',
+                criterionIndexes: [0],
+                procedure: 'Run the repository test gate',
+                expectedEvidence: 'The command exits successfully',
+                command: 'npm test',
+                timeoutSeconds: 900,
+              },
+            ],
             likelyPaths: ['src/index.ts'],
-            estimatedSize: 'small',
+            budget: {
+              targetContextBudget: 200_000,
+              hardContextLimit: 300_000,
+              maxAgentTurns: 64,
+            },
             context: 'Greenfield module with no dependencies',
           },
         ],
@@ -184,6 +199,13 @@ export function validStructuredResult(sessionType: SessionType): Record<string, 
         changedAreas: ['src'],
         remainingRisks: [],
         replanReason: null,
+      };
+    case 'plan_review':
+      return {
+        decision: 'approved',
+        summary: 'Independent plan review passed',
+        taskAssessments: [{ taskId: 'TASK-001', decision: 'approved', issues: [] }],
+        issues: [],
       };
     case 'task_review':
       return {
@@ -221,6 +243,11 @@ export function invalidStructuredResult(sessionType: SessionType): Record<string
     case 'execution':
       return {
         ...(validStructuredResult('execution') as { decision: string }),
+        decision: 'sometimes',
+      };
+    case 'plan_review':
+      return {
+        ...(validStructuredResult('plan_review') as { decision: string }),
         decision: 'sometimes',
       };
     case 'task_review':

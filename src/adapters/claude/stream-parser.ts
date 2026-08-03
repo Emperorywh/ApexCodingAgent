@@ -30,6 +30,7 @@ import {
 
 const RESULT_SCHEMA_BY_SESSION_TYPE = {
   planning: 'TaskPlanDraft',
+  plan_review: 'PlanReviewResult',
   execution: 'TaskExecutionResult',
   task_review: 'TaskReviewResult',
   final_review: 'FinalReviewResult',

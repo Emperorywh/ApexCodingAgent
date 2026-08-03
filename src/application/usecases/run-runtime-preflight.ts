@@ -102,7 +102,10 @@ export function reportApexVersion(
   output.writeLine(redaction.redactText(renderAgentBanner(agentVersion)));
 }
 
-/** 有界探测 Claude 版本与九项命令能力，并记录统一诊断事件。 */
+/**
+ * 有界探测 Claude 版本与十项命令能力，并记录统一诊断事件；具体能力证据
+ * 由 Claude Adapter 解释，本用例只编排端口并输出已脱敏的稳定事实。
+ */
 export async function probeClaudeCapabilities(
   claude: ClaudeRuntimePort,
   output: OutputPort,

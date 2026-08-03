@@ -195,9 +195,9 @@ export class ClaudeInvocationError extends ApexError {
 
 export interface ClaudeRuntimePort {
   /**
-   * 通过参数数组执行 `claude --version` 和 `claude --help`，并确认必需
-   * 选项及枚举值明确存在。缺失时直接失败并列出实际版本与缺失能力，
-   * 不提供兼容或降级路径。
+   * 通过参数数组执行版本、帮助与无副作用参数校验，确认必需选项及枚举值
+   * 确实可用。缺失时直接失败并列出实际版本与缺失能力，不按版本号推测，
+   * 也不在 Application 层感知具体探测策略。
    */
   probeCapabilities(): Promise<ClaudeCapabilityReport>;
 

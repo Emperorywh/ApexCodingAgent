@@ -1,0 +1,20 @@
+Usage: claude [options] [command] [prompt]
+
+Claude Code - starts an interactive session by default, use -p/--print for non-interactive mode
+
+Arguments:
+  prompt                          Your prompt
+
+Options:
+  -p, --print                     print response and exit (useful for pipes)
+  --output-format <format>        output format: text, json, stream-json (default: "text")
+  --input-format <format>         input format: text, stream-json (default: "text")
+  --json-schema <schema>          JSON Schema for structured output validation
+  --verbose                       enable verbose logging
+  --session-id <uuid>             use a specific session ID (must be a valid UUID)
+  -r, --resume [value]            resume a conversation by session ID
+  --fork-session                  when resuming, create a new session ID
+  --permission-mode <mode>        permission mode to use for the session: plan, auto, bypassPermissions (default: "default")
+  --model <model>                 model for the current session
+  --version                       output the version number
+  -h, --help                      display help for command

@@ -41,6 +41,11 @@ describe('parseCapabilityHelp fixtures', () => {
     expect(parse.missing).toEqual(['permission-mode auto', 'permission-mode bypassPermissions']);
   });
 
+  it('keeps hidden --max-turns missing until behavioral evidence is collected', () => {
+    const parse = parseCapabilityHelp(helpFixture('hidden-max-turns.help.txt'));
+    expect(parse.missing).toEqual(['max-turns']);
+  });
+
   it('unparseable help means every capability is missing', () => {
     const parse = parseCapabilityHelp(helpFixture('unparseable.help.txt'));
     expect([...parse.missing].sort()).toEqual([...ALL_CAPABILITY_IDS].sort());
@@ -79,23 +84,34 @@ describe('parseCapabilityHelp fixtures', () => {
   });
 });
 
-type ScriptedOutcome = { readonly code: number; readonly stdout: string } | 'spawn-failure';
+type ScriptedOutcome = {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr?: string;
+} | 'spawn-failure';
 
 function scriptedRunner(script: {
   readonly version?: ScriptedOutcome;
   readonly help?: ScriptedOutcome;
+  readonly maxTurnsValidation?: ScriptedOutcome;
 }): ProbeRunner {
   return async (args: readonly string[]) => {
-    const which = args.includes('--version')
-      ? 'version'
-      : args.includes('--help')
-        ? 'help'
-        : undefined;
+    /*
+     * max-turns 行为探针同样携带 --help，必须先按专用非法值识别；否则测试
+     * 会把第二阶段证据错误路由到普通 help 输出，掩盖真实调用顺序。
+     */
+    const which = args.includes('apex-max-turns-capability-check')
+      ? 'maxTurnsValidation'
+      : args.includes('--version')
+        ? 'version'
+        : args.includes('--help')
+          ? 'help'
+          : undefined;
     if (which === undefined) throw new Error(`unexpected probe args: ${args.join(' ')}`);
     const outcome = script[which];
     if (outcome === undefined) throw new Error(`no scripted outcome for ${which}`);
     if (outcome === 'spawn-failure') throw new Error('spawn claude ENOENT');
-    return { code: outcome.code, stdout: outcome.stdout, stderr: '' };
+    return { code: outcome.code, stdout: outcome.stdout, stderr: outcome.stderr ?? '' };
   };
 }
 
@@ -122,6 +138,52 @@ describe('createCapabilityProbe', () => {
     const report = await capabilityProbe(healthyRunner()).probeCapabilities();
     expect(report.version).toBe(VERSION);
     expect([...report.capabilities].sort()).toEqual([...ALL_CAPABILITY_IDS].sort());
+  });
+
+  it('confirms hidden --max-turns through its argument validator without starting a session', async () => {
+    const calls: string[][] = [];
+    const base = scriptedRunner({
+      version: { code: 0, stdout: VERSION },
+      help: { code: 0, stdout: helpFixture('hidden-max-turns.help.txt') },
+      maxTurnsValidation: {
+        code: 1,
+        stdout: '',
+        stderr:
+          "error: option '--max-turns <turns>' argument " +
+          "'apex-max-turns-capability-check' is invalid. must be a number",
+      },
+    });
+    const report = await capabilityProbe(async (args) => {
+      calls.push([...args]);
+      return base(args);
+    }).probeCapabilities();
+
+    expect(report.capabilities).toEqual(ALL_CAPABILITY_IDS);
+    expect(calls).toEqual([
+      ['--version'],
+      ['--help'],
+      ['--max-turns', 'apex-max-turns-capability-check', '--help'],
+    ]);
+  });
+
+  it('does not mistake an unknown --max-turns option for behavioral capability evidence', async () => {
+    const probe = capabilityProbe(
+      scriptedRunner({
+        version: { code: 0, stdout: VERSION },
+        help: { code: 0, stdout: helpFixture('hidden-max-turns.help.txt') },
+        maxTurnsValidation: {
+          code: 1,
+          stdout: '',
+          stderr: "error: unknown option '--max-turns'",
+        },
+      }),
+    );
+
+    const error = await expectApexErrorAsync(
+      () => probe.probeCapabilities(),
+      'CLAUDE_CAPABILITY_MISSING',
+    );
+    expect(error.message).toContain('max-turns');
   });
 
   it('maps a failing --version to CLAUDE_INSTALLATION_UNHEALTHY naming the underlying reason', async () => {

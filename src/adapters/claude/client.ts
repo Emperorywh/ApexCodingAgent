@@ -65,7 +65,10 @@ export interface ClaudeRuntimeOptions {
   readonly processExecutor: ProcessExecutor;
   readonly fileSystem: FileSystemPort;
   readonly redaction: RedactionPort;
-  /** version/help 探测超时；正式 Session 不设置自动超时。 */
+  /**
+   * 版本、帮助和无副作用参数校验共用的能力探测超时；正式 Session 不设置
+   * 自动超时，避免任务规模增长后被基础设施提前终止。
+   */
   readonly probeTimeoutMs?: number;
 }
 

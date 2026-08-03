@@ -1,7 +1,7 @@
 /**
- * Claude 能力探测实现。`claude --version` 与 `claude --help` 都通过参数
- * 数组运行；必需选项和枚举值必须在对应选项声明中明确出现。缺失、
- * 含糊或不可解析都视为能力缺失，不提供兼容或降级路径。
+ * Claude 能力探测实现。版本与公开选项以 `--version` / `--help` 为主证据；
+ * 未展示但仍受支持的必需选项通过独立、无 Session 副作用的参数校验确认。
+ * 缺少正面证据、证据含糊或不可解析都视为能力缺失，不按版本号猜测能力。
  */
 import type { ClaudeCapabilityReport } from '../../application/ports/ClaudeRuntimePort.js';
 import { claudeCapabilityMissing, claudeInstallationUnhealthy } from './errors.js';
@@ -154,6 +154,72 @@ export function parseCapabilityHelp(helpText: string): CapabilityParse {
   return { found, missing };
 }
 
+interface BehavioralCapabilityProbe {
+  readonly id: string;
+  readonly args: readonly string[];
+  readonly confirms: (result: ProbeRunResult) => boolean;
+}
+
+const MAX_TURNS_INVALID_VALUE = 'apex-max-turns-capability-check';
+
+/**
+ * Claude Code 2.1.220 仍接受 --max-turns，但不再把它展示在顶层 help 中。
+ * 这里故意提交非数字值并同时请求 help：已注册的选项会先执行数值校验，
+ * 未注册的选项则不会产生包含该值的数值诊断，全程不会创建 Session 或访问网络。
+ */
+const BEHAVIORAL_CAPABILITY_PROBES: readonly BehavioralCapabilityProbe[] = [
+  {
+    id: 'max-turns',
+    args: ['--max-turns', MAX_TURNS_INVALID_VALUE, '--help'],
+    confirms: (result) => {
+      const diagnostic = `${result.stdout}\n${result.stderr}`;
+      return (
+        result.code !== 0 &&
+        diagnostic.includes('--max-turns') &&
+        diagnostic.includes(MAX_TURNS_INVALID_VALUE) &&
+        /\b(?:invalid|number|integer)\b/i.test(diagnostic) &&
+        !/\bunknown option\b/i.test(diagnostic)
+      );
+    },
+  },
+];
+
+/**
+ * help 文本仍是公开能力的首要证据；只有 help 未声明、但存在独立行为探针的
+ * 能力才会进入第二阶段。结果最终按 REQUIRED_CAPABILITIES 的稳定顺序重建，
+ * 使调用方不需要理解某项能力来自静态声明还是无副作用的参数校验。
+ */
+async function resolveCapabilityEvidence(
+  run: ProbeRunner,
+  helpParse: CapabilityParse,
+): Promise<CapabilityParse> {
+  const confirmed = new Set(helpParse.found);
+  const pendingProbes = BEHAVIORAL_CAPABILITY_PROBES.filter((probe) =>
+    helpParse.missing.includes(probe.id),
+  );
+
+  await Promise.all(
+    pendingProbes.map(async (probe) => {
+      try {
+        if (probe.confirms(await run(probe.args))) confirmed.add(probe.id);
+      } catch {
+        /*
+         * 行为探针无法执行就是缺少正面能力证据；统一留给下方缺失能力错误，
+         * 不在 Adapter 内引入版本猜测或静默放行路径。
+         */
+      }
+    }),
+  );
+
+  const found = REQUIRED_CAPABILITIES.map((check) => check.id).filter((id) =>
+    confirmed.has(id),
+  );
+  const missing = REQUIRED_CAPABILITIES.map((check) => check.id).filter(
+    (id) => !confirmed.has(id),
+  );
+  return { found, missing };
+}
+
 export interface CapabilityProbe {
   /** 执行完整能力检查，发现任一缺失即抛出稳定错误。 */
   probeCapabilities(): Promise<ClaudeCapabilityReport>;
@@ -225,7 +291,10 @@ export function createCapabilityProbe(
         { detail: `claude --help exited with code ${help.code} or produced no output` },
       );
     }
-    const { found, missing } = parseCapabilityHelp(help.stdout);
+    const { found, missing } = await resolveCapabilityEvidence(
+      run,
+      parseCapabilityHelp(help.stdout),
+    );
     if (missing.length > 0) {
       throw claudeCapabilityMissing(missing, version);
     }

@@ -249,12 +249,13 @@ export function createResumeRun(deps: RunCommandDeps): {
 
     /**
      * 完整 Git 预检必须发生在任何 Session Record 或 run.json 写入之前。
-     * Planning 严格只读；Execution/Final Review 的活动 Session 可以保留
-     * expectedHead 之上的安全提交。
+     * Planning/Task Review 严格只读；Execution/Final Review 的活动
+     * Session 可以保留 expectedHead 之上的安全提交。
      */
     try {
       if (
-        classification.point.fromStatus === 'planning' &&
+        (classification.point.sessionType === 'planning' ||
+          classification.point.sessionType === 'task_review') &&
         classification.point.sessionId !== null
       ) {
         await bound.git.assertWorkingTreeClean(root, run.spec.path);
@@ -265,7 +266,8 @@ export function createResumeRun(deps: RunCommandDeps): {
         {
           allowAdvancedHead:
             classification.point.sessionId !== null &&
-            classification.point.fromStatus !== 'planning',
+            (classification.point.sessionType === 'execution' ||
+              classification.point.sessionType === 'final_review'),
         },
       );
       return {

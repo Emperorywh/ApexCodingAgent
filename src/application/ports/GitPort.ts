@@ -58,18 +58,24 @@ export interface SessionGitFacts {
   readonly specGitPath: string;
 }
 
-/** Planning side-effect snapshot (SPEC §8.3): HEAD plus the filtered
- * `git status --porcelain` entry set (SPEC and `.apex-coding-agent/` exempted). */
-export interface PlanningSnapshot {
+/**
+ * 只读 Session 副作用快照：HEAD 加过滤后的 `git status --porcelain` 条目集，
+ * SPEC 与 `.apex-coding-agent/` 由各自的专用保护规则处理。
+ */
+export interface ReadOnlySessionSnapshot {
   readonly head: string;
   readonly statusEntries: readonly string[];
 }
 
+export type ReadOnlySessionType = 'planning' | 'task_review';
+
 /** Facts captured at session start; threaded into {@link GitPort.assertSessionEnd}. */
 export interface SessionStartFact {
   readonly head: string;
-  /** Non-null only for Planning Sessions. */
-  readonly planningSnapshot: PlanningSnapshot | null;
+  /** 仅只读 Planning / Task Review Session 非空。 */
+  readonly readOnlySnapshot: ReadOnlySessionSnapshot | null;
+  /** 与 readOnlySnapshot 同时为 null 或同时非 null。 */
+  readonly readOnlySessionType: ReadOnlySessionType | null;
 }
 
 /**
@@ -225,13 +231,13 @@ export interface GitPort {
    * equal to `facts.expectedHead` (`GIT_FACT_CONFLICT`), Base Branch ref still
    * pinned to `baseCommit` and completed checkpoints still ancestors of HEAD
    * (`GIT_HISTORY_DIVERGED`), `.apex-coding-agent/` untracked and SPEC not
-   * staged (`PROTECTED_PATH_CHANGED`). Returns the session-start HEAD (plus a
-   * Planning snapshot when `options.planning`).
+   * staged (`PROTECTED_PATH_CHANGED`). 只读 Planning/Task Review 还会返回
+   * 会话前 Git 快照，用于结束时检测任何仓库副作用。
    */
   assertSessionStart(
     root: string,
     facts: SessionGitFacts,
-    options?: { readonly planning?: boolean },
+    options?: { readonly readOnlySessionType?: ReadOnlySessionType },
   ): Promise<SessionStartFact>;
 
   /**
@@ -252,9 +258,9 @@ export interface GitPort {
    * SPEC §8.3 post-session invariants: same branch/Base/ancestor/tracked/
    * staged checks, plus session-added commits must not contain SPEC or
    * `.apex-coding-agent/` (`PROTECTED_PATH_CHANGED`). When the start fact
-   * carries a Planning snapshot, HEAD and the filtered status entry set must
-   * be identical to the snapshot (`PLANNING_SIDE_EFFECT_DETECTED`; no
-   * automatic rollback).
+   * carries a read-only snapshot, HEAD and the filtered status entry set must
+   * be identical to the snapshot（Planning 使用 `PLANNING_SIDE_EFFECT_DETECTED`，
+   * Task Review 使用 `TASK_REVIEW_SIDE_EFFECT_DETECTED`；均不自动回滚）。
    */
   assertSessionEnd(
     root: string,

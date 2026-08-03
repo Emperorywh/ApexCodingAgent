@@ -4,7 +4,7 @@
  */
 import { TASK_ID_PATTERN, UUID_PATTERN } from '../ids.js';
 
-export type SessionType = 'planning' | 'execution' | 'final_review';
+export type SessionType = 'planning' | 'execution' | 'task_review' | 'final_review';
 
 export interface ActiveSession {
   sessionId: string;
@@ -26,7 +26,7 @@ export const activeSessionSchema = {
   required: ['sessionId', 'type', 'taskId', 'planRevision', 'specSha256', 'startedAt'],
   properties: {
     sessionId: { type: 'string', pattern: UUID_PATTERN.source },
-    type: { type: 'string', enum: ['planning', 'execution', 'final_review'] },
+    type: { type: 'string', enum: ['planning', 'execution', 'task_review', 'final_review'] },
     taskId: {
       anyOf: [
         { type: 'null' },

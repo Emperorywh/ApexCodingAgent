@@ -1,5 +1,5 @@
 /**
- * Central registry of the 15 built-in schemas (SPEC §11.5), all versioned at
+ * Central registry of the 17 built-in schemas (SPEC §11.5), all versioned at
  * `schemaVersion: 1`. Exposes the single `validate(schemaName, data)` entry
  * used by every layer; cross-field conditional rules beyond JSON Schema live
  * in `src/domain/invariants.ts`, `plan.ts` and `results.ts`.
@@ -21,15 +21,19 @@ import { taskExecutionEpisodeSchema } from './task-execution-episode.js';
 import { taskExecutionResultSchema } from './task-execution-result.js';
 import { taskPlanDraftSchema } from './task-plan-draft.js';
 import { taskRuntimeStateSchema } from './task-runtime-state.js';
+import { taskReviewEpisodeSchema } from './task-review-episode.js';
+import { taskReviewResultSchema } from './task-review-result.js';
 import { tasksJsonSchema } from './tasks-json.js';
 
 export const SCHEMA_NAMES = [
   'TaskPlanDraft',
   'TaskExecutionResult',
+  'TaskReviewResult',
   'FinalReviewResult',
   'ActiveSession',
   'TaskRuntimeState',
   'TaskExecutionEpisode',
+  'TaskReviewEpisode',
   'FinalReviewEpisode',
   'IntermediateCheckpoint',
   'ErrorRecord',
@@ -53,10 +57,12 @@ interface SchemaDefinition {
 const SCHEMA_DEFINITIONS: Record<SchemaName, SchemaDefinition> = {
   TaskPlanDraft: { schemaVersion: SCHEMA_VERSION, schema: taskPlanDraftSchema },
   TaskExecutionResult: { schemaVersion: SCHEMA_VERSION, schema: taskExecutionResultSchema },
+  TaskReviewResult: { schemaVersion: SCHEMA_VERSION, schema: taskReviewResultSchema },
   FinalReviewResult: { schemaVersion: SCHEMA_VERSION, schema: finalReviewResultSchema },
   ActiveSession: { schemaVersion: SCHEMA_VERSION, schema: activeSessionSchema },
   TaskRuntimeState: { schemaVersion: SCHEMA_VERSION, schema: taskRuntimeStateSchema },
   TaskExecutionEpisode: { schemaVersion: SCHEMA_VERSION, schema: taskExecutionEpisodeSchema },
+  TaskReviewEpisode: { schemaVersion: SCHEMA_VERSION, schema: taskReviewEpisodeSchema },
   FinalReviewEpisode: { schemaVersion: SCHEMA_VERSION, schema: finalReviewEpisodeSchema },
   IntermediateCheckpoint: { schemaVersion: SCHEMA_VERSION, schema: intermediateCheckpointSchema },
   ErrorRecord: { schemaVersion: SCHEMA_VERSION, schema: errorRecordSchema },

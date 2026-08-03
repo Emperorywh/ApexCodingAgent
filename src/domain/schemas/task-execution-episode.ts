@@ -13,14 +13,14 @@ import {
 } from './task-execution-result.js';
 
 export type ExecutionEpisodeOutcome =
-  | 'completed'
+  | 'awaiting_review'
   | 'failed'
   | 'replan_required'
   | 'spec_changed'
   | 'session_error';
 
 export const EXECUTION_EPISODE_OUTCOMES: readonly ExecutionEpisodeOutcome[] = [
-  'completed',
+  'awaiting_review',
   'failed',
   'replan_required',
   'spec_changed',

@@ -79,8 +79,13 @@ describe('e2e happy path', () => {
           expect(state.completedResult?.decision).toBe('completed');
           expect(state.finalCheckpoint).toMatch(/^[0-9a-f]{40}$/);
           expect(state.executionEpisodes).toHaveLength(1);
-          expect(state.executionEpisodes[0]!.outcome).toBe('completed');
+          expect(state.executionEpisodes[0]!.outcome).toBe('awaiting_review');
           expect(state.executionEpisodes[0]!.finalCheckpoint).toBe(state.finalCheckpoint);
+          expect(state.taskReviewEpisodes).toHaveLength(1);
+          expect(state.taskReviewEpisodes[0]!.outcome).toBe('approved');
+          expect(state.taskReviewEpisodes[0]!.sessionId).not.toBe(
+            state.executionEpisodes[0]!.sessionId,
+          );
         }
         expect(run.finalReviewEpisodes).toHaveLength(1);
         expect(run.finalReviewEpisodes[0]!.decision).toBe('completed');
@@ -98,11 +103,13 @@ describe('e2e happy path', () => {
 
         // ---- sessions：4 个 completed Record，退出码 0 ----
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(4);
+        expect(records).toHaveLength(6);
         expect(records.map((record) => record.type)).toEqual([
           'planning',
           'execution',
+          'task_review',
           'execution',
+          'task_review',
           'final_review',
         ]);
         for (const record of records) {
@@ -112,7 +119,9 @@ describe('e2e happy path', () => {
           expect(record.claude.version).toBe(FAKE_VERSION);
         }
         expect(records[1]!.taskId).toBe('TASK-001');
-        expect(records[2]!.taskId).toBe('TASK-002');
+        expect(records[2]!.taskId).toBe('TASK-001');
+        expect(records[3]!.taskId).toBe('TASK-002');
+        expect(records[4]!.taskId).toBe('TASK-002');
         expect(tasks.plannerSessionId).toBe(records[0]!.sessionId);
 
         // ---- report.md ----
@@ -152,16 +161,18 @@ describe('e2e happy path', () => {
           ),
         ).toBe(true);
 
-        // ---- 参数数组：planning=plan，execution/final_review=auto ----
+        // ---- 参数数组：planning=plan，execution/final_review=auto，task_review=auto ----
         const invocations = await harness.readRecords();
         const sessions = invocations.filter((record) => record.argv.includes('--session-id'));
-        expect(sessions).toHaveLength(4);
+        expect(sessions).toHaveLength(6);
         const permissionOf = (record: (typeof sessions)[number]) =>
           record.argv[record.argv.indexOf('--permission-mode') + 1];
         expect(permissionOf(sessions[0]!)).toBe('plan');
         expect(permissionOf(sessions[1]!)).toBe('auto');
         expect(permissionOf(sessions[2]!)).toBe('auto');
         expect(permissionOf(sessions[3]!)).toBe('auto');
+        expect(permissionOf(sessions[4]!)).toBe('auto');
+        expect(permissionOf(sessions[5]!)).toBe('auto');
         for (const record of sessions) {
           expect(record.cwd).toBe(harness.repo.root);
           expect(record.argv[0]).toBe('-p');
@@ -200,8 +211,10 @@ describe('e2e happy path', () => {
           record.argv[record.argv.indexOf('--permission-mode') + 1];
         expect(permissionOf(sessions[0]!)).toBe('plan');
         expect(permissionOf(sessions[1]!)).toBe('bypassPermissions');
-        expect(permissionOf(sessions[2]!)).toBe('bypassPermissions');
+        expect(permissionOf(sessions[2]!)).toBe('auto');
         expect(permissionOf(sessions[3]!)).toBe('bypassPermissions');
+        expect(permissionOf(sessions[4]!)).toBe('auto');
+        expect(permissionOf(sessions[5]!)).toBe('bypassPermissions');
       } finally {
         await harness.cleanup();
       }

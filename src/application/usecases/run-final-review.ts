@@ -297,12 +297,13 @@ export function createRunFinalReview(deps: UseCaseDeps): {
       planRevision: run.planRevision,
       completedTasks: tasks.tasks.map((task) => {
         const state = run.tasks[task.id]!;
+        const approval = state.taskReviewEpisodes.at(-1)!;
         return {
           definition: task,
-          resultSummary: state.completedResult!.summary,
-          acceptanceEvidence: state.completedResult!.acceptanceEvidence,
+          resultSummary: approval.summary!,
+          acceptanceEvidence: approval.acceptanceEvidence,
           finalCheckpoint: state.finalCheckpoint!,
-          tests: state.completedResult!.tests,
+          tests: approval.tests,
         };
       }),
       skippedTasks: Object.values(run.tasks)

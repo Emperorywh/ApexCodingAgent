@@ -56,7 +56,7 @@ export function createGitAdapter(options: GitAdapterOptions): GitPort {
     ensureStateDirectoryExcluded: (root) => ensureStateDirectoryExcluded(git, root),
     createRunBranch: (root, runId) => createRunBranch(git, root, runId),
     assertSessionStart: (root, facts, options) =>
-      assertSessionStartFacts(git, root, facts, options?.planning === true),
+      assertSessionStartFacts(git, root, facts, options?.readOnlySessionType ?? null),
     assertResumePosition: (root, facts, options) =>
       assertResumePositionFacts(git, root, facts, options.allowAdvancedHead),
     assertSessionEnd: (root, facts, start) => assertSessionEndFacts(git, root, facts, start),

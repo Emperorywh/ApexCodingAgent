@@ -9,8 +9,25 @@
  */
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
+import type {
+  AcceptanceEvidence,
+  TestReport,
+} from '../../domain/schemas/task-execution-result.js';
 import type { CompletedTaskSummary } from './planning.js';
 import { VERIFICATION_POLICY } from './verification-policy.js';
+
+/**
+ * 上一轮独立 Task Review 打回（changes_required）时传给修复执行的反馈事实。
+ *
+ * 只注入可执行的负面证据：复核摘要、未满足的验收证据、失败测试与问题
+ * 清单；仍不注入 Reviewer 的对话上下文，保持会话间上下文隔离。
+ */
+export interface TaskReviewFeedback {
+  readonly summary: string;
+  readonly issues: readonly string[];
+  readonly failedTests: readonly TestReport[];
+  readonly unsatisfiedEvidence: readonly AcceptanceEvidence[];
+}
 
 export interface ExecutionPromptInput {
   /** 仓库根目录绝对路径。 */
@@ -29,6 +46,8 @@ export interface ExecutionPromptInput {
   readonly completedTasks: readonly CompletedTaskSummary[];
   /** 当前 Task 接管的中间 Checkpoint。 */
   readonly adoptedCheckpoints: readonly IntermediateCheckpoint[];
+  /** 上一轮独立复核的打回反馈；非返工执行时为 null。 */
+  readonly reviewFeedback: TaskReviewFeedback | null;
 }
 
 /** SPEC §25 规范性基线文本（逐条保留，不得删改核心职责与安全边界）。 */
@@ -85,6 +104,26 @@ function formatAdoptedCheckpoints(checkpoints: readonly IntermediateCheckpoint[]
     .join('\n');
 }
 
+/** 独立复核打回反馈小节；仅返工执行（上一结论为 changes_required）时出现。 */
+function formatReviewFeedback(feedback: TaskReviewFeedback | null): string[] {
+  if (feedback === null) return [];
+  const lines = [
+    '',
+    'REVIEW_FEEDBACK（候选实现未通过上一轮独立复核；以下问题必须在本次执行中全部解决后才能返回 completed，不得仅复述先前结论）：',
+    `- 复核摘要：${feedback.summary}`,
+  ];
+  for (const evidence of feedback.unsatisfiedEvidence) {
+    lines.push(`- 未满足验收标准 ${evidence.criterionIndex}：${evidence.evidence}`);
+  }
+  for (const test of feedback.failedTests) {
+    lines.push(`- 失败测试：${test.command}`);
+  }
+  for (const issue of feedback.issues) {
+    lines.push(`- 待修复问题：${issue}`);
+  }
+  return lines;
+}
+
 /** TaskExecutionResult 结构化结果格式说明（SPEC §9.2/§9.4）。 */
 const RESULT_FORMAT_SECTION = `TASK_EXECUTION_RESULT_FORMAT（结构化结果格式说明）：
 返回 TaskExecutionResult，包含字段：
@@ -116,6 +155,7 @@ function buildContextSection(input: ExecutionPromptInput): string {
     '',
     'ADOPTED_INTERMEDIATE_CHECKPOINTS（当前 Task 接管的中间 Checkpoint）：',
     formatAdoptedCheckpoints(input.adoptedCheckpoints),
+    ...formatReviewFeedback(input.reviewFeedback),
     '',
     RESULT_FORMAT_SECTION,
   ].join('\n');

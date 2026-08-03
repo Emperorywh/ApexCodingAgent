@@ -72,9 +72,69 @@ function recordInvocation(scenario) {
   );
 }
 
+/**
+ * 判断当前调用是否请求 TaskReviewResult Schema。
+ *
+ * 该测试设施分支只为既有 E2E 场景自动补齐新增的独立复核调用；生产代码
+ * 仍然真实启动一个全新 Session，且显式复核测试可以关闭自动批准。
+ */
+function isTaskReviewInvocation() {
+  const schemaIndex = argv.indexOf('--json-schema');
+  if (schemaIndex < 0 || schemaIndex + 1 >= argv.length) return false;
+  try {
+    const schema = JSON.parse(argv[schemaIndex + 1]);
+    const decisions = schema?.properties?.decision?.enum;
+    return Array.isArray(decisions) && decisions.includes('approved');
+  } catch {
+    return false;
+  }
+}
+
+/** 从当前持久化计划生成与验收标准数量一致的独立批准结果。 */
+function automaticTaskReviewScenario() {
+  let criterionCount = 1;
+  try {
+    const run = JSON.parse(
+      readFileSync(`${process.cwd()}/.apex-coding-agent/run.json`, 'utf8'),
+    );
+    const tasks = JSON.parse(
+      readFileSync(`${process.cwd()}/.apex-coding-agent/tasks.json`, 'utf8'),
+    );
+    const task = tasks.tasks.find((item) => item.id === run.currentTaskId);
+    criterionCount = task?.acceptanceCriteria?.length ?? 1;
+  } catch {
+    criterionCount = 1;
+  }
+  return {
+    stdoutLines: [
+      { type: 'system', subtype: 'init', session_id: '{sessionId}', model: 'fake-review-model' },
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: '{sessionId}',
+        structured_output: {
+          decision: 'approved',
+          summary: '独立复核通过',
+          tests: [{ command: 'npm test', result: 'passed' }],
+          acceptanceEvidence: Array.from({ length: criterionCount }, (_, index) => ({
+            criterionIndex: index,
+            status: 'satisfied',
+            evidence: `独立复核证据 ${index}`,
+          })),
+          issues: [],
+          replanReason: null,
+        },
+      },
+    ],
+  };
+}
+
 /** 序列场景：按 counter 文件取出本次 Session 的场景元素。 */
 function pickScenario() {
   if (!Array.isArray(scenarioFile.sequence)) return scenarioFile;
+  if (scenarioFile.autoApproveTaskReviews === true && isTaskReviewInvocation()) {
+    return automaticTaskReviewScenario();
+  }
   const counterPath = `${scenarioPath}.counter`;
   const index = existsSync(counterPath)
     ? Number.parseInt(readFileSync(counterPath, 'utf8').trim(), 10) || 0

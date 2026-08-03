@@ -146,8 +146,14 @@ export function claudeResultInvalid(
     readonly toolSummary?: string | null;
   } = {},
 ): ClaudeInvocationError {
+  const errorCode =
+    sessionType === 'final_review'
+      ? 'FINAL_REVIEW_RESULT_INVALID'
+      : sessionType === 'task_review'
+        ? 'TASK_REVIEW_RESULT_INVALID'
+        : 'CLAUDE_RESULT_INVALID';
   return invocationError(
-    sessionType === 'final_review' ? 'FINAL_REVIEW_RESULT_INVALID' : 'CLAUDE_RESULT_INVALID',
+    errorCode,
     detail,
     {
       stage: sessionType,

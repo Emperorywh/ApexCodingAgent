@@ -2,7 +2,7 @@
 
 ApexCodingAgent 是一款运行在 Windows 终端中的 Claude Code 长任务助手。
 
-当一个软件需求很大、无法在一次 Claude Code 会话中完成时，你只需要准备一份 `SPEC.md`。ApexCodingAgent 会让 Claude Code 先制定计划，再逐项完成任务，保存每一步的 Git 记录，最后检查整体结果并生成报告。
+当一个软件需求很大、无法在一次 Claude Code 会话中完成时，你只需要准备一份 `SPEC.md`。ApexCodingAgent 会让 Claude Code 先制定计划，再逐项实现和独立复核任务，保存每一步的 Git 记录，最后检查整体结果并生成报告。
 
 它适合：
 
@@ -110,6 +110,8 @@ ApexCodingAgent start
 
 ApexCodingAgent 会在当前目录及其子目录内自动找到唯一的 `SPEC.md` 并开始工作。运行期间请保持这个终端窗口开启。
 
+每个 Task 都经过两段相互隔离的会话：Execution Session 负责实现并提交候选 Checkpoint；随后启动一个全新的、只读的 Task Review Session，从仓库、SPEC、验收标准和测试事实独立判断是否完成。Reviewer 不继承 Execution 的对话上下文，只有返回 `approved` 后 Task 才会标记为已完成；返回 `changes_required` 时会让该 Task 重新执行，返回 `replan_required` 时会重新规划。所有 Task 通过后，还会再运行一次整体 Final Review。
+
 如果需求文档使用了其他文件名，或者当前目录子树内有多份 `SPEC.md`，可以直接指定文件（仍可指向仓库内任意位置）：
 
 ```powershell
@@ -150,7 +152,7 @@ ApexCodingAgent report
 ApexCodingAgent resume
 ```
 
-即可从中断的步骤继续，已经完成的步骤不会重做；计划、执行或最终检查中断时都会尽量续接原来的 Claude 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
+即可从中断的步骤继续，已经完成的步骤不会重做；计划、执行、独立 Task Review 或最终检查中断时，都会只续接被中断阶段自己的 Claude 对话。Task Review 不会续接对应的 Execution 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
 
 如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），任务会停在"正在运行"的状态。前台运行每 5 秒会写入一次存活信号（`heartbeat.json`），进程消失后信号停止更新——超过 30 秒未更新即判定旧进程已崩溃，此时直接运行 `resume` 即可自动接管（无需 `--force`），`start` 也会给出同样的提示；信号仍在更新、缺失或不可读时才需要 `resume --force` 接管，执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
 
@@ -201,6 +203,7 @@ ApexCodingAgent start --verbose
 - 自动推送只允许 fast-forward 更新，不会强制推送；远程不存在、认证失败、网络失败或远程分支发生冲突时，Run 会以稳定错误码停止，且不会自动重试。
 - Claude Code、网络或额度出现问题时，任务会停止。使用 `ApexCodingAgent status` 查看原因，解决问题后重新运行 `ApexCodingAgent start`。
 - 认证、网络、额度或普通执行失败不会自动重试，需要人工处理后重新开始或恢复。
+- 升级版本前请先把进行中的任务跑到终态（或 `abandon --force` 放弃）：状态契约在 schemaVersion 内不做读取迁移，早期版本写入的在途/残留 Run（状态文件缺少 `resumePoint` 或 `resumePoint.sessionType` 字段）新版本无法读取、恢复、报告或归档，只能手动删除 `.apex-coding-agent` 目录后重新开始。
 
 ## 完全权限模式
 
@@ -211,6 +214,7 @@ ApexCodingAgent start --full-access
 ```
 
 完全权限模式会扩大 Claude Code 可以执行的操作范围，请谨慎使用。
+独立 Task Review 始终保持默认 `auto` 权限且受会话前后 Git 快照校验，不会随 `--full-access` 提升为 `bypassPermissions`。
 
 ## 卸载
 

@@ -8,7 +8,16 @@ import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { CheckpointOutcome } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 
-export type CheckpointKind = 'task-final' | 'task-intermediate' | 'final-review-final' | 'final-review-intermediate';
+/**
+ * task-candidate：Execution 候选 Checkpoint（批准前先发布留痕）；
+ * 其余为中间/最终复核 Checkpoint。Task 的最终 Checkpoint 复用候选发布，
+ * 不再有独立 task-final 种类。
+ */
+export type CheckpointKind =
+  | 'task-candidate'
+  | 'task-intermediate'
+  | 'final-review-final'
+  | 'final-review-intermediate';
 
 export async function publishCheckpoint(
   deps: Pick<UseCaseDeps, 'git' | 'logger'>,

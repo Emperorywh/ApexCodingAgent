@@ -132,6 +132,8 @@ export function createAbandonRun(deps: AbandonRunDeps): {
             [task.taskId]: {
               ...task,
               status: 'failed',
+              candidateResult: null,
+              candidateCheckpoint: null,
               failure: toErrorRecord(abandoned, now(), deps.redaction),
             },
           },

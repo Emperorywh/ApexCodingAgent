@@ -37,7 +37,7 @@ import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-sna
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
-import { buildExecutionPrompt, buildExecutionResultRepairPrompt, buildExecutionResumePrompt } from '../prompts/execution.js';
+import { buildExecutionPrompt, buildExecutionResultRepairPrompt, buildExecutionResumePrompt, type TaskReviewFeedback } from '../prompts/execution.js';
 import type { CheckpointOutcome, SessionStartFact, SpecFact } from '../ports/GitPort.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 import {
@@ -52,8 +52,8 @@ import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js'
 import { publishCheckpoint } from './publish-checkpoint.js';
 
 export type ExecuteNextTaskResult =
-  /** Task completed 且 Checkpoint 成功。 */
-  | { readonly kind: 'task-completed'; readonly run: RunJson; readonly taskId: string }
+  /** Execution 候选结果与 Checkpoint 已持久化，等待独立 Task Review。 */
+  | { readonly kind: 'review-needed'; readonly run: RunJson; readonly taskId: string }
   /** Run 已转 planning，等待新 Revision（replan_required 或 SPEC 变化）。 */
   | {
       readonly kind: 'replan-needed';
@@ -325,6 +325,23 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       head: startFact.head,
     });
 
+    /**
+     * 上一轮独立复核打回（最后一个 Review Episode 为 changes_required）时，
+     * 把复核摘要、未满足证据、失败测试与问题清单注入修复执行的 Prompt；
+     * 首次执行或复核尚未产生结论时为 null。Episode 字段落盘前已脱敏。
+     */
+    const lastReviewEpisode = run.tasks[readyTaskId]?.taskReviewEpisodes.at(-1);
+    const reviewFeedback: TaskReviewFeedback | null =
+      lastReviewEpisode !== undefined && lastReviewEpisode.outcome === 'changes_required'
+        ? {
+            summary: lastReviewEpisode.summary ?? '',
+            issues: lastReviewEpisode.issues,
+            failedTests: lastReviewEpisode.tests.filter((test) => test.result === 'failed'),
+            unsatisfiedEvidence: lastReviewEpisode.acceptanceEvidence.filter(
+              (evidence) => evidence.status === 'not_satisfied',
+            ),
+          }
+        : null;
     const prompt = buildExecutionPrompt({
       repositoryRoot: root,
       runBranch: run.repository.runBranch,
@@ -342,6 +359,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       adoptedCheckpoints: run.intermediateCheckpoints.filter(
         (checkpoint) => checkpoint.ownerTaskId === readyTaskId,
       ),
+      reviewFeedback,
     });
 
     /**
@@ -748,7 +766,12 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       };
     }
 
-    // decision == completed：§9.5 完成判定（Git 不变量 + §12.2 Checkpoint）。
+    /**
+     * decision == completed 只形成候选交付物，不再直接完成 Task。
+     *
+     * 候选结果与 Checkpoint 持久化后，Task 保持 running；后续全新
+     * task_review Session 必须独立批准，才能提交 completed 状态。
+     */
     let checkpoint;
     try {
       await deps.git.assertSessionEnd(root, sessionGitFacts(run), startFact);
@@ -765,7 +788,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       return failWithSession(handle, error as ApexError, 'checkpoint_failed');
     }
     try {
-      await publishCheckpoint(deps, run, checkpoint, 'task-final');
+      await publishCheckpoint(deps, run, checkpoint, 'task-candidate');
     } catch (error) {
       return failAfterCheckpoint(handle, error as ApexError, checkpoint, specAfter.sha256);
     }
@@ -779,7 +802,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       readyTaskId,
       handle.sessionId,
       {
-        outcome: 'completed',
+        outcome: 'awaiting_review',
         summary: deps.redaction.redactText(result.summary) || 'completed',
         acceptanceEvidence: deps.redaction.redactStructured(result.acceptanceEvidence),
         finalCheckpoint: checkpoint.finalOid,
@@ -790,18 +813,15 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       specAfter.sha256,
     );
     const task = next.tasks[readyTaskId]!;
-    assertTaskTransition(task.status, 'completed', 'completed_and_checkpointed');
     next = {
       ...next,
-      currentTaskId: null,
       activeSession: null,
       tasks: {
         ...next.tasks,
         [readyTaskId]: {
           ...task,
-          status: 'completed',
-          completedResult: deps.redaction.redactStructured(result),
-          finalCheckpoint: checkpoint.finalOid,
+          candidateResult: deps.redaction.redactStructured(result),
+          candidateCheckpoint: checkpoint.finalOid,
         },
       },
       repository: { ...next.repository, expectedHead: checkpoint.finalOid },
@@ -809,7 +829,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       updatedAt: now(),
     };
     await deps.stateStore.writeRun(next);
-    return { kind: 'task-completed', run: next, taskId: readyTaskId };
+    return { kind: 'review-needed', run: next, taskId: readyTaskId };
   }
 
   return { execute };

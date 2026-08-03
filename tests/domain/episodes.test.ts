@@ -7,12 +7,16 @@ import { describe, expect, it } from 'vitest';
 import {
   appendExecutionEpisode,
   appendFinalReviewEpisode,
+  appendTaskReviewEpisode,
   closeExecutionEpisode,
   closeFinalReviewEpisode,
+  closeTaskReviewEpisode,
   createExecutionEpisode,
   createFinalReviewEpisode,
+  createTaskReviewEpisode,
   type ExecutionEpisodeEnding,
   type FinalReviewEpisodeEnding,
+  type TaskReviewEpisodeEnding,
 } from '../../src/domain/episodes.js';
 import type { TaskExecutionEpisode } from '../../src/domain/schemas/task-execution-episode.js';
 import {
@@ -43,7 +47,7 @@ function mkExecutionEnding(overrides: Partial<ExecutionEpisodeEnding> = {}): Exe
   return {
     specSha256After: SHA256_A,
     endedAt: T1,
-    outcome: 'completed',
+    outcome: 'awaiting_review',
     summary: 'task completed',
     acceptanceEvidence: [
       { criterionIndex: 0, status: 'satisfied', evidence: 'evidence' },
@@ -94,7 +98,7 @@ describe('Task Execution Episode (§11.3)', () => {
     const closed = closeExecutionEpisode(episodes, UUID_1, mkExecutionEnding());
     expect(closed).toHaveLength(1);
     expect(closed[0]).toMatchObject({
-      outcome: 'completed',
+      outcome: 'awaiting_review',
       endedAt: T1,
       finalCheckpoint: OID_B,
       checkpointReason: 'Task Checkpoint 已创建',
@@ -129,7 +133,7 @@ describe('Task Execution Episode (§11.3)', () => {
 
   it('non-error outcomes must keep error null', () => {
     const episodes = appendExecutionEpisode([], mkUnendedExecution());
-    for (const outcome of ['completed', 'replan_required', 'spec_changed'] as const) {
+    for (const outcome of ['awaiting_review', 'replan_required', 'spec_changed'] as const) {
       expectApexError(
         () =>
           closeExecutionEpisode(
@@ -188,8 +192,181 @@ describe('Task Execution Episode (§11.3)', () => {
     expect(episodes.map((episode) => episode.sessionId)).toEqual([UUID_1, UUID_2]);
     expect(episodes[0]!.outcome).toBe('replan_required');
     expect(episodes[0]!.intermediateCheckpoint).toBe(OID_C);
-    expect(episodes[1]!.outcome).toBe('completed');
+    expect(episodes[1]!.outcome).toBe('awaiting_review');
     expect(episodes[1]!.finalCheckpoint).toBe(OID_B);
+  });
+});
+
+describe('Task Review Episode (§11.3)', () => {
+  function mkUnendedReview(sessionId = UUID_2) {
+    return createTaskReviewEpisode({
+      sessionId,
+      taskId: 'TASK-001',
+      executionSessionId: UUID_1,
+      candidateCheckpoint: OID_B,
+      planRevision: 1,
+      specSha256Before: SHA256_A,
+      startedAt: T0,
+    });
+  }
+
+  function mkReviewEnding(
+    overrides: Partial<TaskReviewEpisodeEnding> = {},
+  ): TaskReviewEpisodeEnding {
+    return {
+      specSha256After: SHA256_A,
+      endedAt: T1,
+      outcome: 'approved',
+      summary: '独立复核通过',
+      tests: [{ command: 'npm test', result: 'passed' }],
+      acceptanceEvidence: [
+        { criterionIndex: 0, status: 'satisfied', evidence: 'evidence' },
+      ],
+      issues: [],
+      error: null,
+      ...overrides,
+    };
+  }
+
+  it('creates an un-ended episode with every end field null', () => {
+    const episode = mkUnendedReview();
+    expect(episode).toMatchObject({
+      sessionId: UUID_2,
+      taskId: 'TASK-001',
+      executionSessionId: UUID_1,
+      candidateCheckpoint: OID_B,
+      specSha256After: null,
+      endedAt: null,
+      outcome: null,
+      summary: null,
+      tests: [],
+      acceptanceEvidence: [],
+      issues: [],
+      error: null,
+    });
+    // 全 null 结束字段的未结束形态是合法的追加事实。
+    expect(appendTaskReviewEpisode([], episode)).toHaveLength(1);
+  });
+
+  it('rejects reusing the execution session id (reviewer must be independent)', () => {
+    expectApexError(
+      () =>
+        createTaskReviewEpisode({
+          sessionId: UUID_1,
+          taskId: 'TASK-001',
+          executionSessionId: UUID_1,
+          candidateCheckpoint: OID_B,
+          planRevision: 1,
+          specSha256Before: SHA256_A,
+          startedAt: T0,
+        }),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('appends episodes and rejects duplicate session IDs', () => {
+    const first = appendTaskReviewEpisode([], mkUnendedReview());
+    expect(first).toHaveLength(1);
+    expectApexError(
+      () => appendTaskReviewEpisode(first, mkUnendedReview()),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('closes an episode by filling its end fields, without mutating the input array', () => {
+    const episodes = appendTaskReviewEpisode([], mkUnendedReview());
+    const closed = closeTaskReviewEpisode(episodes, UUID_2, mkReviewEnding());
+    expect(closed[0]).toMatchObject({
+      outcome: 'approved',
+      endedAt: T1,
+      summary: '独立复核通过',
+    });
+    expect(episodes[0]!.endedAt).toBeNull();
+  });
+
+  it('never overwrites committed end fields and rejects unknown sessions', () => {
+    const closed = closeTaskReviewEpisode(
+      appendTaskReviewEpisode([], mkUnendedReview()),
+      UUID_2,
+      mkReviewEnding(),
+    );
+    expectApexError(
+      () => closeTaskReviewEpisode(closed, UUID_2, mkReviewEnding()),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () => closeTaskReviewEpisode(closed, UUID_3, mkReviewEnding()),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('session_error requires an Error Record', () => {
+    const episodes = appendTaskReviewEpisode([], mkUnendedReview());
+    expectApexError(
+      () =>
+        closeTaskReviewEpisode(
+          episodes,
+          UUID_2,
+          mkReviewEnding({ outcome: 'session_error' }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    const withError = closeTaskReviewEpisode(
+      episodes,
+      UUID_2,
+      mkReviewEnding({ outcome: 'session_error', error: mkErrorRecord() }),
+    );
+    expect(withError[0]!.outcome).toBe('session_error');
+  });
+
+  it('non-error outcomes must keep error null', () => {
+    const episodes = appendTaskReviewEpisode([], mkUnendedReview());
+    for (const outcome of ['approved', 'changes_required', 'replan_required'] as const) {
+      expectApexError(
+        () =>
+          closeTaskReviewEpisode(
+            episodes,
+            UUID_2,
+            mkReviewEnding({ outcome, error: mkErrorRecord() }),
+          ),
+        'STATE_VALIDATION_FAILED',
+      );
+    }
+  });
+
+  it('approved requires satisfied evidence, no failed tests and no issues', () => {
+    const episodes = appendTaskReviewEpisode([], mkUnendedReview());
+    expectApexError(
+      () =>
+        closeTaskReviewEpisode(
+          episodes,
+          UUID_2,
+          mkReviewEnding({ issues: ['还有未修复的问题'] }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        closeTaskReviewEpisode(
+          episodes,
+          UUID_2,
+          mkReviewEnding({ tests: [{ command: 'npm test', result: 'failed' }] }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+    expectApexError(
+      () =>
+        closeTaskReviewEpisode(
+          episodes,
+          UUID_2,
+          mkReviewEnding({
+            acceptanceEvidence: [
+              { criterionIndex: 0, status: 'not_satisfied', evidence: 'evidence' },
+            ],
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
   });
 });
 

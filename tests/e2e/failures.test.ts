@@ -248,22 +248,22 @@ describe('e2e claude failure mapping (§9.6)', () => {
         // 提交的业务结果已归一为 null。
         expect(run.tasks['TASK-001']!.completedResult?.replanReason).toBeNull();
 
-        // 噪声字段不再触发结果修复接力：唯一 Episode 直接 completed。
+        // 噪声字段不再触发结果修复接力：唯一 Execution Episode 提交候选待复核。
         const episodes = run.tasks['TASK-001']!.executionEpisodes;
         expect(episodes).toHaveLength(1);
-        expect(episodes[0]!.outcome).toBe('completed');
+        expect(episodes[0]!.outcome).toBe('awaiting_review');
 
-        // planning + 执行 + final review：共 3 个 Session，无修复会话。
+        // planning + 执行 + 独立复核 + final review：共 4 个 Session，无修复会话。
         const invocations = await harness.readRecords();
         const sessions = invocations.filter((record) => record.argv.includes('--session-id'));
-        expect(sessions).toHaveLength(3);
+        expect(sessions).toHaveLength(4);
         expect(
           harness.outputLines.some((line) => line.includes('starting result-repair session')),
         ).toBe(false);
 
         // Session Record 是模型输出的不可变事实：保留原始占位值，不归一。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(3);
+        expect(records).toHaveLength(4);
         expect(records[1]!.status).toBe('completed');
         expect(records[1]!.structuredResult).toMatchObject({
           decision: 'completed',

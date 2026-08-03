@@ -68,7 +68,7 @@ function mkEpisode(overrides: Partial<TaskExecutionEpisode> = {}): TaskExecution
     specSha256After: SHA256_A,
     startedAt: T0,
     endedAt: T1,
-    outcome: 'completed',
+    outcome: 'awaiting_review',
     summary: '完成 TASK-001 的实现',
     acceptanceEvidence: [{ criterionIndex: 0, status: 'satisfied', evidence: '单测通过' }],
     finalCheckpoint: OID_TASK_1,
@@ -238,12 +238,19 @@ describe('completed Run report (SPEC §14.4)', () => {
     expect(markdown).toContain('- Execution Episode 1：');
     expect(markdown).toContain(`- Session：\`${UUID_1}\`；Plan Revision：1`);
     expect(markdown).toContain(`- 时间：${T0} → ${T1}`);
-    expect(markdown).toContain('- outcome：completed');
+    expect(markdown).toContain('- outcome：awaiting_review');
     expect(markdown).toContain('- 摘要：完成 TASK-001 的实现');
     // 验收证据与最终 Checkpoint
     expect(markdown).toContain('- 验收标准 1：satisfied — evidence for AC-1');
     expect(markdown).toContain(`- 最终 Checkpoint：\`${OID_TASK_1}\``);
     expect(markdown).toContain(`- Checkpoint：\`${OID_TASK_2}\`（committed_remaining_changes）`);
+    // 独立复核事实必须同时展示 Reviewer、Execution 与候选 Checkpoint 的关联。
+    expect(markdown).toContain('- Task Review Episode 1：');
+    expect(markdown).toContain(`- Reviewer Session：\`${UUID_2}\``);
+    expect(markdown).toContain(`Execution Session：\`${UUID_1}\``);
+    expect(markdown).toContain('- outcome：approved');
+    expect(markdown).toContain('- 独立测试：`npm test` → passed');
+    expect(markdown).toContain('- 独立验收证据：验收标准 1：satisfied');
   });
 
   it('covers intermediate checkpoints with their adopting task', async () => {
@@ -258,8 +265,8 @@ describe('completed Run report (SPEC §14.4)', () => {
     await reporter.generateReport(mkCompletedInput());
     const markdown = fs.readText(REPORT_PATH);
     expect(markdown).toContain('## 测试结果（Claude 报告）');
-    expect(markdown).toContain('- `TASK-001`：`npm test` → passed');
-    expect(markdown).toContain('- `TASK-002`：`npm test` → passed');
+    expect(markdown).toContain('- `TASK-001` Task Review：`npm test` → passed');
+    expect(markdown).toContain('- `TASK-002` Task Review：`npm test` → passed');
     expect(markdown).toContain('- Final Review：`npm run verify` → passed');
     expect(markdown).toContain('## Final Review 总结');
     expect(markdown).toContain('- 总结：整体验收通过');

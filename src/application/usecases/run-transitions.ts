@@ -9,6 +9,7 @@ import { applyRunEvent, isTerminalRunStatus } from '../../domain/run-state.js';
 import {
   closeExecutionEpisode,
   closeFinalReviewEpisode,
+  closeTaskReviewEpisode,
 } from '../../domain/episodes.js';
 import type { ApexError } from '../../domain/errors.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
@@ -29,8 +30,13 @@ function redactedSummary(error: ApexError, redaction: RedactionPort): string {
  *
  * RUN_INTERRUPTED 时在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：
  * 中断前状态、被中断 Task 与 Claude Session ID，供 resume 命令重开 Run
- * 并续接被中断的 Planning、Execution 或 Final Review 会话；其余错误
+ * 并续接被中断的 Planning、Execution、Task Review 或 Final Review 会话；其余错误
  * 一律 resumePoint=null。
+ *
+ * 中断落在「候选已持久化、Reviewer 尚未启动」的窗口时（无 activeSession
+ * 但当前 Task 仍 running 且带候选）：被中断 Task 转 failed 并保留候选，
+ * resumePoint 记 sessionType=task_review、sessionId=null——没有可续接的
+ * Reviewer 会话，resume 时由全新 Reviewer 复核候选。
  */
 export function toTerminalFailedRun(
   run: RunJson,
@@ -38,11 +44,35 @@ export function toTerminalFailedRun(
   at: string,
   redaction: RedactionPort,
 ): RunJson {
+  const currentTask = run.currentTaskId === null ? undefined : run.tasks[run.currentTaskId];
+  const awaitingReviewTaskId =
+    error.errorCode === 'RUN_INTERRUPTED' &&
+    !isTerminalRunStatus(run.status) &&
+    run.activeSession === null &&
+    run.currentTaskId !== null &&
+    currentTask !== undefined &&
+    currentTask.status === 'running' &&
+    currentTask.candidateResult !== null &&
+    currentTask.candidateCheckpoint !== null
+      ? run.currentTaskId
+      : null;
+  const tasks =
+    awaitingReviewTaskId === null
+      ? run.tasks
+      : {
+          ...run.tasks,
+          [awaitingReviewTaskId]: {
+            ...run.tasks[awaitingReviewTaskId]!,
+            status: 'failed' as const,
+            failure: toErrorRecord(error, at, redaction),
+          },
+        };
   return {
     ...run,
     status: applyRunEvent(run.status, 'RUN_ERROR'),
     activeSession: null,
     currentTaskId: null,
+    tasks,
     lastError: toErrorRecord(error, at, redaction),
     terminalAt: at,
     updatedAt: at,
@@ -53,6 +83,12 @@ export function toTerminalFailedRun(
             fromStatus: run.status,
             taskId: run.currentTaskId,
             sessionId: run.activeSession === null ? null : run.activeSession.sessionId,
+            sessionType:
+              awaitingReviewTaskId !== null
+                ? ('task_review' as const)
+                : run.activeSession === null
+                  ? null
+                  : run.activeSession.type,
           }
         : null,
   };
@@ -111,6 +147,39 @@ export function closeExecutionEpisodeAsSessionError(
   return {
     ...run,
     tasks: { ...run.tasks, [taskId]: { ...task, executionEpisodes } },
+  };
+}
+
+/**
+ * 关闭未结束 Task Review Episode 为 session_error。
+ *
+ * 候选结果与 Checkpoint 仍保留在 Task 上，resume 因而可以只续接 Reviewer
+ * 自己的上下文，而不必重新运行已经完成的 Execution Session。
+ */
+export function closeTaskReviewEpisodeAsSessionError(
+  run: RunJson,
+  taskId: string,
+  sessionId: string,
+  error: ApexError,
+  at: string,
+  specSha256After: string,
+  redaction: RedactionPort,
+): RunJson {
+  const task = run.tasks[taskId];
+  if (task === undefined) return run;
+  const taskReviewEpisodes = closeTaskReviewEpisode(task.taskReviewEpisodes, sessionId, {
+    specSha256After,
+    endedAt: at,
+    outcome: 'session_error',
+    summary: redactedSummary(error, redaction),
+    tests: [],
+    acceptanceEvidence: [],
+    issues: [],
+    error: toErrorRecord(error, at, redaction),
+  });
+  return {
+    ...run,
+    tasks: { ...run.tasks, [taskId]: { ...task, taskReviewEpisodes } },
   };
 }
 

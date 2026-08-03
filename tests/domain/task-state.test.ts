@@ -9,19 +9,24 @@ import {
   canTaskTransition,
   legalTaskTransitionReasons,
   selectReadyTask,
+  selectTaskAwaitingReview,
   TASK_TRANSITIONS,
   TERMINAL_TASK_STATUSES,
   type TaskStatus,
   type TaskTransitionReason,
 } from '../../src/domain/task-state.js';
 import { TASK_STATUSES } from '../../src/domain/schemas/task-runtime-state.js';
-import { expectApexError, mkTask, mkTaskState } from './fixtures.js';
+import { expectApexError, mkResult, mkTask, mkTaskState, OID_B } from './fixtures.js';
 
 const LEGAL: ReadonlyArray<readonly [TaskStatus, TaskStatus, readonly TaskTransitionReason[]]> = [
   ['pending', 'running', ['orchestrator_selected']],
   ['pending', 'skipped', ['plan_revision_omitted']],
-  ['running', 'pending', ['replan_required', 'spec_changed', 'run_resumed']],
-  ['running', 'completed', ['completed_and_checkpointed']],
+  [
+    'running',
+    'pending',
+    ['replan_required', 'spec_changed', 'review_changes_required', 'run_resumed'],
+  ],
+  ['running', 'completed', ['review_approved']],
   [
     'running',
     'failed',
@@ -36,6 +41,7 @@ const LEGAL: ReadonlyArray<readonly [TaskStatus, TaskStatus, readonly TaskTransi
   ],
   // resume 命令专用：被中断/崩溃接管的 Task 复位后重新参与调度。
   ['failed', 'pending', ['run_resumed']],
+  ['failed', 'running', ['run_resumed']],
 ];
 
 const ALL_REASONS: TaskTransitionReason[] = [
@@ -43,7 +49,8 @@ const ALL_REASONS: TaskTransitionReason[] = [
   'plan_revision_omitted',
   'replan_required',
   'spec_changed',
-  'completed_and_checkpointed',
+  'review_approved',
+  'review_changes_required',
   'claude_call_failed',
   'reported_failure',
   'result_invalid',
@@ -69,7 +76,7 @@ describe('Task state machine (§6.2)', () => {
 
   it('rejects transitions out of terminal statuses (failed 仅有 resume 复位出口)', () => {
     for (const from of TERMINAL_TASK_STATUSES) {
-      const expected: readonly TaskStatus[] = from === 'failed' ? ['pending'] : [];
+      const expected: readonly TaskStatus[] = from === 'failed' ? ['pending', 'running'] : [];
       expect(TASK_TRANSITIONS[from]).toEqual(expected);
       for (const to of TASK_STATUSES) {
         expect(canTaskTransition(from, to)).toBe(expected.includes(to));
@@ -84,7 +91,6 @@ describe('Task state machine (§6.2)', () => {
       ['running', 'skipped'],
       ['completed', 'pending'],
       ['skipped', 'pending'],
-      ['failed', 'running'],
       ['failed', 'completed'],
       ['failed', 'skipped'],
     ];
@@ -103,7 +109,7 @@ describe('Task state machine (§6.2)', () => {
       ['pending', 'skipped', 'run_abandoned'],
       ['running', 'pending', 'orchestrator_selected'],
       ['running', 'completed', 'spec_changed'],
-      ['running', 'failed', 'completed_and_checkpointed'],
+      ['running', 'failed', 'review_approved'],
       ['running', 'failed', 'plan_revision_omitted'],
       ['running', 'pending', 'run_interrupted'],
       ['failed', 'pending', 'run_interrupted'],
@@ -201,5 +207,45 @@ describe('Ready Task selection (§9.1, §6.2 run conditions)', () => {
     const plan = [mkTask('TASK-001')];
     const states = { 'TASK-001': mkTaskState('TASK-001', 'completed') };
     expect(selectReadyTask('running', plan, states)).toBeNull();
+  });
+});
+
+describe('selectTaskAwaitingReview（候选复核选择）', () => {
+  const withCandidate = (taskId: string) =>
+    mkTaskState(taskId, 'running', {
+      candidateResult: mkResult(),
+      candidateCheckpoint: OID_B,
+    });
+
+  it('returns the only running task carrying a complete candidate', () => {
+    const states = {
+      'TASK-001': mkTaskState('TASK-001', 'pending'),
+      'TASK-002': withCandidate('TASK-002'),
+    };
+    expect(selectTaskAwaitingReview(states)).toBe('TASK-002');
+  });
+
+  it('returns null when no task carries a candidate', () => {
+    const states = { 'TASK-001': mkTaskState('TASK-001', 'running') };
+    expect(selectTaskAwaitingReview(states)).toBeNull();
+  });
+
+  it('returns null when more than one candidate exists (serial scheduling fact broken)', () => {
+    const states = {
+      'TASK-001': withCandidate('TASK-001'),
+      'TASK-002': withCandidate('TASK-002'),
+    };
+    expect(selectTaskAwaitingReview(states)).toBeNull();
+  });
+
+  it('ignores candidates carried by non-running tasks', () => {
+    // 候选只允许出现在 running Task；选择器对越界形状保持防御，不选中。
+    const states = {
+      'TASK-001': mkTaskState('TASK-001', 'pending', {
+        candidateResult: mkResult(),
+        candidateCheckpoint: OID_B,
+      }),
+    };
+    expect(selectTaskAwaitingReview(states)).toBeNull();
   });
 });

@@ -14,7 +14,14 @@
  * 子进程以 CLAUDE_EXIT_NONZERO 失败，requested=true 时映射为 RUN_INTERRUPTED；
  * 只有真挂死才走 interruptWaitMs 超时分支，超时照常收尾。
  */
-import { appendExecutionEpisode, appendFinalReviewEpisode, createExecutionEpisode, createFinalReviewEpisode } from '../../domain/episodes.js';
+import {
+  appendExecutionEpisode,
+  appendFinalReviewEpisode,
+  appendTaskReviewEpisode,
+  createExecutionEpisode,
+  createFinalReviewEpisode,
+  createTaskReviewEpisode,
+} from '../../domain/episodes.js';
 import { ApexError, isApexError } from '../../domain/errors.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import { assertTaskTransition } from '../../domain/task-state.js';
@@ -36,7 +43,7 @@ import { toErrorRecord } from './error-record.js';
 
 export interface BeginSessionInput<T extends SessionType> {
   readonly type: T;
-  /** execution 必填；其他为 null。 */
+  /** execution/task_review 必填；planning/final_review 为 null。 */
   readonly taskId: string | null;
   /** planning 传"将生成的 Revision 号"；其他传当前 Revision。 */
   readonly planRevision: number;
@@ -47,7 +54,7 @@ export interface BeginSessionInput<T extends SessionType> {
   readonly repositoryRoot: string;
   /**
    * 可选的会话续接来源（SPEC §17 resume）：非空时 Claude 以
-   * `--resume --fork-session` 续接该被中断会话；三类 Session 的首次
+   * `--resume --fork-session` 续接该被中断会话；四类 Session 的首次
    * 恢复调用都通过统一续接协调器传入。
    */
   readonly resumeFromSessionId?: string | null;
@@ -154,6 +161,53 @@ export async function beginSession<T extends SessionType>(
           ...task,
           status: 'running',
           executionEpisodes: appendExecutionEpisode(task.executionEpisodes, episode),
+        },
+      },
+    };
+  }
+
+  if (input.type === 'task_review') {
+    const taskId = input.taskId;
+    const task = taskId === null ? undefined : run.tasks[taskId];
+    const executionEpisode = task?.executionEpisodes.at(-1);
+    if (
+      taskId === null ||
+      task === undefined ||
+      task.status !== 'running' ||
+      run.currentTaskId !== taskId ||
+      task.candidateResult === null ||
+      task.candidateCheckpoint === null ||
+      executionEpisode === undefined ||
+      executionEpisode.outcome !== 'awaiting_review' ||
+      executionEpisode.finalCheckpoint !== task.candidateCheckpoint
+    ) {
+      throw new ApexError({
+        code: 'STATE_VALIDATION_FAILED',
+        stage: 'task_review',
+        message: `task review session requires a persisted candidate for running task ${taskId ?? 'null'}`,
+      });
+    }
+    /**
+     * 复核 Episode 在启动 Claude 之前固定候选 Execution Session 和 Checkpoint。
+     * 新生成的 sessionId 与 executionSessionId 由领域不变式强制不同。
+     */
+    const episode = createTaskReviewEpisode({
+      sessionId,
+      taskId,
+      executionSessionId: executionEpisode.sessionId,
+      candidateCheckpoint: task.candidateCheckpoint,
+      planRevision: input.planRevision,
+      specSha256Before: input.specSha256,
+      startedAt,
+    });
+    next = {
+      ...next,
+      currentTaskId: taskId,
+      tasks: {
+        ...next.tasks,
+        [taskId]: {
+          ...task,
+          taskReviewEpisodes: appendTaskReviewEpisode(task.taskReviewEpisodes, episode),
         },
       },
     };

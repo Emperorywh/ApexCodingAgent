@@ -17,11 +17,13 @@ import { ApexError, type ApexErrorInit } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
 import type { FinalReviewResult } from '../../domain/schemas/final-review-result.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
+import type { TaskReviewResult } from '../../domain/schemas/task-review-result.js';
 import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 
 /**
  * Claude CLI 可接收的权限模式。调用方显式选择策略，适配器只执行已经
- * 确定的策略；Planning 固定为 plan，其他 Session 不允许使用 plan。
+ * 确定的策略；Planning 固定为 plan，Task Review 固定为 auto，只有可写
+ * 的 Execution/Final Review 可以由用户显式提升为 bypassPermissions。
  */
 export type ClaudePermissionMode = 'plan' | 'auto' | 'bypassPermissions';
 
@@ -104,7 +106,9 @@ export interface ClaudeStreamActivity {
  */
 export type ClaudePermissionModeFor<T extends SessionType> = T extends 'planning'
   ? Extract<ClaudePermissionMode, 'plan'>
-  : Exclude<ClaudePermissionMode, 'plan'>;
+  : T extends 'task_review'
+    ? Extract<ClaudePermissionMode, 'auto'>
+    : Exclude<ClaudePermissionMode, 'plan'>;
 
 export type ClaudeInvocationRequest<T extends SessionType = SessionType> =
   ClaudeInvocationRequestBase & {
@@ -133,6 +137,7 @@ interface ClaudeInvocationFactBase {
 export interface ClaudeStructuredResultBySessionType {
   readonly planning: TaskPlanDraft;
   readonly execution: TaskExecutionResult;
+  readonly task_review: TaskReviewResult;
   readonly final_review: FinalReviewResult;
 }
 

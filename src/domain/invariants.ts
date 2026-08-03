@@ -7,7 +7,10 @@
  * STATE_VALIDATION_FAILED.
  */
 import { ApexError, errorClassForCode, type ErrorCode } from './errors.js';
-import { validateExecutionResultSemantics } from './results.js';
+import {
+  validateExecutionResultSemantics,
+  validateTaskReviewResultSemantics,
+} from './results.js';
 import { isTerminalRunStatus } from './run-state.js';
 import { validate } from './schemas/index.js';
 import type { ActiveSession } from './schemas/active-session.js';
@@ -17,6 +20,7 @@ import type { IntermediateCheckpoint } from './schemas/intermediate-checkpoint.j
 import type { RunJson } from './schemas/run-json.js';
 import type { SessionRecord } from './schemas/session-record.js';
 import type { TaskExecutionEpisode } from './schemas/task-execution-episode.js';
+import type { TaskReviewEpisode } from './schemas/task-review-episode.js';
 import type { TaskRuntimeState } from './schemas/task-runtime-state.js';
 import type { PlannedTask } from './schemas/task-plan-draft.js';
 
@@ -75,6 +79,68 @@ export function assertExecutionEpisodeRules(episode: TaskExecutionEpisode): void
     assertCondition(
       episode.error === null,
       `execution episode ${episode.sessionId} with outcome ${episode.outcome} must have error null`,
+    );
+  }
+  if (episode.error !== null) assertErrorRecordRules(episode.error);
+  if (episode.outcome === 'awaiting_review') {
+    assertCondition(
+      episode.finalCheckpoint !== null && episode.intermediateCheckpoint === null,
+      `execution episode ${episode.sessionId} awaiting_review requires a candidate final checkpoint`,
+    );
+  }
+}
+
+/**
+ * Task Review Episode 的跨字段规则。
+ *
+ * 复核 Session 必须与候选 Execution Session 使用不同 ID；approved 必须
+ * 满足全部验收证据、无失败测试且无 issue，session_error 则必须记录错误。
+ */
+export function assertTaskReviewEpisodeRules(episode: TaskReviewEpisode): void {
+  assertCondition(
+    episode.sessionId !== episode.executionSessionId,
+    `task review episode ${episode.sessionId} must use a different session than execution`,
+  );
+  if (episode.endedAt === null) {
+    assertCondition(
+      episode.specSha256After === null &&
+        episode.outcome === null &&
+        episode.summary === null &&
+        episode.tests.length === 0 &&
+        episode.acceptanceEvidence.length === 0 &&
+        episode.issues.length === 0 &&
+        episode.error === null,
+      `un-ended task review episode ${episode.sessionId} must keep all end fields null`,
+    );
+    return;
+  }
+  assertCondition(
+    episode.specSha256After !== null && episode.outcome !== null && episode.summary !== null,
+    `ended task review episode ${episode.sessionId} requires specSha256After, outcome and summary`,
+  );
+  if (episode.outcome === 'session_error') {
+    assertCondition(
+      episode.error !== null,
+      `task review episode ${episode.sessionId} session_error requires an error record`,
+    );
+  } else {
+    assertCondition(
+      episode.error === null,
+      `task review episode ${episode.sessionId} outcome ${episode.outcome} must have error null`,
+    );
+  }
+  if (episode.outcome === 'approved') {
+    assertCondition(
+      episode.acceptanceEvidence.every((evidence) => evidence.status === 'satisfied'),
+      `task review episode ${episode.sessionId} approved requires all evidence satisfied`,
+    );
+    assertCondition(
+      episode.tests.every((test) => test.result !== 'failed'),
+      `task review episode ${episode.sessionId} approved cannot contain failed tests`,
+    );
+    assertCondition(
+      episode.issues.length === 0,
+      `task review episode ${episode.sessionId} approved requires no issues`,
     );
   }
   if (episode.error !== null) assertErrorRecordRules(episode.error);
@@ -154,16 +220,37 @@ export function assertFinalReviewEpisodeRules(episode: FinalReviewEpisode): void
 
 /** Task Runtime State conditional null rules (§11.3). */
 export function assertTaskRuntimeStateRules(state: TaskRuntimeState): void {
+  const hasCompleteCandidate =
+    state.candidateResult !== null && state.candidateCheckpoint !== null;
+  assertCondition(
+    (state.candidateResult === null) === (state.candidateCheckpoint === null),
+    `task ${state.taskId} must set candidateResult and candidateCheckpoint together`,
+  );
   switch (state.status) {
     case 'pending':
+      assertCondition(
+        state.completedResult === null &&
+          state.finalCheckpoint === null &&
+          state.skipReason === null &&
+          state.failure === null &&
+          !hasCompleteCandidate,
+        `pending task ${state.taskId} must keep result, checkpoint, candidate, skipReason and failure null`,
+      );
+      break;
     case 'running':
       assertCondition(
         state.completedResult === null &&
           state.finalCheckpoint === null &&
           state.skipReason === null &&
           state.failure === null,
-        `${state.status} task ${state.taskId} must keep completedResult, finalCheckpoint, skipReason and failure null`,
+        `running task ${state.taskId} must keep completedResult, finalCheckpoint, skipReason and failure null`,
       );
+      if (state.candidateResult !== null) {
+        assertCondition(
+          state.candidateResult.decision === 'completed',
+          `running task ${state.taskId} candidateResult must have decision completed`,
+        );
+      }
       break;
     case 'completed':
       assertCondition(
@@ -175,9 +262,23 @@ export function assertTaskRuntimeStateRules(state: TaskRuntimeState): void {
         `completed task ${state.taskId} requires completedResult decision completed`,
       );
       assertCondition(
-        state.skipReason === null && state.failure === null,
-        `completed task ${state.taskId} must keep skipReason and failure null`,
+        state.skipReason === null && state.failure === null && !hasCompleteCandidate,
+        `completed task ${state.taskId} must keep candidate, skipReason and failure null`,
       );
+      {
+        const approval = state.taskReviewEpisodes.at(-1);
+        const reviewedExecution = state.executionEpisodes.find(
+          (episode) => episode.sessionId === approval?.executionSessionId,
+        );
+        assertCondition(
+          approval !== undefined &&
+            approval.outcome === 'approved' &&
+            approval.candidateCheckpoint === state.finalCheckpoint &&
+            reviewedExecution?.outcome === 'awaiting_review' &&
+            reviewedExecution.finalCheckpoint === state.finalCheckpoint,
+          `completed task ${state.taskId} requires a final independent approved review`,
+        );
+      }
       break;
     case 'failed':
       assertCondition(state.failure !== null, `failed task ${state.taskId} requires an error record`);
@@ -185,7 +286,7 @@ export function assertTaskRuntimeStateRules(state: TaskRuntimeState): void {
         state.completedResult === null &&
           state.finalCheckpoint === null &&
           state.skipReason === null,
-        `failed task ${state.taskId} must keep completedResult, finalCheckpoint and skipReason null`,
+        `failed task ${state.taskId} must keep completed result, final checkpoint and skipReason null`,
       );
       assertErrorRecordRules(state.failure!);
       break;
@@ -195,10 +296,11 @@ export function assertTaskRuntimeStateRules(state: TaskRuntimeState): void {
         `skipped task ${state.taskId} requires a skipReason`,
       );
       assertCondition(
-        state.completedResult === null &&
+          state.completedResult === null &&
           state.finalCheckpoint === null &&
-          state.failure === null,
-        `skipped task ${state.taskId} must keep completedResult, finalCheckpoint and failure null`,
+          state.failure === null &&
+          !hasCompleteCandidate,
+        `skipped task ${state.taskId} must keep result, checkpoint, candidate and failure null`,
       );
       break;
   }
@@ -209,14 +311,21 @@ export function assertTaskRuntimeStateRules(state: TaskRuntimeState): void {
     );
     assertExecutionEpisodeRules(episode);
   }
+  for (const episode of state.taskReviewEpisodes) {
+    assertCondition(
+      episode.taskId === state.taskId,
+      `task review episode ${episode.sessionId} taskId ${episode.taskId} does not match task ${state.taskId}`,
+    );
+    assertTaskReviewEpisodeRules(episode);
+  }
 }
 
-/** Active Session rules (§11.3): only execution carries a taskId. */
+/** Active Session rules (§11.3)：Execution 与 Task Review 都绑定一个 Task。 */
 export function assertActiveSessionRules(active: ActiveSession): void {
-  if (active.type === 'execution') {
+  if (active.type === 'execution' || active.type === 'task_review') {
     assertCondition(
       active.taskId !== null,
-      `active execution session ${active.sessionId} requires a taskId`,
+      `active ${active.type} session ${active.sessionId} requires a taskId`,
     );
   } else {
     assertCondition(
@@ -263,10 +372,10 @@ const ERROR_CODES_ALLOWING_NULL_EXIT_CODE: readonly ErrorCode[] = [
 
 /** Session Record rules (§11.4). */
 export function assertSessionRecordRules(record: SessionRecord): void {
-  if (record.type === 'execution') {
+  if (record.type === 'execution' || record.type === 'task_review') {
     assertCondition(
       record.taskId !== null,
-      `execution session record ${record.sessionId} requires a taskId`,
+      `${record.type} session record ${record.sessionId} requires a taskId`,
     );
   } else {
     assertCondition(
@@ -320,7 +429,9 @@ export function assertSessionRecordRules(record: SessionRecord): void {
         ? 'TaskPlanDraft'
         : record.type === 'execution'
           ? 'TaskExecutionResult'
-          : 'FinalReviewResult';
+          : record.type === 'task_review'
+            ? 'TaskReviewResult'
+            : 'FinalReviewResult';
     assertCondition(
       validate(schemaName, record.structuredResult).valid,
       `session record ${record.sessionId} structuredResult does not match ${schemaName}`,
@@ -371,10 +482,32 @@ export function assertRunJsonRules(run: RunJson): void {
 
   if (run.activeSession !== null) {
     assertActiveSessionRules(run.activeSession);
-    if (run.activeSession.type === 'execution') {
+    if (run.activeSession.type === 'execution' || run.activeSession.type === 'task_review') {
       assertCondition(
         run.currentTaskId !== null && run.currentTaskId === run.activeSession.taskId,
-        'execution activeSession must belong to the task referenced by currentTaskId',
+        `${run.activeSession.type} activeSession must belong to currentTaskId`,
+      );
+    }
+    if (run.activeSession.type === 'task_review') {
+      /**
+       * 活跃 Reviewer 只能复核已持久化的完整候选，并且最后一个开放复核 Episode
+       * 必须精确关联该候选的 Execution Session 与 Checkpoint，防止串审或错审。
+       */
+      const task =
+        run.activeSession.taskId === null ? undefined : run.tasks[run.activeSession.taskId];
+      const review = task?.taskReviewEpisodes.at(-1);
+      const execution = task?.executionEpisodes.at(-1);
+      assertCondition(
+        task !== undefined &&
+          task.candidateResult !== null &&
+          task.candidateCheckpoint !== null &&
+          review?.sessionId === run.activeSession.sessionId &&
+          review.endedAt === null &&
+          review.executionSessionId === execution?.sessionId &&
+          review.candidateCheckpoint === task.candidateCheckpoint &&
+          execution.outcome === 'awaiting_review' &&
+          execution.finalCheckpoint === task.candidateCheckpoint,
+        `active task review ${run.activeSession.sessionId} must match the current candidate and execution`,
       );
     }
   }
@@ -392,6 +525,14 @@ export function assertRunJsonRules(run: RunJson): void {
       `task state keyed ${taskId} carries mismatched taskId ${state.taskId}`,
     );
     assertTaskRuntimeStateRules(state);
+    if (state.status === 'failed' && state.candidateResult !== null) {
+      assertCondition(
+        run.resumePoint?.taskId === taskId &&
+          run.resumePoint.sessionType === 'task_review' &&
+          state.failure?.errorCode === 'RUN_INTERRUPTED',
+        `failed task ${taskId} may retain a candidate only for an interrupted task review`,
+      );
+    }
   }
   for (const episode of run.finalReviewEpisodes) {
     assertFinalReviewEpisodeRules(episode);
@@ -422,21 +563,54 @@ export function assertRunJsonRules(run: RunJson): void {
       run.lastError !== null && run.lastError.errorCode === 'RUN_INTERRUPTED',
       'resumePoint requires lastError RUN_INTERRUPTED',
     );
+    assertCondition(
+      run.resumePoint.sessionId !== null ||
+        run.resumePoint.sessionType === null ||
+        run.resumePoint.sessionType === 'task_review',
+      'only a task_review resumePoint may carry a sessionType without a sessionId',
+    );
     /**
      * fromStatus 同时决定被中断 Session 的业务形态：只有 running 对应
-     * Execution 并携带 Task，且 Task / Session 必须同时存在或同时为空；
-     * Planning 与 Final Review 永远不能伪造 Task 恢复目标。
+     * Execution / Task Review 并携带 Task；Planning 与 Final Review 永远不能
+     * 伪造 Task 恢复目标。running 下允许四种形状：会话之间（全 null）、
+     * Execution 被中断（taskId+sessionId+execution）、Reviewer 被中断
+     * （taskId+sessionId+task_review），以及候选已持久化但 Reviewer 尚未
+     * 启动的窗口（taskId+task_review，无 sessionId——没有可续接的会话）。
      */
     if (run.resumePoint.fromStatus === 'running') {
-      assertCondition(
-        (run.resumePoint.taskId === null) === (run.resumePoint.sessionId === null),
-        'running resumePoint requires taskId and sessionId to be both present or both null',
-      );
+      if (run.resumePoint.sessionType === 'task_review') {
+        assertCondition(
+          run.resumePoint.taskId !== null,
+          'task_review resumePoint requires a taskId',
+        );
+      } else {
+        assertCondition(
+          (run.resumePoint.taskId === null) === (run.resumePoint.sessionId === null),
+          'running resumePoint requires taskId and sessionId to be both present or both null',
+        );
+        assertCondition(
+          run.resumePoint.sessionType === null ||
+            run.resumePoint.sessionType === 'execution',
+          'running resumePoint sessionType must be execution or task_review',
+        );
+        assertCondition(
+          (run.resumePoint.sessionId === null) === (run.resumePoint.sessionType === null),
+          'execution resumePoint requires sessionId and sessionType both present or both null',
+        );
+      }
     } else {
       assertCondition(
         run.resumePoint.taskId === null,
         `${run.resumePoint.fromStatus} resumePoint must keep taskId null`,
       );
+      if (run.resumePoint.sessionType !== null) {
+        const expectedType =
+          run.resumePoint.fromStatus === 'planning' ? 'planning' : 'final_review';
+        assertCondition(
+          run.resumePoint.sessionType === expectedType,
+          `${run.resumePoint.fromStatus} resumePoint requires sessionType ${expectedType}`,
+        );
+      }
     }
     if (run.resumePoint.taskId !== null) {
       const interrupted = run.tasks[run.resumePoint.taskId];
@@ -447,6 +621,17 @@ export function assertRunJsonRules(run: RunJson): void {
           interrupted.failure.errorCode === 'RUN_INTERRUPTED',
         `resumePoint task ${run.resumePoint.taskId} must be failed with RUN_INTERRUPTED`,
       );
+      if (run.resumePoint.sessionType === 'task_review') {
+        assertCondition(
+          interrupted!.candidateResult !== null && interrupted!.candidateCheckpoint !== null,
+          `task review resumePoint task ${run.resumePoint.taskId} must retain its candidate`,
+        );
+      } else {
+        assertCondition(
+          interrupted!.candidateResult === null && interrupted!.candidateCheckpoint === null,
+          `execution resumePoint task ${run.resumePoint.taskId} must not retain a review candidate`,
+        );
+      }
     }
   }
 }
@@ -516,6 +701,25 @@ export function assertRunInvariants(
           const detail = error instanceof Error ? `: ${error.message}` : '';
           throw violation(
             `completed task ${task.id} result does not satisfy its planned acceptance criteria${detail}`,
+          );
+        }
+        const approval = state.taskReviewEpisodes.at(-1)!;
+        try {
+          validateTaskReviewResultSemantics(
+            {
+              decision: 'approved',
+              summary: approval.summary!,
+              tests: approval.tests,
+              acceptanceEvidence: approval.acceptanceEvidence,
+              issues: approval.issues,
+              replanReason: null,
+            },
+            task,
+          );
+        } catch (error) {
+          const detail = error instanceof Error ? `: ${error.message}` : '';
+          throw violation(
+            `completed task ${task.id} independent review does not satisfy its planned acceptance criteria${detail}`,
           );
         }
       }

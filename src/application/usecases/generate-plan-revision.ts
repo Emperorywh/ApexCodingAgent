@@ -137,7 +137,9 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     // §8.3：Planning 前置 Git 不变量 + Planning 快照。
     let startFact;
     try {
-      startFact = await deps.git.assertSessionStart(root, sessionGitFacts(run), { planning: true });
+      startFact = await deps.git.assertSessionStart(root, sessionGitFacts(run), {
+        readOnlySessionType: 'planning',
+      });
     } catch (error) {
       return failTerminal(run, error as ApexError);
     }

@@ -50,6 +50,7 @@ const RESUME_UNAVAILABLE_PATTERNS = [
 const RESULT_SCHEMA_BY_SESSION_TYPE = {
   planning: 'TaskPlanDraft',
   execution: 'TaskExecutionResult',
+  task_review: 'TaskReviewResult',
   final_review: 'FinalReviewResult',
 } as const;
 export interface ClaudeRuntimeOptions {
@@ -195,10 +196,16 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
   async function invoke<T extends SessionType>(
     request: ClaudeInvocationRequest<T>,
   ): Promise<ClaudeInvocationFact<T>> {
+    /**
+     * Reviewer 的权限不能随 --full-access 升级；它是只读完成门禁，不属于
+     * 实现阶段。Git 会话快照仍作为第二道、与模型权限无关的副作用检测。
+     */
     const permissionIsValid =
       request.type === 'planning'
         ? request.permissionMode === 'plan'
-        : request.permissionMode === 'auto' || request.permissionMode === 'bypassPermissions';
+        : request.type === 'task_review'
+          ? request.permissionMode === 'auto'
+          : request.permissionMode === 'auto' || request.permissionMode === 'bypassPermissions';
     if (!permissionIsValid) {
       throw new TypeError(
         `unsupported claude permission mode ${String(request.permissionMode)} for ${request.type}`,
@@ -289,7 +296,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
          * 正式 Session 的上下文规模随计划和验收证据增长，不能进入 argv。
          *
          * Claude print 模式支持从管道读取文本；统一走 stdin 后，Planning、
-         * Execution、Final Review 和续接会话均不再受命令行长度限制。
+         * Execution、Task Review、Final Review 和续接会话均不受命令行长度限制。
          */
         stdinText: request.prompt,
         collectOutput: false,

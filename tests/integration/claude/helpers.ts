@@ -185,6 +185,17 @@ export function validStructuredResult(sessionType: SessionType): Record<string, 
         remainingRisks: [],
         replanReason: null,
       };
+    case 'task_review':
+      return {
+        decision: 'approved',
+        summary: 'Independent review passed',
+        tests: [{ command: 'npm test', result: 'passed' }],
+        acceptanceEvidence: [
+          { criterionIndex: 0, status: 'satisfied', evidence: 'verified repository facts' },
+        ],
+        issues: [],
+        replanReason: null,
+      };
     case 'final_review':
       return {
         decision: 'completed',
@@ -210,6 +221,11 @@ export function invalidStructuredResult(sessionType: SessionType): Record<string
     case 'execution':
       return {
         ...(validStructuredResult('execution') as { decision: string }),
+        decision: 'sometimes',
+      };
+    case 'task_review':
+      return {
+        ...(validStructuredResult('task_review') as { decision: string }),
         decision: 'sometimes',
       };
     case 'final_review': {

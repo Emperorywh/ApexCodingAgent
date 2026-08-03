@@ -21,6 +21,7 @@ import { toErrorRecord } from './error-record.js';
 import {
   closeExecutionEpisodeAsSessionError,
   closeFinalReviewEpisodeAsSessionError,
+  closeTaskReviewEpisodeAsSessionError,
 } from './run-transitions.js';
 
 export interface OrphanedSessionReconcilerDeps {
@@ -83,6 +84,18 @@ export async function reconcileOrphanedSessionFacts(
     for (const episode of task.executionEpisodes) {
       if (episode.endedAt !== null) continue;
       reconciled = closeExecutionEpisodeAsSessionError(
+        reconciled,
+        task.taskId,
+        episode.sessionId,
+        error,
+        now(),
+        episode.specSha256Before,
+        deps.redaction,
+      );
+    }
+    for (const episode of task.taskReviewEpisodes) {
+      if (episode.endedAt !== null) continue;
+      reconciled = closeTaskReviewEpisodeAsSessionError(
         reconciled,
         task.taskId,
         episode.sessionId,

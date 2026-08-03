@@ -145,7 +145,7 @@ describe('session start/end invariants', () => {
     const facts = await seedWithRunBranch();
     const start = await port.assertSessionStart(repo.root, facts);
     expect(start.head).toBe(facts.expectedHead);
-    expect(start.planningSnapshot).toBeNull();
+    expect(start.readOnlySnapshot).toBeNull();
     await port.assertSessionEnd(repo.root, facts, start);
   });
 
@@ -359,8 +359,10 @@ describe('planning side-effect detection', () => {
 
   beforeEach(async () => {
     facts = await seedWithRunBranch();
-    start = await port.assertSessionStart(repo.root, facts, { planning: true });
-    expect(start.planningSnapshot).not.toBeNull();
+    start = await port.assertSessionStart(repo.root, facts, {
+      readOnlySessionType: 'planning',
+    });
+    expect(start.readOnlySnapshot).not.toBeNull();
   });
 
   it('passes when nothing changed', async () => {
@@ -404,6 +406,21 @@ describe('planning side-effect detection', () => {
     await expectApexErrorAsync(
       () => port.assertSessionEnd(repo.root, facts, start),
       'PLANNING_SIDE_EFFECT_DETECTED',
+    );
+  });
+});
+
+describe('task review side-effect detection', () => {
+  it('使用独立稳定错误码拒绝 Reviewer 对工作树的修改', async () => {
+    const facts = await seedWithRunBranch();
+    const start = await port.assertSessionStart(repo.root, facts, {
+      readOnlySessionType: 'task_review',
+    });
+    await repo.writeFile('src/index.ts', 'export const value = 2;\n');
+
+    await expectApexErrorAsync(
+      () => port.assertSessionEnd(repo.root, facts, start),
+      'TASK_REVIEW_SIDE_EFFECT_DETECTED',
     );
   });
 });

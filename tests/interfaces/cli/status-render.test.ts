@@ -10,6 +10,7 @@ import type { TasksJson } from '../../../src/domain/schemas/tasks-json.js';
 import { renderStatus } from '../../../src/interfaces/cli/status-render.js';
 import {
   mkErrorRecord,
+  mkResult,
   mkRun,
   mkTask,
   mkTaskState,
@@ -93,6 +94,7 @@ describe('renderStatus', () => {
         fromStatus: 'running',
         taskId: 'TASK-002',
         sessionId: UUID_1,
+        sessionType: 'execution',
       },
     });
     const tasks: TasksJson = {
@@ -122,5 +124,40 @@ describe('renderStatus', () => {
     expect(lines).not.toContain(
       `  HEAD      ${OID_B.slice(0, 12)} · ${run.repository.runBranch}`,
     );
+  });
+
+  it('Execution 候选落盘后明确展示待独立复核，而不是已完成', () => {
+    const run = mkRun({
+      status: 'running',
+      planRevision: 1,
+      currentTaskId: 'TASK-001',
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'running', {
+          candidateResult: mkResult(),
+          candidateCheckpoint: OID_B,
+        }),
+      },
+    });
+    const tasks: TasksJson = {
+      schemaVersion: 1,
+      runId: RUN_ID,
+      planRevision: 1,
+      specPath: 'docs/SPEC.md',
+      specSha256: SHA256_A,
+      generatedAt: T0,
+      plannerSessionId: UUID_1,
+      summary: 'Initial plan',
+      assumptions: [],
+      retainedCheckpointDispositions: [],
+      tasks: [mkTask('TASK-001')],
+    };
+    const git: RepositoryStatusFact = {
+      head: { oid: OID_B, branch: run.repository.runBranch },
+      statusEntries: [],
+    };
+
+    const lines = renderStatus({ run, tasks }, git);
+    expect(lines).toContain(`  → TASK-001  Title TASK-001 · 待独立复核 ${OID_B.slice(0, 12)}`);
+    expect(lines).not.toContain('  ✓ TASK-001');
   });
 });

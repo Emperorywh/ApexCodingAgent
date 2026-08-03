@@ -139,11 +139,24 @@ export function classifyResumeRun(
   }
 
   if (force || liveness.kind === 'presumed_dead') {
+    /**
+     * 崩溃落在「候选已持久化、Reviewer 尚未启动」的窗口时，磁盘上没有
+     * activeSession；以持久化候选事实合成 task_review 恢复点（sessionId
+     * 为 null，没有可续接的会话），reopen 后由全新 Reviewer 复核候选。
+     */
+    const currentTask = run.currentTaskId === null ? undefined : run.tasks[run.currentTaskId];
+    const awaitingReview =
+      run.activeSession === null &&
+      currentTask !== undefined &&
+      currentTask.status === 'running' &&
+      currentTask.candidateResult !== null &&
+      currentTask.candidateCheckpoint !== null;
     return {
       point: {
         fromStatus: run.status,
         taskId: run.currentTaskId,
         sessionId: run.activeSession?.sessionId ?? null,
+        sessionType: run.activeSession?.type ?? (awaitingReview ? 'task_review' : null),
       },
       requiresOrphanReconciliation: true,
       liveness,
@@ -202,14 +215,34 @@ export function reopenRun(
         message: `resumePoint task ${point.taskId} has no runtime state`,
       });
     }
-    assertTaskTransition(task.status, 'pending', 'run_resumed');
-    reopened = {
-      ...reopened,
-      tasks: {
-        ...reopened.tasks,
-        [point.taskId]: { ...task, status: 'pending', failure: null },
-      },
-    };
+    if (point.sessionType === 'task_review') {
+      if (task.status === 'failed') {
+        assertTaskTransition(task.status, 'running', 'run_resumed');
+      } else if (task.status !== 'running') {
+        throw new ApexError({
+          code: 'COMMAND_STATE_INVALID',
+          stage: 'resume',
+          message: `task review resume requires task ${point.taskId} running or failed`,
+        });
+      }
+      reopened = {
+        ...reopened,
+        currentTaskId: point.taskId,
+        tasks: {
+          ...reopened.tasks,
+          [point.taskId]: { ...task, status: 'running', failure: null },
+        },
+      };
+    } else {
+      assertTaskTransition(task.status, 'pending', 'run_resumed');
+      reopened = {
+        ...reopened,
+        tasks: {
+          ...reopened.tasks,
+          [point.taskId]: { ...task, status: 'pending', failure: null },
+        },
+      };
+    }
   }
   if (isTerminalRunStatus(original.status)) {
     assertRunTransition(original.status, point.fromStatus);
@@ -218,7 +251,7 @@ export function reopenRun(
     ...reopened,
     status: point.fromStatus,
     activeSession: null,
-    currentTaskId: null,
+    currentTaskId: point.sessionType === 'task_review' ? point.taskId : null,
     lastError: null,
     terminalAt: null,
     resumePoint: null,

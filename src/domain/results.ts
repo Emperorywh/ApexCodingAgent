@@ -8,6 +8,7 @@
 import { ApexError, isApexError } from './errors.js';
 import type { FinalReviewResult } from './schemas/final-review-result.js';
 import type { TaskExecutionResult } from './schemas/task-execution-result.js';
+import type { TaskReviewResult } from './schemas/task-review-result.js';
 import type { PlannedTask } from './schemas/task-plan-draft.js';
 
 function resultInvalid(message: string): ApexError {
@@ -22,8 +23,25 @@ export function isClaudeResultInvalid(error: unknown): boolean {
   return isApexError(error) && error.errorCode === 'CLAUDE_RESULT_INVALID';
 }
 
+/**
+ * 判断错误是否为 Task Review 结果契约校验失败（适配器 Schema 或领域语义
+ * 门禁）。Application 层据此决定复核结果修复接力，不直接引用错误码字面量。
+ */
+export function isTaskReviewResultInvalid(error: unknown): boolean {
+  return isApexError(error) && error.errorCode === 'TASK_REVIEW_RESULT_INVALID';
+}
+
 function finalReviewInvalid(message: string): ApexError {
   return new ApexError({ code: 'FINAL_REVIEW_RESULT_INVALID', stage: 'final_review', message });
+}
+
+/** 独立 Task 复核结果的稳定契约错误。 */
+function taskReviewInvalid(message: string): ApexError {
+  return new ApexError({
+    code: 'TASK_REVIEW_RESULT_INVALID',
+    stage: 'task_review',
+    message,
+  });
 }
 
 /**
@@ -41,6 +59,17 @@ function finalReviewInvalid(message: string): ApexError {
  * 是否记录告警。
  */
 export function normalizeExecutionResult(result: TaskExecutionResult): TaskExecutionResult {
+  if (result.decision === 'replan_required' || result.replanReason === null) return result;
+  return { ...result, replanReason: null };
+}
+
+/**
+ * Task Review 的 replanReason 只在重新规划路径上有业务含义。
+ *
+ * approved/changes_required 下统一清除模型产生的占位噪声，后续语义门禁
+ * 仍会严格验证真正的 replan_required 必须携带非空原因。
+ */
+export function normalizeTaskReviewResult(result: TaskReviewResult): TaskReviewResult {
   if (result.decision === 'replan_required' || result.replanReason === null) return result;
   return { ...result, replanReason: null };
 }
@@ -96,6 +125,75 @@ export function validateExecutionResultSemantics(
     if (result.acceptanceEvidence.some((evidence) => evidence.status !== 'satisfied')) {
       throw resultInvalid('decision completed requires every acceptanceEvidence satisfied');
     }
+  }
+}
+
+/**
+ * 独立 Task Review 的领域门禁。
+ *
+ * 每条验收标准必须被精确覆盖；approved 只有在全部证据 satisfied、没有
+ * failed test 且 issues 为空时成立。changes_required 必须给出可观察的
+ * 不通过事实，防止无理由打回造成不可推导循环。
+ */
+export function validateTaskReviewResultSemantics(
+  result: TaskReviewResult,
+  task: PlannedTask,
+): void {
+  if (result.decision === 'replan_required') {
+    if (result.replanReason === null) {
+      throw taskReviewInvalid('decision replan_required requires a non-empty replanReason');
+    }
+  } else if (result.replanReason !== null) {
+    throw taskReviewInvalid(`decision ${result.decision} requires replanReason to be null`);
+  }
+
+  const criterionCount = task.acceptanceCriteria.length;
+  const covered = new Set<number>();
+  for (const evidence of result.acceptanceEvidence) {
+    const index = evidence.criterionIndex;
+    if (index < 0 || index >= criterionCount) {
+      throw taskReviewInvalid(
+        `acceptanceEvidence criterionIndex ${index} out of range 0..${criterionCount - 1}`,
+      );
+    }
+    if (covered.has(index)) {
+      throw taskReviewInvalid(`acceptanceEvidence criterionIndex ${index} is duplicated`);
+    }
+    covered.add(index);
+  }
+  if (covered.size !== criterionCount) {
+    const missing = Array.from({ length: criterionCount }, (_, index) => index).filter(
+      (index) => !covered.has(index),
+    );
+    throw taskReviewInvalid(
+      `acceptanceEvidence must cover every criterion exactly once; missing: ${missing.join(', ')}`,
+    );
+  }
+
+  const hasUnsatisfied = result.acceptanceEvidence.some(
+    (evidence) => evidence.status === 'not_satisfied',
+  );
+  const hasFailedTest = result.tests.some((test) => test.result === 'failed');
+  if (result.decision === 'approved') {
+    if (hasUnsatisfied) {
+      throw taskReviewInvalid('approved requires every acceptance criterion satisfied');
+    }
+    if (hasFailedTest) {
+      throw taskReviewInvalid('approved cannot contain a failed test');
+    }
+    if (result.issues.length > 0) {
+      throw taskReviewInvalid('approved requires an empty issues list');
+    }
+  }
+  if (
+    result.decision === 'changes_required' &&
+    !hasUnsatisfied &&
+    !hasFailedTest &&
+    result.issues.length === 0
+  ) {
+    throw taskReviewInvalid(
+      'changes_required requires an unsatisfied criterion, failed test, or non-empty issue',
+    );
   }
 }
 

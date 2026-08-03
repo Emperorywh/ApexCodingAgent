@@ -117,6 +117,13 @@ function taskDetail(state: TaskRuntimeState | undefined): string | null {
   if (state?.finalCheckpoint != null) {
     return `检查点 ${shortOid(state.finalCheckpoint)}`;
   }
+  /**
+   * Execution 已完成但 Reviewer 尚未批准时仍是 running；显式展示候选状态，
+   * 避免用户把“执行会话结束”误解为 Task 已完成。
+   */
+  if (state?.candidateCheckpoint != null) {
+    return `待独立复核 ${shortOid(state.candidateCheckpoint)}`;
+  }
   if (state?.failure != null) {
     return state.failure.errorCode;
   }
@@ -141,6 +148,8 @@ function sessionTypeLabel(type: SessionType): string {
       return '规划';
     case 'execution':
       return '执行';
+    case 'task_review':
+      return '独立复核';
     case 'final_review':
       return '最终检查';
   }

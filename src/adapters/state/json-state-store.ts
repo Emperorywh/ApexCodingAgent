@@ -37,7 +37,7 @@ import {
 } from '../../domain/plan-documents.js';
 import { assertSchemaValid } from '../../domain/schemas/index.js';
 import type { PlanRevisionSnapshot } from '../../domain/schemas/plan-revision-snapshot.js';
-import { migrateRunJsonForRead, type RunJson } from '../../domain/schemas/run-json.js';
+import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { SessionRecord } from '../../domain/schemas/session-record.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
@@ -99,14 +99,11 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
   }
 
   async function readRun(): Promise<RunJson | null> {
-    // migrateRunJsonForRead：resume 功能前的旧 run.json 缺 resumePoint，
-    // 回填 null 后再校验，升级后的 CLI 才能归档/放弃旧 Run。
     const read = await readJsonIfExists<RunJson>(
       fs,
       runPath,
       'RunJson',
       assertRunJsonRules,
-      migrateRunJsonForRead,
     );
     return read === null ? null : read.value;
   }

@@ -74,10 +74,13 @@ export interface SequenceScenario {
   readonly stderrText?: string;
   readonly exitCode?: number;
   readonly sleepMs?: number;
+  /** 默认测试设施可自动为新增的独立 Task Review 调用生成批准结果。 */
+  readonly autoApproveTaskReviews?: boolean;
 }
 
 export interface RecordedInvocation {
   readonly argv: string[];
+  readonly stdin: string;
   readonly cwd: string;
   readonly env: Record<string, string | null>;
 }
@@ -247,7 +250,11 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     async writeScenario(scenario) {
       // 每个新场景文件重置序列计数器。
       await rm(`${scenarioPath}.counter`, { force: true });
-      await writeFile(scenarioPath, JSON.stringify(scenario, null, 2), 'utf8');
+      await writeFile(
+        scenarioPath,
+        JSON.stringify({ autoApproveTaskReviews: true, ...scenario }, null, 2),
+        'utf8',
+      );
     },
     async readRecords() {
       try {
@@ -488,6 +495,26 @@ export function executionCompleted(
     })),
     changedAreas: ['src'],
     remainingRisks: [],
+    replanReason: null,
+    ...overrides,
+  };
+}
+
+/** 合法 TaskReviewResult（approved），用于显式复核场景。 */
+export function taskReviewApproved(
+  criteriaCount = 1,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    decision: 'approved',
+    summary: '独立复核通过',
+    tests: [{ command: 'npm test', result: 'passed' }],
+    acceptanceEvidence: Array.from({ length: criteriaCount }, (_, index) => ({
+      criterionIndex: index,
+      status: 'satisfied',
+      evidence: `独立复核证据 ${index}`,
+    })),
+    issues: [],
     replanReason: null,
     ...overrides,
   };

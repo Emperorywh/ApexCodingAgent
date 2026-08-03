@@ -124,7 +124,11 @@ export async function createFakeClaudeEnv(): Promise<FakeClaudeEnv> {
     },
     async writeScenario(scenario) {
       await rm(`${scenarioPath}.counter`, { force: true });
-      await writeFile(scenarioPath, JSON.stringify(scenario, null, 2), 'utf8');
+      await writeFile(
+        scenarioPath,
+        JSON.stringify({ autoApproveTaskReviews: true, ...scenario }, null, 2),
+        'utf8',
+      );
     },
     // Windows 上子进程退出滞后时 rmdir 会报 EBUSY，重试吸收
     cleanup: () => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }),

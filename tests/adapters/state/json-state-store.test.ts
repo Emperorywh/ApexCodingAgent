@@ -218,39 +218,6 @@ describe('write protocol failure mapping (SPEC §11.2)', () => {
   });
 });
 
-describe('run.json read migration (pre-resume state files)', () => {
-  /**
-   * resume 功能引入前写入的 run.json 缺少必需字段 resumePoint。读取端回填
-   * null（schemaVersion 1 内迁移），升级后的 CLI 才能归档/放弃旧 Run；
-   * 写入端不作兼容，新状态必须显式携带该字段。
-   */
-  function legacyRunBytes(): Uint8Array {
-    const legacy = mkRun() as unknown as Record<string, unknown>;
-    delete legacy['resumePoint'];
-    return new TextEncoder().encode(JSON.stringify(legacy, null, 2));
-  }
-
-  it('backfills a missing resumePoint with null on read', async () => {
-    fs.files.set(RUN_PATH, legacyRunBytes());
-
-    const run = await store.readRun();
-    expect(run).toEqual(mkRun());
-    expect(run!.resumePoint).toBeNull();
-    // 一致快照走同一迁移，不因旧格式误报 STATE_SNAPSHOT_BUSY。
-    expect(await store.readConsistentSnapshot()).toEqual({ run, tasks: null });
-  });
-
-  it('still rejects legacy-shaped runs on write before touching the filesystem', async () => {
-    const legacy = JSON.parse(new TextDecoder().decode(legacyRunBytes())) as RunJson;
-    await expectApexErrorAsync(
-      () => store.writeRun(legacy),
-      'STATE_VALIDATION_FAILED',
-    );
-    expect(fs.ops.filter((op) => op.op === 'writeFile' || op.op === 'rename')).toEqual([]);
-    expect(fs.files.has(RUN_PATH)).toBe(false);
-  });
-});
-
 describe('tasks.json writes', () => {
   it('returns the SHA-256 of the raw tasks.json bytes', async () => {
     const tasks = mkTasks(1);
@@ -470,5 +437,27 @@ describe('heartbeat.json liveness facts (§2.4)', () => {
     await store.writeHeartbeat(FACT);
     expect(await store.readHeartbeat()).toEqual(FACT);
     expect(fs.ops.filter((op) => op.op === 'rename')).toHaveLength(2);
+  });
+});
+
+describe('legacy run.json shapes（不做读取迁移）', () => {
+  /**
+   * 旧版本写出的 run.json 没有 resumePoint 字段；读取侧严格按当前 Schema
+   * 校验并响亮失败，绝不在读取路径上补字段做隐式迁移。
+   */
+  it('rejects a run.json missing the resumePoint field', async () => {
+    await store.writeRun(mkRun());
+    const legacy = JSON.parse(fs.readText(RUN_PATH)) as Record<string, unknown>;
+    delete legacy['resumePoint'];
+    fs.files.set(RUN_PATH, new TextEncoder().encode(JSON.stringify(legacy, null, 2)));
+    await expectApexErrorAsync(() => store.readRun(), 'STATE_VALIDATION_FAILED');
+  });
+
+  it('rejects a resumePoint missing the sessionType field', async () => {
+    await store.writeRun(mkRun());
+    const legacy = JSON.parse(fs.readText(RUN_PATH)) as Record<string, unknown>;
+    legacy['resumePoint'] = { fromStatus: 'running', taskId: null, sessionId: null };
+    fs.files.set(RUN_PATH, new TextEncoder().encode(JSON.stringify(legacy, null, 2)));
+    await expectApexErrorAsync(() => store.readRun(), 'STATE_VALIDATION_FAILED');
   });
 });

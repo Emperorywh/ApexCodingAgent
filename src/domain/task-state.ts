@@ -27,8 +27,10 @@ export type TaskTransitionReason =
   | 'replan_required'
   /** SPEC changed during the session. */
   | 'spec_changed'
-  /** Claude legally returned `completed` and the Git Checkpoint succeeded. */
-  | 'completed_and_checkpointed'
+  /** 独立 Task Review Session 批准候选结果及其 Checkpoint。 */
+  | 'review_approved'
+  /** 独立复核发现可在当前 Task 边界内修复的问题。 */
+  | 'review_changes_required'
   /** Claude invocation failed (start/stream/exit). */
   | 'claude_call_failed'
   /** Claude legally returned decision `failed`. */
@@ -50,8 +52,13 @@ export const TASK_TRANSITION_REASONS: Readonly<
 > = {
   'pending->running': ['orchestrator_selected'],
   'pending->skipped': ['plan_revision_omitted'],
-  'running->pending': ['replan_required', 'spec_changed', 'run_resumed'],
-  'running->completed': ['completed_and_checkpointed'],
+  'running->pending': [
+    'replan_required',
+    'spec_changed',
+    'review_changes_required',
+    'run_resumed',
+  ],
+  'running->completed': ['review_approved'],
   'running->failed': [
     'claude_call_failed',
     'reported_failure',
@@ -63,13 +70,14 @@ export const TASK_TRANSITION_REASONS: Readonly<
   // 仅 resume 命令：被中断（failed 且 failure 为 RUN_INTERRUPTED）的 Task
   // 复位后重新参与调度。
   'failed->pending': ['run_resumed'],
+  'failed->running': ['run_resumed'],
 };
 
 export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   pending: ['running', 'skipped'],
   running: ['pending', 'completed', 'failed'],
   completed: [],
-  failed: ['pending'],
+  failed: ['pending', 'running'],
   skipped: [],
 };
 
@@ -139,4 +147,22 @@ export function selectReadyTask(
     if (dependenciesCompleted) return task.id;
   }
   return null;
+}
+
+/**
+ * 选择唯一等待独立复核的 Task。
+ *
+ * 候选结果只允许存在于 running Task；出现多个候选表示串行调度事实已经
+ * 损坏，因此返回 null 交由调用方以 STATE_VALIDATION_FAILED 响亮拒绝。
+ */
+export function selectTaskAwaitingReview(
+  taskStates: Readonly<Record<string, TaskRuntimeState>>,
+): string | null {
+  const candidates = Object.values(taskStates).filter(
+    (state) =>
+      state.status === 'running' &&
+      state.candidateResult !== null &&
+      state.candidateCheckpoint !== null,
+  );
+  return candidates.length === 1 ? candidates[0]!.taskId : null;
 }

@@ -15,6 +15,7 @@ import {
   buildExecutionResultRepairPrompt,
   type ExecutionPromptInput,
   type ExecutionResultRepairPromptInput,
+  type TaskReviewFeedback,
 } from '../../src/application/prompts/execution.js';
 import {
   buildFinalReviewPrompt,
@@ -22,6 +23,13 @@ import {
   type CompletedTaskReviewSummary,
   type FinalReviewPromptInput,
 } from '../../src/application/prompts/final-review.js';
+import {
+  buildTaskReviewPrompt,
+  buildTaskReviewRepairPrompt,
+  buildTaskReviewResumePrompt,
+  type TaskReviewPromptInput,
+  type TaskReviewRepairPromptInput,
+} from '../../src/application/prompts/task-review.js';
 import type { IntermediateCheckpoint } from '../../src/domain/schemas/intermediate-checkpoint.js';
 import type { PlanRevisionTrigger } from '../../src/domain/schemas/plan-revision-snapshot.js';
 import type { PlannedTask } from '../../src/domain/schemas/task-plan-draft.js';
@@ -225,6 +233,7 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
     task: pendingDefinition,
     completedTasks: [completedTask],
     adoptedCheckpoints: [unabsorbedCheckpoint],
+    reviewFeedback: null,
   };
 
   it('保留 12 条执行要求的标志性语句与安全边界', () => {
@@ -276,6 +285,28 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
     const prompt = buildExecutionPrompt({ ...input, completedTasks: [], adoptedCheckpoints: [] });
     expect(prompt).toContain('COMPLETED_TASKS（简洁摘要与最终 Checkpoint）：\n（无）');
     expect(prompt).toContain('ADOPTED_INTERMEDIATE_CHECKPOINTS（当前 Task 接管的中间 Checkpoint）：\n（无）');
+  });
+
+  it('复核打回反馈注入 REVIEW_FEEDBACK 小节', () => {
+    const reviewFeedback: TaskReviewFeedback = {
+      summary: '候选实现遗漏了空输入的错误处理',
+      issues: ['src/foo.ts 未处理空数组输入'],
+      failedTests: [{ command: 'npx vitest run tests/foo', result: 'failed' }],
+      unsatisfiedEvidence: [
+        { criterionIndex: 0, status: 'not_satisfied', evidence: '仓库中不存在错误处理分支' },
+      ],
+    };
+    const prompt = buildExecutionPrompt({ ...input, reviewFeedback });
+    expect(prompt).toContain('REVIEW_FEEDBACK');
+    expect(prompt).toContain(reviewFeedback.summary);
+    expect(prompt).toContain('未满足验收标准 0');
+    expect(prompt).toContain('仓库中不存在错误处理分支');
+    expect(prompt).toContain('失败测试：npx vitest run tests/foo');
+    expect(prompt).toContain('待修复问题：src/foo.ts 未处理空数组输入');
+  });
+
+  it('reviewFeedback 为 null 时不出现 REVIEW_FEEDBACK 小节', () => {
+    expect(buildExecutionPrompt(input)).not.toContain('REVIEW_FEEDBACK');
   });
 });
 
@@ -329,6 +360,95 @@ describe('buildExecutionResultRepairPrompt（结果修复接力）', () => {
     const prompt = buildExecutionResultRepairPrompt({ ...input, invalidResultJson: null });
     expect(prompt).toContain('（无）');
     expect(prompt).not.toContain('遗留说明');
+  });
+});
+
+describe('buildTaskReviewPrompt（独立 Task 完成复核）', () => {
+  const input: TaskReviewPromptInput = {
+    repositoryRoot: REPOSITORY_ROOT,
+    runBranch: RUN_BRANCH,
+    specPath: SPEC_PATH,
+    specSha256: SPEC_SHA256,
+    planRevision: 3,
+    task: pendingDefinition,
+    candidateCheckpoint: OID_COMPLETED,
+  };
+
+  it('明确使用全新上下文，并且完全不注入 Execution 自报结果', () => {
+    const prompt = buildTaskReviewPrompt(input);
+    expect(prompt).toContain('独立 Task Reviewer');
+    expect(prompt).toContain('你没有、也不得尝试恢复产生候选实现的 Execution Session 上下文');
+    expect(prompt).not.toContain('CANDIDATE_EXECUTION_RESULT');
+    expect(prompt).not.toContain('任务完成');
+    expect(prompt).toContain(OID_COMPLETED);
+    expect(prompt).toContain('不采信候选结果的自我判断');
+  });
+
+  it('锁定只读边界与严格批准条件', () => {
+    const prompt = buildTaskReviewPrompt(input);
+    expect(prompt).toContain('本会话严格只读');
+    expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
+    expect(prompt).toContain('全部验收条件均 satisfied');
+    expect(prompt).toContain('issues 为空时，返回 approved');
+    expect(prompt).toContain('changes_required');
+    expect(prompt).toContain('replan_required');
+  });
+
+  it('要求测试产物被 .gitignore 覆盖或在返回前清理干净', () => {
+    const prompt = buildTaskReviewPrompt(input);
+    expect(prompt).toContain('.gitignore 覆盖');
+    expect(prompt).toContain('必须在返回结果前清理干净');
+  });
+
+  it('恢复提示只续接 Reviewer 自身上下文，不接触 Execution Session', () => {
+    const prompt = buildTaskReviewResumePrompt();
+    expect(prompt).toContain('只续接该 Reviewer 自己的复核上下文');
+    expect(prompt).toContain('不得恢复或引用产生候选实现的 Execution Session');
+    expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
+    expect(prompt).toContain('TaskReviewResult');
+  });
+});
+
+describe('buildTaskReviewRepairPrompt（复核结果修复接力）', () => {
+  const invalidResultJson = JSON.stringify(
+    { decision: 'approved', issues: ['遗留问题'] },
+    null,
+    2,
+  );
+  const input: TaskReviewRepairPromptInput = {
+    repositoryRoot: REPOSITORY_ROOT,
+    runBranch: RUN_BRANCH,
+    task: pendingDefinition,
+    candidateCheckpoint: OID_COMPLETED,
+    validationError: 'approved requires an empty issues list',
+    invalidResultJson,
+  };
+
+  it('附校验错误、非法结果原文、候选 Checkpoint 与 CURRENT_TASK 定义', () => {
+    const prompt = buildTaskReviewRepairPrompt(input);
+    expect(prompt).toContain('approved requires an empty issues list');
+    expect(prompt).toContain('遗留问题');
+    expect(prompt).toContain(OID_COMPLETED);
+    expect(prompt).toContain('"id": "TASK-002"');
+    expect(prompt).toContain(REPOSITORY_ROOT);
+    expect(prompt).toContain(RUN_BRANCH);
+  });
+
+  it('重申只读边界、索引覆盖与字段耦合规则', () => {
+    const prompt = buildTaskReviewRepairPrompt(input);
+    expect(prompt).toContain('本会话严格只读');
+    expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
+    expect(prompt).toContain('acceptanceEvidence 必须按 CURRENT_TASK.acceptanceCriteria 的原索引逐条覆盖');
+    expect(prompt).toContain('decision 为 approved 时，全部 acceptanceEvidence 必须为 satisfied');
+    expect(prompt).toContain('changes_required 必须至少有一项 not_satisfied、failed test 或非空 issue');
+    expect(prompt).toContain('replan_required 必须携带非空 replanReason');
+    expect(prompt).toContain('不要返回 Markdown');
+  });
+
+  it('非法结果不可解析时给出占位', () => {
+    const prompt = buildTaskReviewRepairPrompt({ ...input, invalidResultJson: null });
+    expect(prompt).toContain('（无）');
+    expect(prompt).not.toContain('遗留问题');
   });
 });
 

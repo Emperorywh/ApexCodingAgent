@@ -16,6 +16,10 @@ import {
   taskExecutionResultSchema,
   type TaskExecutionResult,
 } from './task-execution-result.js';
+import {
+  taskReviewResultSchema,
+  type TaskReviewResult,
+} from './task-review-result.js';
 import { taskPlanDraftSchema, type TaskPlanDraft } from './task-plan-draft.js';
 
 export type SessionRecordStatus = 'completed' | 'failed';
@@ -39,7 +43,7 @@ export interface SessionRecord {
   endedAt: string;
   claude: SessionClaudeFact;
   exitCode: number | null;
-  structuredResult: TaskPlanDraft | TaskExecutionResult | FinalReviewResult | null;
+  structuredResult: TaskPlanDraft | TaskExecutionResult | TaskReviewResult | FinalReviewResult | null;
   logPath: string;
   error: ErrorRecord | null;
 }
@@ -72,7 +76,7 @@ export const sessionRecordSchema = {
   properties: {
     schemaVersion: { type: 'integer', const: 1 },
     sessionId: { type: 'string', pattern: UUID_PATTERN.source },
-    type: { type: 'string', enum: ['planning', 'execution', 'final_review'] },
+    type: { type: 'string', enum: ['planning', 'execution', 'task_review', 'final_review'] },
     status: { type: 'string', enum: ['completed', 'failed'] },
     runId: { type: 'string', pattern: RUN_ID_PATTERN.source },
     taskId: { anyOf: [{ type: 'null' }, { type: 'string', pattern: TASK_ID_PATTERN.source }] },
@@ -96,6 +100,7 @@ export const sessionRecordSchema = {
         { type: 'null' },
         taskPlanDraftSchema,
         taskExecutionResultSchema,
+        taskReviewResultSchema,
         finalReviewResultSchema,
       ],
     },

@@ -31,6 +31,7 @@ import {
 const RESULT_SCHEMA_BY_SESSION_TYPE = {
   planning: 'TaskPlanDraft',
   execution: 'TaskExecutionResult',
+  task_review: 'TaskReviewResult',
   final_review: 'FinalReviewResult',
 } as const;
 const EVENT_SUMMARY_LIMIT = 200;

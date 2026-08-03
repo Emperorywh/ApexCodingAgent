@@ -85,11 +85,11 @@ function renderErrorSummary(record: ErrorRecord): string {
   return lines.join('\n');
 }
 
-/** 已提交事实中每个 completed Task 的验收证据（run.json completedResult）。 */
+/** 已提交事实中每个 completed Task 最终独立批准 Episode 的验收证据。 */
 function renderAcceptanceEvidence(task: TaskRuntimeState): string[] {
-  const evidence = task.completedResult?.acceptanceEvidence ?? [];
+  const evidence = task.taskReviewEpisodes.at(-1)?.acceptanceEvidence ?? [];
   if (evidence.length === 0) return [];
-  const lines = ['- 验收证据（Claude 报告）：'];
+  const lines = ['- 验收证据（独立 Task Review）：'];
   for (const item of evidence) {
     lines.push(`  - 验收标准 ${item.criterionIndex + 1}：${item.status} — ${inline(item.evidence)}`);
   }
@@ -174,6 +174,34 @@ function renderCompletedReport(input: GenerateReportInput): string {
         out.push(`  - 验收证据：验收标准 ${item.criterionIndex + 1}：${item.status} — ${inline(item.evidence)}`);
       }
     });
+    /**
+     * Task Review 与 Execution 分开展示，报告由此保留“谁产生候选、谁独立批准”
+     * 的可审计关系；不能只展示最终 completed 状态而隐藏复核门禁。
+     */
+    if (task.taskReviewEpisodes.length === 0) {
+      out.push('- Task Review Episode：无记录。');
+    }
+    task.taskReviewEpisodes.forEach((episode, index) => {
+      out.push(`- Task Review Episode ${index + 1}：`);
+      out.push(
+        `  - Reviewer Session：\`${episode.sessionId}\`；` +
+          `Execution Session：\`${episode.executionSessionId}\`；Plan Revision：${episode.planRevision}`,
+      );
+      out.push(`  - 候选 Checkpoint：\`${episode.candidateCheckpoint}\``);
+      out.push(`  - 时间：${episode.startedAt} → ${episode.endedAt ?? '未结束'}`);
+      out.push(`  - outcome：${episode.outcome ?? '未记录'}`);
+      if (episode.summary !== null) out.push(`  - 摘要：${inline(episode.summary)}`);
+      for (const test of episode.tests) {
+        out.push(`  - 独立测试：\`${inline(test.command)}\` → ${test.result}`);
+      }
+      for (const item of episode.acceptanceEvidence) {
+        out.push(
+          `  - 独立验收证据：验收标准 ${item.criterionIndex + 1}：` +
+            `${item.status} — ${inline(item.evidence)}`,
+        );
+      }
+      for (const issue of episode.issues) out.push(`  - 发现问题：${inline(issue)}`);
+    });
     out.push('');
   }
 
@@ -191,12 +219,14 @@ function renderCompletedReport(input: GenerateReportInput): string {
     );
   }
 
-  out.push('', '## 测试结果（Claude 报告）', '', '### 各 Task 测试', '');
-  const testedTasks = completed.filter((task) => (task.completedResult?.tests.length ?? 0) > 0);
-  if (testedTasks.length === 0) out.push('- 无 Claude 报告的 Task 测试记录。');
+  out.push('', '## 测试结果（Claude 报告）', '', '### 各 Task 独立复核测试', '');
+  const testedTasks = completed.filter(
+    (task) => (task.taskReviewEpisodes.at(-1)?.tests.length ?? 0) > 0,
+  );
+  if (testedTasks.length === 0) out.push('- 无独立 Task Review 测试记录。');
   for (const task of testedTasks) {
-    for (const test of task.completedResult!.tests) {
-      out.push(`- \`${task.taskId}\`：\`${inline(test.command)}\` → ${test.result}`);
+    for (const test of task.taskReviewEpisodes.at(-1)!.tests) {
+      out.push(`- \`${task.taskId}\` Task Review：\`${inline(test.command)}\` → ${test.result}`);
     }
   }
   out.push('', '### Final Review', '');

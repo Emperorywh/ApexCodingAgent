@@ -13,6 +13,10 @@ import {
   taskExecutionResultSchema,
   type TaskExecutionResult,
 } from './task-execution-result.js';
+import {
+  taskReviewEpisodeSchema,
+  type TaskReviewEpisode,
+} from './task-review-episode.js';
 
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
@@ -28,6 +32,9 @@ export interface TaskRuntimeState {
   taskId: string;
   status: TaskStatus;
   executionEpisodes: TaskExecutionEpisode[];
+  taskReviewEpisodes: TaskReviewEpisode[];
+  candidateResult: TaskExecutionResult | null;
+  candidateCheckpoint: string | null;
   completedResult: TaskExecutionResult | null;
   finalCheckpoint: string | null;
   skipReason: string | null;
@@ -46,6 +53,9 @@ export const taskRuntimeStateSchema = {
     'taskId',
     'status',
     'executionEpisodes',
+    'taskReviewEpisodes',
+    'candidateResult',
+    'candidateCheckpoint',
     'completedResult',
     'finalCheckpoint',
     'skipReason',
@@ -55,6 +65,11 @@ export const taskRuntimeStateSchema = {
     taskId: { type: 'string', pattern: TASK_ID_PATTERN.source },
     status: { type: 'string', enum: [...TASK_STATUSES] },
     executionEpisodes: { type: 'array', items: taskExecutionEpisodeSchema },
+    taskReviewEpisodes: { type: 'array', items: taskReviewEpisodeSchema },
+    candidateResult: { anyOf: [{ type: 'null' }, taskExecutionResultSchema] },
+    candidateCheckpoint: {
+      anyOf: [{ type: 'null' }, { type: 'string', pattern: GIT_OID_PATTERN.source }],
+    },
     completedResult: { anyOf: [{ type: 'null' }, taskExecutionResultSchema] },
     finalCheckpoint: {
       anyOf: [{ type: 'null' }, { type: 'string', pattern: GIT_OID_PATTERN.source }],

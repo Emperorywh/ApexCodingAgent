@@ -384,6 +384,9 @@ describe('session type × outcome matrix (SPEC §22.2)', () => {
     { sessionType: 'execution', outcome: 'success' },
     { sessionType: 'execution', outcome: 'schema-error', expectedCode: 'CLAUDE_RESULT_INVALID' },
     { sessionType: 'execution', outcome: 'nonzero-exit', expectedCode: 'CLAUDE_EXIT_NONZERO' },
+    { sessionType: 'task_review', outcome: 'success' },
+    { sessionType: 'task_review', outcome: 'schema-error', expectedCode: 'TASK_REVIEW_RESULT_INVALID' },
+    { sessionType: 'task_review', outcome: 'nonzero-exit', expectedCode: 'CLAUDE_EXIT_NONZERO' },
     { sessionType: 'final_review', outcome: 'success' },
     { sessionType: 'final_review', outcome: 'schema-error', expectedCode: 'FINAL_REVIEW_RESULT_INVALID' },
     { sessionType: 'final_review', outcome: 'nonzero-exit', expectedCode: 'CLAUDE_EXIT_NONZERO' },
@@ -406,7 +409,7 @@ describe('session type × outcome matrix (SPEC §22.2)', () => {
         } else {
           expect(
             (fact.structuredResult as { readonly decision: string }).decision,
-          ).toBe('completed');
+          ).toBe(sessionType === 'task_review' ? 'approved' : 'completed');
         }
         const records = await harness.readRecords();
         const modeIndex = records[0]!.argv.indexOf('--permission-mode');

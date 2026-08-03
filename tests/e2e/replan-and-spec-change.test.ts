@@ -119,7 +119,7 @@ describe('e2e replan_required', () => {
         expect(task1.executionEpisodes[0]!.intermediateCheckpoint).toBe(
           run.intermediateCheckpoints[0]!.oid,
         );
-        expect(task1.executionEpisodes[1]!.outcome).toBe('completed');
+        expect(task1.executionEpisodes[1]!.outcome).toBe('awaiting_review');
         // 定义更新为新 Revision 的版本。
         const tasks = await harness.readTasksJson();
         expect(tasks.tasks.find((task) => task.id === 'TASK-001')!.title).toBe(
@@ -128,13 +128,15 @@ describe('e2e replan_required', () => {
 
         // Session Record：6 个（2 planning + 3 execution[同一 Task 两次] + 1 final review）。
         const records = await harness.listSessionRecords();
-        expect(records).toHaveLength(6);
+        expect(records).toHaveLength(8);
         expect(records.map((record) => record.type)).toEqual([
           'planning',
           'execution',
           'planning',
           'execution',
+          'task_review',
           'execution',
+          'task_review',
           'final_review',
         ]);
         /*
@@ -324,7 +326,7 @@ describe('e2e SPEC changes', () => {
         expect(task1.executionEpisodes[0]!.intermediateCheckpoint).toBe(
           run.intermediateCheckpoints[0]!.oid,
         );
-        expect(task1.executionEpisodes[1]!.outcome).toBe('completed');
+        expect(task1.executionEpisodes[1]!.outcome).toBe('awaiting_review');
 
         // SPEC 变化触发 Revision 2，run.json 记录新 SPEC SHA。
         expect(run.planRevision).toBe(2);

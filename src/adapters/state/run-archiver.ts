@@ -24,7 +24,7 @@ import type {
   RunArchiveManifest,
   RunArchiveManifestFile,
 } from '../../domain/schemas/run-archive-manifest.js';
-import { migrateRunJsonForRead, type RunJson } from '../../domain/schemas/run-json.js';
+import type { RunJson } from '../../domain/schemas/run-json.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { RunArchivePort } from '../../application/ports/run-archive-port.js';
 import type { FileSystemPort } from '../../application/ports/file-system.js';
@@ -150,20 +150,14 @@ export function createRunArchiver(options: RunArchiverOptions): RunArchivePort {
         await fs.readFile(`${stagingDir}/run.json`),
       ),
     );
-    /**
-     * 与 StateStore 读取一致走读取兼容迁移：resume 功能前写入的旧
-     * run.json 缺 resumePoint，归档必须能发布这类历史终态 Run。归档字节
-     * 保持原样（历史事实原样复制），仅在校验前回填缺失字段。
-     */
-    const migratedRun = migrateRunJsonForRead(archivedRun);
-    const runValidation = validate('RunJson', migratedRun);
+    const runValidation = validate('RunJson', archivedRun);
     if (!runValidation.valid) {
       const detail = runValidation.issues
         .map((issue) => `${issue.path} (${issue.keyword}): ${issue.message}`)
         .join('; ');
       throw archiveFailed(`staging run.json failed schema validation: ${detail}`);
     }
-    const validatedRun = migratedRun as RunJson;
+    const validatedRun = archivedRun as RunJson;
     if (validatedRun.runId !== manifest.runId || validatedRun.status !== manifest.runStatus) {
       throw archiveFailed('staging run.json does not match the manifest run identity');
     }

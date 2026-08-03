@@ -64,14 +64,16 @@ describe('claude contract centralization', () => {
   it('external claude failures are mapped to stable codes only inside adapters/claude', () => {
     /**
      * 适配器之外只允许错误码注册表、已验证结果的 Domain 语义门禁、
-     * Session Record 不变量，以及三类 Session 共用的 resume 回退协调器
-     * 引用这些稳定错误码；这些模块都不得解析进程或原始流输出。
+     * Session Record 不变量、三类 Session 共用的 resume 回退协调器，
+     * 以及 Execution / Task Review 各自的结果-invalid 映射点引用这些
+     * 稳定错误码；这些模块都不得解析进程或原始流输出。
      */
     const allowed = new Set([
       'domain/errors.ts',
       'domain/results.ts',
       'domain/invariants.ts',
       'application/usecases/execute-next-task.ts',
+      'application/usecases/review-task.ts',
       'application/usecases/resumable-session.ts',
     ]);
     const claudeCodes = [
@@ -80,6 +82,7 @@ describe('claude contract centralization', () => {
       'CLAUDE_STREAM_FAILED',
       'CLAUDE_RESUME_UNAVAILABLE',
       'CLAUDE_RESULT_INVALID',
+      'TASK_REVIEW_RESULT_INVALID',
       'FINAL_REVIEW_RESULT_INVALID',
       'CLAUDE_CAPABILITY_MISSING',
       'CLAUDE_INSTALLATION_UNHEALTHY',

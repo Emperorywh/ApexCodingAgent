@@ -1,5 +1,5 @@
 /**
- * The 15 built-in schemas (SPEC §11.5): positive and negative examples,
+ * The 17 built-in schemas (SPEC §11.5): positive and negative examples,
  * including additionalProperties rejection, explicit-null required fields,
  * custom formats (uuid/sha256/git-oid/rfc3339) and schemaVersion constants.
  */
@@ -37,6 +37,14 @@ function expectInvalid(name: SchemaName, data: unknown): void {
 const VALID: Record<SchemaName, () => unknown> = {
   TaskPlanDraft: () => mkDraft([mkTask('TASK-001'), mkTask('TASK-002', ['TASK-001'])]),
   TaskExecutionResult: () => mkResult(),
+  TaskReviewResult: () => ({
+    decision: 'approved',
+    summary: '独立复核通过',
+    tests: [{ command: 'npm test', result: 'passed' }],
+    acceptanceEvidence: mkResult().acceptanceEvidence,
+    issues: [],
+    replanReason: null,
+  }),
   FinalReviewResult: () => ({
     decision: 'completed',
     summary: '整体复核通过',
@@ -58,6 +66,9 @@ const VALID: Record<SchemaName, () => unknown> = {
     taskId: 'TASK-001',
     status: 'pending',
     executionEpisodes: [],
+    taskReviewEpisodes: [],
+    candidateResult: null,
+    candidateCheckpoint: null,
     completedResult: null,
     finalCheckpoint: null,
     skipReason: null,
@@ -77,6 +88,23 @@ const VALID: Record<SchemaName, () => unknown> = {
     finalCheckpoint: null,
     intermediateCheckpoint: null,
     checkpointReason: null,
+    error: null,
+  }),
+  TaskReviewEpisode: () => ({
+    sessionId: UUID_2,
+    taskId: 'TASK-001',
+    executionSessionId: UUID_1,
+    candidateCheckpoint: OID_B,
+    planRevision: 1,
+    specSha256Before: SHA256_A,
+    specSha256After: null,
+    startedAt: T0,
+    endedAt: null,
+    outcome: null,
+    summary: null,
+    tests: [],
+    acceptanceEvidence: [],
+    issues: [],
     error: null,
   }),
   FinalReviewEpisode: () => ({
@@ -177,8 +205,8 @@ const VALID: Record<SchemaName, () => unknown> = {
 };
 
 describe('schema registry (§11.5)', () => {
-  it('registers exactly the 15 built-in schemas, all at version 1', () => {
-    expect(SCHEMA_NAMES).toHaveLength(15);
+  it('registers exactly the 17 built-in schemas, all at version 1', () => {
+    expect(SCHEMA_NAMES).toHaveLength(17);
     for (const name of SCHEMA_NAMES) {
       expect(getSchemaVersion(name)).toBe(1);
       expect(getSchemaJson(name)).toBeTypeOf('object');

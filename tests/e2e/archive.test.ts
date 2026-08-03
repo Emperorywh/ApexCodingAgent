@@ -106,11 +106,11 @@ describe('e2e archive on next start (§4.4)', () => {
         expect(archivedTasks.runId).toBe(run1.runId);
         expect((await stat(join(archiveDir, 'plans', '1.json'))).isFile()).toBe(true);
         const archivedSessions = await readdir(join(archiveDir, 'sessions'));
-        expect(archivedSessions.filter((name) => name.endsWith('.json'))).toHaveLength(3);
+        expect(archivedSessions.filter((name) => name.endsWith('.json'))).toHaveLength(4);
         const archivedLogs = await readdir(join(archiveDir, 'logs'));
         expect(
           archivedLogs.filter((name) => name.endsWith('.log') && name !== 'apex-debug.log'),
-        ).toHaveLength(3);
+        ).toHaveLength(4);
         // 调试日志随 logs/ 目录一并归档（§4.4）。
         expect(archivedLogs).toContain('apex-debug.log');
         const report = await readFile(join(archiveDir, 'report.md'), 'utf8');
@@ -144,50 +144,9 @@ describe('e2e archive on next start (§4.4)', () => {
         expect(rootRun.runId).toBe(run2.runId);
         expect((await stat(join(harness.stateDir, 'settings.json'))).isFile()).toBe(true);
         const rootSessions = await readdir(join(harness.stateDir, 'sessions'));
-        expect(rootSessions.filter((name) => name.endsWith('.json'))).toHaveLength(3);
+        expect(rootSessions.filter((name) => name.endsWith('.json'))).toHaveLength(4);
         // Run 2 的 Base 是旧 Run Branch（工作区停留在其上，§8.3）。
         expect(rootRun.repository.baseBranch).toBe(run1.repository.runBranch);
-      } finally {
-        await harness.cleanup();
-      }
-    },
-    240_000,
-  );
-
-  it(
-    'legacy run.json without resumePoint (written before the resume feature) is archived instead of failing ARCHIVE_FAILED',
-    async () => {
-      const harness = await createE2EHarness();
-      try {
-        await seedRepo(harness.repo);
-        await harness.writeScenario(oneTaskSequence());
-        const first = await harness.start();
-        expect(first.kind).toBe('completed');
-        if (first.kind !== 'completed') return;
-        const run1 = first.run;
-
-        // 模拟 resume 功能前的旧 CLI 写入的终态 run.json：缺 resumePoint。
-        const rootRunPath = join(harness.stateDir, 'run.json');
-        const legacyRun = JSON.parse(await readFile(rootRunPath, 'utf8')) as Record<
-          string,
-          unknown
-        >;
-        delete legacyRun.resumePoint;
-        await writeFile(rootRunPath, JSON.stringify(legacyRun, null, 2), 'utf8');
-
-        // 新 start 必须读取兼容旧格式并成功归档，而非 ARCHIVE_FAILED。
-        await harness.writeScenario(oneTaskSequence());
-        const second = await harness.start();
-        expect(second.kind).toBe('completed');
-
-        // 归档字节保持原样（历史事实原样复制，不回填字段）。
-        const archivedRun = JSON.parse(
-          await readFile(join(harness.stateDir, 'history', run1.runId, 'run.json'), 'utf8'),
-        ) as Record<string, unknown>;
-        expect(archivedRun).toEqual(legacyRun);
-        expect(archivedRun).not.toHaveProperty('resumePoint');
-        const manifest = await readManifest(harness, run1.runId);
-        expect(manifest.runId).toBe(run1.runId);
       } finally {
         await harness.cleanup();
       }
@@ -324,6 +283,52 @@ describe('e2e archive on next start (§4.4)', () => {
         const rootRun = await harness.readRunJson();
         expect(rootRun.runId).toBe(first.run.runId);
         expect(rootRun.status).toBe('completed');
+        await expect(
+          stat(join(harness.stateDir, 'history', first.run.runId)),
+        ).rejects.toThrow();
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    240_000,
+  );
+
+  it(
+    '暂存区 run.json 为旧格式时归档失败（ARCHIVE_FAILED）且不清理源 Run',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario(oneTaskSequence());
+        const first = await harness.start();
+        expect(first.kind).toBe('completed');
+        if (first.kind !== 'completed') return;
+
+        const runPath = join(harness.stateDir, 'run.json');
+        const deps = harness.makeBoundDeps();
+
+        /**
+         * 旧版本写出的 run.json 没有 resumePoint 字段。归档第 4 步重读
+         * 暂存区并按当前 Schema 校验：旧格式必须响亮失败，不做读取迁移，
+         * 也绝不清理根级事实或发布 history/<run-id>/。
+         */
+        const legacy = JSON.parse(await readFile(runPath, 'utf8')) as Record<string, unknown>;
+        delete legacy['resumePoint'];
+        await writeFile(runPath, JSON.stringify(legacy, null, 2), 'utf8');
+        await expect(deps.archiver.archiveTerminalRun(first.run)).rejects.toMatchObject({
+          errorCode: 'ARCHIVE_FAILED',
+        });
+
+        // 缺 sessionType 的 resumePoint 同样是旧格式。
+        const legacyPoint = JSON.parse(await readFile(runPath, 'utf8')) as Record<string, unknown>;
+        legacyPoint['resumePoint'] = { fromStatus: 'running', taskId: null, sessionId: null };
+        await writeFile(runPath, JSON.stringify(legacyPoint, null, 2), 'utf8');
+        await expect(deps.archiver.archiveTerminalRun(first.run)).rejects.toMatchObject({
+          errorCode: 'ARCHIVE_FAILED',
+        });
+
+        // 两次失败都不得清理根级事实，也不得发布最终归档目录。
+        expect((await stat(runPath)).isFile()).toBe(true);
         await expect(
           stat(join(harness.stateDir, 'history', first.run.runId)),
         ).rejects.toThrow();

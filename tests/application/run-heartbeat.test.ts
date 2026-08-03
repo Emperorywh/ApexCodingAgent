@@ -113,7 +113,12 @@ describe('classifyResumeRun with owner liveness (§17 resume)', () => {
     const run = mkRun({
       status: 'failed',
       terminalAt: '2026-01-01T01:00:00Z',
-      resumePoint: { fromStatus: 'running', taskId: null, sessionId: null },
+      resumePoint: {
+        fromStatus: 'running',
+        taskId: null,
+        sessionId: null,
+        sessionType: null,
+      },
     });
     const classification = classifyResumeRun(run, false, active);
     expect(classification.requiresOrphanReconciliation).toBe(false);

@@ -5,6 +5,7 @@
  */
 import { GIT_OID_PATTERN, RUN_BRANCH_PATTERN, RUN_ID_PATTERN, TASK_ID_PATTERN, UUID_PATTERN } from '../ids.js';
 import { activeSessionSchema, type ActiveSession } from './active-session.js';
+import type { SessionType } from './active-session.js';
 import { errorRecordSchema, type ErrorRecord } from './error-record.js';
 import {
   finalReviewEpisodeSchema,
@@ -69,6 +70,8 @@ export interface ResumePoint {
   taskId: string | null;
   /** 被中断的 Claude Session ID（中断落在会话内时非空）。 */
   sessionId: string | null;
+  /** 被中断 Session 的正式类型；会话间断点与 sessionId 一同为 null。 */
+  sessionType: SessionType | null;
 }
 
 export interface RunJson {
@@ -93,24 +96,6 @@ export interface RunJson {
   createdAt: string;
   updatedAt: string;
   terminalAt: string | null;
-}
-
-/**
- * 读取兼容（schemaVersion 1 内迁移）：resume 功能引入前写入的 run.json
- * 缺少必需字段 `resumePoint`。读取时在 schema 校验前回填 null（语义：无
- * 恢复点，旧中断 Run 不可 resume，只能归档或放弃），使升级后的 CLI 能
- * 校验、归档或放弃旧 Run。写入端不作兼容：新状态必须显式携带该字段。
- */
-export function migrateRunJsonForRead(parsed: unknown): unknown {
-  if (
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    !Array.isArray(parsed) &&
-    !('resumePoint' in parsed)
-  ) {
-    return { ...(parsed as Record<string, unknown>), resumePoint: null };
-  }
-  return parsed;
 }
 
 const nullableGitOid = {
@@ -215,7 +200,7 @@ export const runJsonSchema = {
         {
           type: 'object',
           additionalProperties: false,
-          required: ['fromStatus', 'taskId', 'sessionId'],
+          required: ['fromStatus', 'taskId', 'sessionId', 'sessionType'],
           properties: {
             fromStatus: {
               type: 'string',
@@ -231,6 +216,15 @@ export const runJsonSchema = {
               anyOf: [
                 { type: 'null' },
                 { type: 'string', pattern: UUID_PATTERN.source },
+              ],
+            },
+            sessionType: {
+              anyOf: [
+                { type: 'null' },
+                {
+                  type: 'string',
+                  enum: ['planning', 'execution', 'task_review', 'final_review'],
+                },
               ],
             },
           },

@@ -103,6 +103,7 @@ describe('e2e resume (§17)', () => {
           fromStatus: 'running',
           taskId: 'TASK-001',
           sessionId: expect.any(String),
+          sessionType: 'execution',
         });
         const interruptedSessionId = failedRun.resumePoint!.sessionId!;
 
@@ -149,7 +150,7 @@ describe('e2e resume (§17)', () => {
         // Session Record 链完整：planning、被中断 execution（failed）、
         // 续接 execution、TASK-002 execution、final review。
         const sessionRecords = await harness.listSessionRecords();
-        expect(sessionRecords).toHaveLength(5);
+        expect(sessionRecords).toHaveLength(7);
         const executionRecords = sessionRecords.filter((record) => record.type === 'execution');
         expect(executionRecords).toHaveLength(3);
         expect(executionRecords[0]!.status).toBe('failed');
@@ -705,7 +706,7 @@ describe('e2e resume (§17)', () => {
         expect(task.executionEpisodes).toHaveLength(2);
         expect(task.executionEpisodes[0]!.outcome).toBe('session_error');
         expect(task.executionEpisodes[0]!.error?.errorCode).toBe('RUN_INTERRUPTED');
-        expect(task.executionEpisodes[1]!.outcome).toBe('completed');
+        expect(task.executionEpisodes[1]!.outcome).toBe('awaiting_review');
 
         // 接管后的首个会话同样经 --resume --fork-session 续接崩溃会话。
         const records = await harness.readRecords();

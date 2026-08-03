@@ -6,10 +6,13 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeExecutionResult,
   normalizeFinalReviewResult,
+  normalizeTaskReviewResult,
   validateExecutionResultSemantics,
   validateFinalReviewResultSemantics,
+  validateTaskReviewResultSemantics,
 } from '../../src/domain/results.js';
 import type { FinalReviewResult } from '../../src/domain/schemas/final-review-result.js';
+import type { TaskReviewResult } from '../../src/domain/schemas/task-review-result.js';
 import { expectApexError, mkResult, mkTask } from './fixtures.js';
 
 const TASK = mkTask('TASK-001'); // two acceptance criteria: indexes 0 and 1
@@ -22,6 +25,25 @@ function mkFinalReview(overrides: Partial<FinalReviewResult> = {}): FinalReviewR
     tests: [{ command: 'npm test', result: 'passed' }],
     changedAreas: [],
     remainingRisks: [],
+    replanReason: null,
+    ...overrides,
+  };
+}
+
+/**
+ * 构造覆盖全部验收标准的独立复核结果。
+ * 各测试只覆盖需要变化的字段，避免重复拼装掩盖领域门禁差异。
+ */
+function mkTaskReview(overrides: Partial<TaskReviewResult> = {}): TaskReviewResult {
+  return {
+    decision: 'approved',
+    summary: '独立复核通过',
+    tests: [{ command: 'npm test', result: 'passed' }],
+    acceptanceEvidence: [
+      { criterionIndex: 0, status: 'satisfied', evidence: '证据 0' },
+      { criterionIndex: 1, status: 'satisfied', evidence: '证据 1' },
+    ],
+    issues: [],
     replanReason: null,
     ...overrides,
   };
@@ -136,6 +158,97 @@ describe('TaskExecutionResult semantics (§9.4)', () => {
       () => validateExecutionResultSemantics(withReason, TASK),
       'CLAUDE_RESULT_INVALID',
     );
+  });
+});
+
+describe('TaskReviewResult 独立完成门禁', () => {
+  it('只接受证据完整、测试无失败且无问题的 approved', () => {
+    expect(() => validateTaskReviewResultSemantics(mkTaskReview(), TASK)).not.toThrow();
+
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({
+            acceptanceEvidence: [
+              { criterionIndex: 0, status: 'satisfied', evidence: '证据 0' },
+              { criterionIndex: 1, status: 'not_satisfied', evidence: '证据 1' },
+            ],
+          }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({ tests: [{ command: 'npm test', result: 'failed' }] }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+    expectApexError(
+      () => validateTaskReviewResultSemantics(mkTaskReview({ issues: ['仍有缺陷'] }), TASK),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+  });
+
+  it('拒绝缺失或重复的验收证据', () => {
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({
+            acceptanceEvidence: [
+              { criterionIndex: 0, status: 'satisfied', evidence: '证据 0' },
+            ],
+          }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({
+            acceptanceEvidence: [
+              { criterionIndex: 0, status: 'satisfied', evidence: '证据 A' },
+              { criterionIndex: 0, status: 'satisfied', evidence: '证据 B' },
+            ],
+          }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+  });
+
+  it('changes_required 必须有可观察问题，replan_required 必须有原因', () => {
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({ decision: 'changes_required' }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+    expect(() =>
+      validateTaskReviewResultSemantics(
+        mkTaskReview({ decision: 'changes_required', issues: ['缺少边界测试'] }),
+        TASK,
+      ),
+    ).not.toThrow();
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({ decision: 'replan_required' }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+    expect(() =>
+      validateTaskReviewResultSemantics(
+        mkTaskReview({ decision: 'replan_required', replanReason: '架构前提已变化' }),
+        TASK,
+      ),
+    ).not.toThrow();
   });
 });
 
@@ -268,5 +381,17 @@ describe('replanReason normalization at the contract boundary', () => {
 
     const replan = mkFinalReview({ decision: 'replan_required', replanReason: 'gap found' });
     expect(normalizeFinalReviewResult(replan)).toBe(replan);
+  });
+
+  it('独立复核仅在 replan_required 时保留 replanReason', () => {
+    const normalized = normalizeTaskReviewResult(mkTaskReview({ replanReason: 'N/A' }));
+    expect(normalized.replanReason).toBeNull();
+    expect(() => validateTaskReviewResultSemantics(normalized, TASK)).not.toThrow();
+
+    const replan = mkTaskReview({
+      decision: 'replan_required',
+      replanReason: '验收前提已变化',
+    });
+    expect(normalizeTaskReviewResult(replan)).toBe(replan);
   });
 });

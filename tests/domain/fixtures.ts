@@ -109,6 +109,9 @@ export function mkTaskState(
     taskId,
     status,
     executionEpisodes: [],
+    taskReviewEpisodes: [],
+    candidateResult: null,
+    candidateCheckpoint: null,
     completedResult: null,
     finalCheckpoint: null,
     skipReason: null,
@@ -117,6 +120,43 @@ export function mkTaskState(
   if (status === 'completed') {
     base.completedResult = mkResult();
     base.finalCheckpoint = OID_B;
+    base.executionEpisodes = [
+      {
+        sessionId: UUID_1,
+        taskId,
+        planRevision: 1,
+        specSha256Before: SHA256_A,
+        specSha256After: SHA256_A,
+        startedAt: T0,
+        endedAt: T1,
+        outcome: 'awaiting_review',
+        summary: '候选实现已完成',
+        acceptanceEvidence: mkResult().acceptanceEvidence,
+        finalCheckpoint: OID_B,
+        intermediateCheckpoint: null,
+        checkpointReason: '候选 Checkpoint 已创建',
+        error: null,
+      },
+    ];
+    base.taskReviewEpisodes = [
+      {
+        sessionId: UUID_2,
+        taskId,
+        executionSessionId: UUID_1,
+        candidateCheckpoint: OID_B,
+        planRevision: 1,
+        specSha256Before: SHA256_A,
+        specSha256After: SHA256_A,
+        startedAt: T0,
+        endedAt: T1,
+        outcome: 'approved',
+        summary: '独立复核通过',
+        tests: [{ command: 'npm test', result: 'passed' }],
+        acceptanceEvidence: mkResult().acceptanceEvidence,
+        issues: [],
+        error: null,
+      },
+    ];
   } else if (status === 'failed') {
     base.failure = mkErrorRecord({ taskId });
   } else if (status === 'skipped') {

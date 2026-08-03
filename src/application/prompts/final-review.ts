@@ -15,7 +15,11 @@ import type {
 import type { SkippedTaskSummary } from './planning.js';
 import { VERIFICATION_POLICY } from './verification-policy.js';
 
-/** completed Task 的复核输入：定义、验收证据、摘要、最终 Checkpoint 与已报告测试结果。 */
+/**
+ * completed Task 的复核输入：定义、独立复核证据、复核摘要、最终 Checkpoint
+ * 与测试结果。resultSummary 承载独立 Task Review 批准 Episode 的摘要，
+ * 而非 Execution 自报摘要。
+ */
 export interface CompletedTaskReviewSummary {
   readonly definition: PlannedTask;
   readonly resultSummary: string;
@@ -49,7 +53,7 @@ const FINAL_REVIEW_BASELINE = `你是 ApexCodingAgent 的最终整体 Reviewer�
 系统会提供：
 - REPOSITORY_ROOT、RUN_BRANCH、SPEC_PATH 和 SPEC_SHA256
 - 当前完整 Plan Revision
-- 全部 completed Task 的定义、acceptanceEvidence、Session 摘要和最终 Checkpoint
+- 全部 completed Task 的定义、独立 Task Review 验收证据、复核摘要和最终 Checkpoint
 - skipped Task 及原因
 - 中间 Checkpoint 的最终归属
 - 已报告测试结果
@@ -58,7 +62,7 @@ const FINAL_REVIEW_BASELINE = `你是 ApexCodingAgent 的最终整体 Reviewer�
 Review 要求：
 1. 完整读取 SPEC，不得只依赖 Task 摘要。
 2. 检查当前架构、数据流、状态流、模块边界和实现是否一致。
-3. 检查每个 completed Task 的全部 acceptanceEvidence 是否存在、可信且与仓库事实相符。
+3. 检查每个 completed Task 的独立复核 acceptanceEvidence 是否存在、可信且与仓库事实相符。
 4. 自主运行必要的最终测试和集成验证。
 ${VERIFICATION_POLICY}
 5. 只能直接修复不改变模块边界、数据模型或验收范围的局部问题；需要 Task 级工作时返回 replan_required。
@@ -133,7 +137,7 @@ function buildContextSection(input: FinalReviewPromptInput): string {
     `SPEC_SHA256: ${input.specSha256}`,
     `CURRENT_PLAN_REVISION: ${input.planRevision}`,
     '',
-    'COMPLETED_TASKS（定义、acceptanceEvidence、Session 摘要、最终 Checkpoint 与已报告测试结果）：',
+    'COMPLETED_TASKS（定义、独立复核 acceptanceEvidence、复核摘要、最终 Checkpoint 与测试结果）：',
     formatCompletedTasks(input.completedTasks),
     '',
     'SKIPPED_TASKS（skipped Task 及原因）：',

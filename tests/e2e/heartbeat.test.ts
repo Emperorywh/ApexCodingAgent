@@ -166,7 +166,7 @@ describe('e2e owner heartbeat (§2.4)', () => {
         expect(task.executionEpisodes).toHaveLength(2);
         expect(task.executionEpisodes[0]!.outcome).toBe('session_error');
         expect(task.executionEpisodes[0]!.error?.errorCode).toBe('RUN_INTERRUPTED');
-        expect(task.executionEpisodes[1]!.outcome).toBe('completed');
+        expect(task.executionEpisodes[1]!.outcome).toBe('awaiting_review');
 
         // 接管后的首个会话经 --resume --fork-session 续接崩溃会话。
         const records = await harness.readRecords();

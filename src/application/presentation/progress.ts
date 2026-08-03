@@ -15,6 +15,7 @@ const DETAIL_LIMIT = 112;
 const SESSION_LABELS: Readonly<Record<SessionType, string>> = {
   planning: '规划',
   execution: '任务执行',
+  task_review: '任务独立复核',
   final_review: '最终复核',
 };
 
@@ -177,6 +178,16 @@ export function renderSpecReplanning(): string {
 /** 单个 Task 完成后的稳定 Checkpoint 摘要。 */
 export function renderTaskCompleted(taskId: string, checkpoint: string): string {
   return `✓ ${taskId} 完成 · Checkpoint ${checkpoint.slice(0, 12)}`;
+}
+
+/** Execution 只产生候选交付物，明确提示尚未越过独立复核门禁。 */
+export function renderTaskReviewStarted(taskId: string, checkpoint: string): string {
+  return `◇ ${taskId} 候选实现已保存 · 开始独立复核 · Checkpoint ${checkpoint.slice(0, 12)}`;
+}
+
+/** Reviewer 打回当前 Task 后，下一趟 Execution 将基于候选 Checkpoint 修复。 */
+export function renderTaskReviewChangesRequired(taskId: string): string {
+  return `↻ ${taskId} 独立复核未通过 · 正在进入修复执行`;
 }
 
 /** Execution 或 Final Review 请求重新规划。 */

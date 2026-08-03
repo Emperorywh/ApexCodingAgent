@@ -187,7 +187,12 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
       planRevision: 1,
       tasksSha256: SHA256_A,
       lastError: interruptedFailure,
-      resumePoint: { fromStatus: 'running', taskId: 'TASK-001', sessionId: UUID_1 },
+      resumePoint: {
+        fromStatus: 'running',
+        taskId: 'TASK-001',
+        sessionId: UUID_1,
+        sessionType: 'execution',
+      },
       tasks: {
         'TASK-001': mkTaskState('TASK-001', 'failed', { failure: interruptedFailure }),
       },
@@ -207,7 +212,12 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
             status: 'running',
             planRevision: 1,
             tasksSha256: SHA256_A,
-            resumePoint: { fromStatus: 'running', taskId: null, sessionId: null },
+            resumePoint: {
+              fromStatus: 'running',
+              taskId: null,
+              sessionId: null,
+              sessionType: null,
+            },
           }),
         ),
       'STATE_VALIDATION_FAILED',
@@ -235,7 +245,12 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
       () =>
         assertRunJsonRules(
           failedWithPoint({
-            resumePoint: { fromStatus: 'running', taskId: 'TASK-002', sessionId: UUID_1 },
+            resumePoint: {
+              fromStatus: 'running',
+              taskId: 'TASK-002',
+              sessionId: UUID_1,
+              sessionType: 'execution',
+            },
           }),
         ),
       'STATE_VALIDATION_FAILED',
@@ -255,6 +270,7 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
               fromStatus: 'running',
               taskId: 'TASK-001',
               sessionId: null,
+              sessionType: null,
             },
           }),
         ),
@@ -268,6 +284,83 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
               fromStatus: 'planning',
               taskId: 'TASK-001',
               sessionId: UUID_1,
+              sessionType: 'planning',
+            },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('accepts a task_review resumePoint without a session when the candidate is persisted', () => {
+    /**
+     * 中断落在「候选已持久化、Reviewer 尚未启动」的窗口：没有可续接的
+     * Reviewer 会话，resumePoint 只携带 taskId 与 sessionType；被中断
+     * Task 以 RUN_INTERRUPTED 失败并保留候选，供全新 Reviewer 复核。
+     */
+    const windowRun = failedWithPoint({
+      resumePoint: {
+        fromStatus: 'running',
+        taskId: 'TASK-001',
+        sessionId: null,
+        sessionType: 'task_review',
+      },
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'failed', {
+          failure: interruptedFailure,
+          candidateResult: mkResult(),
+          candidateCheckpoint: OID_B,
+        }),
+      },
+    });
+    expect(() => assertRunJsonRules(windowRun)).not.toThrow();
+    expect(() => assertRunInvariants(windowRun, { tasks: [mkTask('TASK-001')] })).not.toThrow();
+  });
+
+  it('rejects a session-less resumePoint unless the sessionType is task_review', () => {
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            resumePoint: {
+              fromStatus: 'running',
+              taskId: 'TASK-001',
+              sessionId: null,
+              sessionType: 'execution',
+            },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('rejects a task_review resumePoint without a taskId', () => {
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            resumePoint: {
+              fromStatus: 'running',
+              taskId: null,
+              sessionId: null,
+              sessionType: 'task_review',
+            },
+          }),
+        ),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('rejects a task_review resumePoint when the interrupted task lost its candidate', () => {
+    expectApexError(
+      () =>
+        assertRunJsonRules(
+          failedWithPoint({
+            resumePoint: {
+              fromStatus: 'running',
+              taskId: 'TASK-001',
+              sessionId: null,
+              sessionType: 'task_review',
             },
           }),
         ),
@@ -326,6 +419,68 @@ describe('Active Session rules (§11.3/§6.6)', () => {
       tasks: { 'TASK-001': mkTaskState('TASK-001', 'pending') },
     });
     expectApexError(() => assertRunJsonRules(run), 'STATE_VALIDATION_FAILED');
+  });
+
+  it('task_review activeSession 必须精确关联当前候选与开放复核 Episode', () => {
+    const executionEpisode = {
+      sessionId: UUID_1,
+      taskId: 'TASK-001',
+      planRevision: 1,
+      specSha256Before: SHA256_A,
+      specSha256After: SHA256_A,
+      startedAt: T0,
+      endedAt: T1,
+      outcome: 'awaiting_review' as const,
+      summary: '候选实现已产生',
+      acceptanceEvidence: mkResult().acceptanceEvidence,
+      finalCheckpoint: OID_B,
+      intermediateCheckpoint: null,
+      checkpointReason: '候选 Checkpoint 已创建',
+      error: null,
+    };
+    const reviewEpisode = {
+      sessionId: UUID_2,
+      taskId: 'TASK-001',
+      executionSessionId: UUID_1,
+      candidateCheckpoint: OID_B,
+      planRevision: 1,
+      specSha256Before: SHA256_A,
+      specSha256After: null,
+      startedAt: T1,
+      endedAt: null,
+      outcome: null,
+      summary: null,
+      tests: [],
+      acceptanceEvidence: [],
+      issues: [],
+      error: null,
+    };
+    const task = mkTaskState('TASK-001', 'running', {
+      executionEpisodes: [executionEpisode],
+      taskReviewEpisodes: [reviewEpisode],
+      candidateResult: mkResult(),
+      candidateCheckpoint: OID_B,
+    });
+    const consistent = runningRun({
+      currentTaskId: 'TASK-001',
+      activeSession: {
+        ...base,
+        sessionId: UUID_2,
+        type: 'task_review',
+      },
+      tasks: { 'TASK-001': task },
+    });
+    expect(() => assertRunJsonRules(consistent)).not.toThrow();
+    expectApexError(
+      () =>
+        assertRunJsonRules({
+          ...consistent,
+          tasks: {
+            'TASK-001': { ...task, candidateCheckpoint: OID_C },
+          },
+        }),
+      'STATE_VALIDATION_FAILED',
+    );
   });
 });
 
@@ -439,6 +594,32 @@ describe('cross-state invariants (§6.6)', () => {
         }),
       },
     });
+    expectApexError(
+      () => assertRunInvariants(run, { tasks: [task] }),
+      'STATE_VALIDATION_FAILED',
+    );
+  });
+
+  it('validates independent approval evidence against every planned acceptance criterion', () => {
+    const task = mkTask('TASK-001');
+    const completed = mkTaskState('TASK-001', 'completed');
+    const approval = completed.taskReviewEpisodes[0]!;
+    const run = runningRun({
+      tasks: {
+        'TASK-001': {
+          ...completed,
+          taskReviewEpisodes: [
+            {
+              ...approval,
+              acceptanceEvidence: [
+                { criterionIndex: 0, status: 'satisfied', evidence: '只覆盖第一项' },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
     expectApexError(
       () => assertRunInvariants(run, { tasks: [task] }),
       'STATE_VALIDATION_FAILED',

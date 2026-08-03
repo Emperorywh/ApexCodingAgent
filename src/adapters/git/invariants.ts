@@ -16,7 +16,8 @@
  */
 import { ApexError } from '../../domain/errors.js';
 import type {
-  PlanningSnapshot,
+  ReadOnlySessionSnapshot,
+  ReadOnlySessionType,
   ResumePositionFact,
   SessionGitFacts,
   SessionStartFact,
@@ -285,14 +286,14 @@ export async function assertSessionCommitsClean(
 }
 
 // ---------------------------------------------------------------------------
-// Planning side-effect detection
+// 只读 Session 副作用检测
 
 /** Snapshot of HEAD plus the filtered status entry set (SPEC §8.3). */
-export async function capturePlanningSnapshot(
+export async function captureReadOnlySessionSnapshot(
   git: GitRunner,
   root: string,
   specGitPath: string,
-): Promise<PlanningSnapshot> {
+): Promise<ReadOnlySessionSnapshot> {
   const head = (await git.run(['rev-parse', 'HEAD'], root)).stdout.trim();
   const statusEntries = (await readStatusEntries(git, root))
     .filter((entry) => !isProtectedEntry(entry, specGitPath))
@@ -302,18 +303,24 @@ export async function capturePlanningSnapshot(
 }
 
 /** HEAD, index, tracked worktree and untracked file set must be identical. */
-export async function assertPlanningSnapshotUnchanged(
+export async function assertReadOnlySessionSnapshotUnchanged(
   git: GitRunner,
   root: string,
-  snapshot: PlanningSnapshot,
+  snapshot: ReadOnlySessionSnapshot,
   specGitPath: string,
+  sessionType: ReadOnlySessionType,
 ): Promise<void> {
-  const current = await capturePlanningSnapshot(git, root, specGitPath);
+  const current = await captureReadOnlySessionSnapshot(git, root, specGitPath);
+  const errorCode =
+    sessionType === 'planning'
+      ? 'PLANNING_SIDE_EFFECT_DETECTED'
+      : 'TASK_REVIEW_SIDE_EFFECT_DETECTED';
+  const label = sessionType === 'planning' ? 'planning' : 'task review';
   if (current.head !== snapshot.head) {
     throw new ApexError({
-      code: 'PLANNING_SIDE_EFFECT_DETECTED',
+      code: errorCode,
       stage: GIT_STAGE,
-      message: `planning session moved HEAD from ${snapshot.head} to ${current.head}`,
+      message: `${label} session moved HEAD from ${snapshot.head} to ${current.head}`,
     });
   }
   const before = snapshot.statusEntries;
@@ -327,9 +334,9 @@ export async function assertPlanningSnapshotUnchanged(
         .map((entry) => entry.replace('\0', ' -> '))
         .join('; ');
     throw new ApexError({
-      code: 'PLANNING_SIDE_EFFECT_DETECTED',
+      code: errorCode,
       stage: GIT_STAGE,
-      message: `planning session changed the worktree/index (before: [${format(before)}]; after: [${format(after)}])`,
+      message: `${label} session changed the worktree/index (before: [${format(before)}]; after: [${format(after)}])`,
     });
   }
 }
@@ -337,12 +344,12 @@ export async function assertPlanningSnapshotUnchanged(
 // ---------------------------------------------------------------------------
 // Composed session facts (SPEC §8.3)
 
-/** Pre-session invariants; captures the Planning snapshot when requested. */
+/** 会话前不变式；只读 Planning/Task Review 按请求捕获统一 Git 快照。 */
 export async function assertSessionStartFacts(
   git: GitRunner,
   root: string,
   facts: SessionGitFacts,
-  planning: boolean,
+  readOnlySessionType: ReadOnlySessionType | null,
 ): Promise<SessionStartFact> {
   const head = await assertHeadOnRunBranch(git, root, facts.runBranch);
   if (head !== facts.expectedHead) {
@@ -354,10 +361,10 @@ export async function assertSessionStartFacts(
   await assertCheckpointsAreAncestors(git, root, facts.completedCheckpoints);
   await assertStateDirectoryUntrackedInRun(git, root);
   await assertSpecNotStagedInRun(git, root, facts.specGitPath);
-  const planningSnapshot = planning
-    ? await capturePlanningSnapshot(git, root, facts.specGitPath)
+  const readOnlySnapshot = readOnlySessionType !== null
+    ? await captureReadOnlySessionSnapshot(git, root, facts.specGitPath)
     : null;
-  return { head, planningSnapshot };
+  return { head, readOnlySnapshot, readOnlySessionType };
 }
 
 /**
@@ -407,7 +414,13 @@ export async function assertSessionEndFacts(
   await assertSpecNotStagedInRun(git, root, facts.specGitPath);
   const sessionCommits = await listSessionCommits(git, root, start.head);
   await assertSessionCommitsClean(git, root, sessionCommits, facts.specGitPath);
-  if (start.planningSnapshot !== null) {
-    await assertPlanningSnapshotUnchanged(git, root, start.planningSnapshot, facts.specGitPath);
+  if (start.readOnlySnapshot !== null && start.readOnlySessionType !== null) {
+    await assertReadOnlySessionSnapshotUnchanged(
+      git,
+      root,
+      start.readOnlySnapshot,
+      facts.specGitPath,
+      start.readOnlySessionType,
+    );
   }
 }

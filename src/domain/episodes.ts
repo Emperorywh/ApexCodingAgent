@@ -9,6 +9,7 @@ import { ApexError } from './errors.js';
 import {
   assertExecutionEpisodeRules,
   assertFinalReviewEpisodeRules,
+  assertTaskReviewEpisodeRules,
 } from './invariants.js';
 import type { ErrorRecord } from './schemas/error-record.js';
 import type {
@@ -21,6 +22,11 @@ import type {
   TaskExecutionEpisode,
 } from './schemas/task-execution-episode.js';
 import type { AcceptanceEvidence } from './schemas/task-execution-result.js';
+import type { TestReport } from './schemas/task-execution-result.js';
+import type {
+  TaskReviewEpisode,
+  TaskReviewEpisodeOutcome,
+} from './schemas/task-review-episode.js';
 
 const STATE_STAGE = 'state';
 
@@ -127,6 +133,114 @@ export function closeExecutionEpisode(
     error: ending.error,
   };
   assertExecutionEpisodeRules(closed);
+  return episodes.map((existing, position) => (position === index ? closed : existing));
+}
+
+export interface CreateTaskReviewEpisodeInput {
+  readonly sessionId: string;
+  readonly taskId: string;
+  readonly executionSessionId: string;
+  readonly candidateCheckpoint: string;
+  readonly planRevision: number;
+  readonly specSha256Before: string;
+  readonly startedAt: string;
+}
+
+/**
+ * 创建尚未结束的独立 Task Review Episode。
+ *
+ * executionSessionId 与 review sessionId 分开保存，使领域不变式可以直接
+ * 证明复核者不是产生候选实现的同一个 Claude Session。
+ */
+export function createTaskReviewEpisode(
+  input: CreateTaskReviewEpisodeInput,
+): TaskReviewEpisode {
+  const episode: TaskReviewEpisode = {
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    executionSessionId: input.executionSessionId,
+    candidateCheckpoint: input.candidateCheckpoint,
+    planRevision: input.planRevision,
+    specSha256Before: input.specSha256Before,
+    specSha256After: null,
+    startedAt: input.startedAt,
+    endedAt: null,
+    outcome: null,
+    summary: null,
+    tests: [],
+    acceptanceEvidence: [],
+    issues: [],
+    error: null,
+  };
+  assertTaskReviewEpisodeRules(episode);
+  return episode;
+}
+
+export interface TaskReviewEpisodeEnding {
+  readonly specSha256After: string;
+  readonly endedAt: string;
+  readonly outcome: TaskReviewEpisodeOutcome;
+  readonly summary: string;
+  readonly tests: TestReport[];
+  readonly acceptanceEvidence: AcceptanceEvidence[];
+  readonly issues: string[];
+  readonly error: ErrorRecord | null;
+}
+
+/** 追加 Task Review Episode，并拒绝复用任何既有复核 Session ID。 */
+export function appendTaskReviewEpisode(
+  episodes: readonly TaskReviewEpisode[],
+  episode: TaskReviewEpisode,
+): TaskReviewEpisode[] {
+  if (episodes.some((existing) => existing.sessionId === episode.sessionId)) {
+    throw episodeError(`task review episode for session ${episode.sessionId} already exists`);
+  }
+  assertTaskReviewEpisodeRules(episode);
+  return [...episodes, episode];
+}
+
+/**
+ * 关闭一次 Task Review Episode。
+ *
+ * 与其他 Episode 相同，任何已经提交的结束字段都不可覆盖，确保中断恢复
+ * 和失败收尾不会改写先前的审计事实。
+ */
+export function closeTaskReviewEpisode(
+  episodes: readonly TaskReviewEpisode[],
+  sessionId: string,
+  ending: TaskReviewEpisodeEnding,
+): TaskReviewEpisode[] {
+  const index = episodes.findIndex((episode) => episode.sessionId === sessionId);
+  if (index < 0) {
+    throw episodeError(`no task review episode for session ${sessionId}`);
+  }
+  const episode = episodes[index]!;
+  if (
+    episode.endedAt !== null ||
+    episode.specSha256After !== null ||
+    episode.outcome !== null ||
+    episode.summary !== null ||
+    episode.tests.length > 0 ||
+    episode.acceptanceEvidence.length > 0 ||
+    episode.issues.length > 0 ||
+    episode.error !== null
+  ) {
+    throw episodeError(
+      `task review episode ${sessionId} already has committed end fields and must not be overwritten`,
+    );
+  }
+  const closed: TaskReviewEpisode = {
+    ...episode,
+    specSha256After: ending.specSha256After,
+    endedAt: ending.endedAt,
+    outcome: ending.outcome,
+    summary: ending.summary,
+    tests: [...ending.tests],
+    acceptanceEvidence: [...ending.acceptanceEvidence],
+    issues: [...ending.issues],
+    error: ending.error,
+  };
+  assertTaskReviewEpisodeRules(closed);
   return episodes.map((existing, position) => (position === index ? closed : existing));
 }
 

@@ -1,6 +1,7 @@
 /**
  * Run 驱动器（SPEC §5.4 运行模型、§2.4 中断收尾的应用层部分、§17 start
- * 进度摘要）：前台串行调度循环 planning → 逐 Task → final_review → 终态。
+ * 进度摘要）：前台串行调度循环 planning → 每个 Task 的 execution →
+ * 独立 task_review → final_review → 终态。
  *
  * - 顶层 Task 串行、同一时刻最多一个 Claude Session；每次状态迁移输出一行
  *   经脱敏的进度摘要。
@@ -14,6 +15,7 @@
 import { ApexError, isApexError } from '../domain/errors.js';
 import { isTerminalRunStatus } from '../domain/run-state.js';
 import { formatRfc3339InSystemTimeZone } from '../domain/time.js';
+import { selectTaskAwaitingReview } from '../domain/task-state.js';
 import type { PlanRevisionTrigger } from '../domain/schemas/plan-revision-snapshot.js';
 import type { ResumePoint, RunJson } from '../domain/schemas/run-json.js';
 import {
@@ -23,11 +25,14 @@ import {
   renderRunCompleted,
   renderSpecReplanning,
   renderTaskCompleted,
+  renderTaskReviewChangesRequired,
+  renderTaskReviewStarted,
 } from './presentation/progress.js';
 import type { UseCaseDeps } from './usecase-deps.js';
 import { createExecuteNextTask, type ExecutionResumeHint } from './usecases/execute-next-task.js';
 import { createGeneratePlanRevision } from './usecases/generate-plan-revision.js';
 import { createRunFinalReview } from './usecases/run-final-review.js';
+import { createReviewTask } from './usecases/review-task.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './usecases/run-transitions.js';
 
 export interface RunDriver {
@@ -42,8 +47,8 @@ export interface RunDriverOptions {
    * resume 命令重开 Run 时传入的恢复点（SPEC §17 resume）：
    * - fromStatus 为 planning：首个 Revision 保持 initial，已有 Revision
    *   时首个 Planning 使用 run_resumed；存在 Session ID 时续接原对话；
-   * - fromStatus 为 running 且 taskId/sessionId 非空：首个 Execution 会话
-   *   携带续接 hint（由 ExecuteNextTask 校验 Task 匹配后消费或丢弃）；
+   * - fromStatus 为 running 且 taskId/sessionId 非空：按 sessionType 只续接
+   *   被中断的 Execution 或 Task Review；Reviewer 恢复点绝不传给 Execution；
    * - fromStatus 为 final_review：首个 Final Review 会话续接原对话；
    * - 会话之间的恢复点没有 Session ID，按正常新会话继续。
    */
@@ -59,22 +64,26 @@ const INITIAL_TRIGGER: PlanRevisionTrigger = {
 export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): RunDriver {
   const generatePlanRevision = createGeneratePlanRevision(deps);
   const executeNextTask = createExecuteNextTask(deps);
+  const reviewTask = createReviewTask(deps);
   const runFinalReview = createRunFinalReview(deps);
 
   /** resume 恢复点：首次进入对应分支时消费一次，随后失效。 */
   const resumePoint = options?.resume ?? null;
   let planningResumeSessionId =
-    resumePoint?.fromStatus === 'planning' ? resumePoint.sessionId : null;
+    resumePoint?.sessionType === 'planning' ? resumePoint.sessionId : null;
   let planningResumePending = resumePoint?.fromStatus === 'planning';
   let executionResumeHint: ExecutionResumeHint | null =
     resumePoint !== null &&
     resumePoint.fromStatus === 'running' &&
+    resumePoint.sessionType === 'execution' &&
     resumePoint.taskId !== null &&
     resumePoint.sessionId !== null
       ? { sessionId: resumePoint.sessionId, taskId: resumePoint.taskId }
       : null;
+  let taskReviewResumeSessionId =
+    resumePoint?.sessionType === 'task_review' ? resumePoint.sessionId : null;
   let finalReviewResumeSessionId =
-    resumePoint?.fromStatus === 'final_review' ? resumePoint.sessionId : null;
+    resumePoint?.sessionType === 'final_review' ? resumePoint.sessionId : null;
 
   function progress(line: string): void {
     /*
@@ -199,18 +208,60 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
             break;
           }
           case 'running': {
+            const reviewTaskId = selectTaskAwaitingReview(run.tasks);
+            if (reviewTaskId !== null) {
+              const review = await reviewTask.execute(
+                taskReviewResumeSessionId === null
+                  ? undefined
+                  : { resumeFromSessionId: taskReviewResumeSessionId },
+              );
+              taskReviewResumeSessionId = null;
+              if (review.kind === 'task-completed') {
+                const checkpoint = review.run.tasks[review.taskId]?.finalCheckpoint ?? '';
+                deps.logger.log('debug', 'driver.task_completed', {
+                  runId: run.runId,
+                  taskId: review.taskId,
+                  checkpoint,
+                  approvedByIndependentReview: true,
+                });
+                progress(renderTaskCompleted(review.taskId, checkpoint));
+              } else if (review.kind === 'changes-required') {
+                deps.logger.log('warn', 'driver.task_review_changes_required', {
+                  runId: run.runId,
+                  taskId: review.taskId,
+                });
+                progress(renderTaskReviewChangesRequired(review.taskId));
+              } else if (review.kind === 'replan-needed') {
+                trigger = review.trigger;
+                deps.logger.log('debug', 'driver.replan', {
+                  runId: run.runId,
+                  status: 'running',
+                  trigger: review.trigger.type,
+                  reason: review.trigger.reason,
+                });
+                progress(renderReplanRequested(review.trigger.type));
+              } else {
+                deps.logger.log('error', 'driver.run_failed', {
+                  runId: run.runId,
+                  status: 'running',
+                  errorCode: review.run.lastError?.errorCode ?? 'unknown',
+                });
+                return review.run;
+              }
+              break;
+            }
             const result = await executeNextTask.execute(
               executionResumeHint === null ? undefined : { resume: executionResumeHint },
             );
             executionResumeHint = null;
-            if (result.kind === 'task-completed') {
-              const checkpoint = result.run.tasks[result.taskId]?.finalCheckpoint ?? '';
-              deps.logger.log('debug', 'driver.task_completed', {
+            if (result.kind === 'review-needed') {
+              const checkpoint = result.run.tasks[result.taskId]?.candidateCheckpoint ?? '';
+              deps.logger.log('debug', 'driver.task_review_needed', {
                 runId: run.runId,
                 taskId: result.taskId,
                 checkpoint,
               });
-              progress(renderTaskCompleted(result.taskId, checkpoint));
+              progress(renderTaskReviewStarted(result.taskId, checkpoint));
             } else if (result.kind === 'replan-needed') {
               trigger = result.trigger;
               deps.logger.log('debug', 'driver.replan', {

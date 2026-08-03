@@ -13,6 +13,7 @@ import {
 export type PlanRevisionTriggerType =
   | 'initial'
   | 'execution_replan'
+  | 'task_review_replan'
   | 'spec_changed'
   | 'final_review_replan'
   | 'run_resumed';
@@ -20,6 +21,7 @@ export type PlanRevisionTriggerType =
 export const PLAN_REVISION_TRIGGER_TYPES: readonly PlanRevisionTriggerType[] = [
   'initial',
   'execution_replan',
+  'task_review_replan',
   'spec_changed',
   'final_review_replan',
   'run_resumed',

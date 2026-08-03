@@ -8,7 +8,7 @@ import { createRedactor } from '../../src/adapters/redaction/redactor.js';
 import { toTerminalFailedRun } from '../../src/application/usecases/run-transitions.js';
 import { ApexError } from '../../src/domain/errors.js';
 import type { ActiveSession } from '../../src/domain/schemas/active-session.js';
-import { mkRun, mkTaskState, SHA256_A, T0, T1, UUID_1 } from '../domain/fixtures.js';
+import { mkResult, mkRun, mkTaskState, OID_B, SHA256_A, T0, T1, UUID_1, UUID_2 } from '../domain/fixtures.js';
 
 const redaction = createRedactor();
 
@@ -51,6 +51,7 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
       fromStatus: 'running',
       taskId: 'TASK-001',
       sessionId: UUID_1,
+      sessionType: 'execution',
     });
   });
 
@@ -61,6 +62,7 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
       fromStatus: 'planning',
       taskId: null,
       sessionId: null,
+      sessionType: null,
     });
   });
 
@@ -71,6 +73,7 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
       fromStatus: 'final_review',
       taskId: null,
       sessionId: null,
+      sessionType: null,
     });
   });
 
@@ -82,5 +85,65 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
     });
     const terminal = toTerminalFailedRun(runningRunWithSession(), claudeFailure, T1, redaction);
     expect(terminal.resumePoint).toBeNull();
+  });
+
+  it('RUN_INTERRUPTED in the pre-review window fails the task but keeps its candidate', () => {
+    /**
+     * 候选已持久化、Reviewer 尚未启动（无 activeSession）的窗口：没有可
+     * 续接的会话，resumePoint 记 task_review + sessionId null；被中断
+     * Task 转 failed 且保留候选，resume 后由全新 Reviewer 复核。
+     */
+    const windowRun = mkRun({
+      status: 'running',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      currentTaskId: 'TASK-001',
+      activeSession: null,
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'running', {
+          candidateResult: mkResult(),
+          candidateCheckpoint: OID_B,
+        }),
+      },
+    });
+    const terminal = toTerminalFailedRun(windowRun, interrupted(), T1, redaction);
+    expect(terminal.status).toBe('failed');
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: null,
+      sessionType: 'task_review',
+    });
+    const task = terminal.tasks['TASK-001']!;
+    expect(task.status).toBe('failed');
+    expect(task.failure?.errorCode).toBe('RUN_INTERRUPTED');
+    expect(task.candidateResult).not.toBeNull();
+    expect(task.candidateCheckpoint).toBe(OID_B);
+  });
+
+  it('RUN_INTERRUPTED with an active review session keeps the resumable session id', () => {
+    // 非窗口形状：Reviewer 已启动，本函数不把 Task 转 failed，
+    // resumePoint 续接的是被中断的 Reviewer 会话本身。
+    const reviewing = mkRun({
+      status: 'running',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      currentTaskId: 'TASK-001',
+      activeSession: { ...activeSession, sessionId: UUID_2, type: 'task_review' },
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'running', {
+          candidateResult: mkResult(),
+          candidateCheckpoint: OID_B,
+        }),
+      },
+    });
+    const terminal = toTerminalFailedRun(reviewing, interrupted(), T1, redaction);
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: UUID_2,
+      sessionType: 'task_review',
+    });
+    expect(terminal.tasks['TASK-001']!.status).toBe('running');
   });
 });

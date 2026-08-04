@@ -286,6 +286,12 @@ export function createResumeRun(deps: RunCommandDeps): {
   ): Promise<ResumeRunResult> {
     const { bound, run, classification, validatedHead } = prepared;
     let reconciled = run;
+    /**
+     * 终态 failed Run 从 lastError 取得真实原因；仍处于活动态的孤儿 Run
+     * 尚无终态错误，接管语义确定为 RUN_INTERRUPTED。该事实必须在
+     * reopenRun 清空 lastError 之前保存并显式下传。
+     */
+    let resumeCause = run.lastError?.errorCode ?? 'RUN_INTERRUPTED';
     if (classification.requiresOrphanReconciliation) {
       /**
        * 免 --force 接管完全依赖"崩溃离场"判定；判定之后经历了能力探测与
@@ -318,6 +324,7 @@ export function createResumeRun(deps: RunCommandDeps): {
         sessionId: run.activeSession?.sessionId ?? null,
         taskId: run.currentTaskId,
       });
+      resumeCause = orphaned.errorCode;
       try {
         reconciled = await reconcileOrphanedSessionFacts(bound, run, orphaned);
       } catch (error) {
@@ -361,7 +368,9 @@ export function createResumeRun(deps: RunCommandDeps): {
       expectedHead: validatedHead,
     });
 
-    const driver = createRunDriver(bound, { resume: classification.point });
+    const driver = createRunDriver(bound, {
+      resume: { point: classification.point, cause: resumeCause },
+    });
     try {
       const terminal = await driver.driveToTerminal();
       return terminal.status === 'completed'

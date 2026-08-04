@@ -121,6 +121,16 @@ export function errorClassForCode(code: ErrorCode): ErrorClass {
 }
 
 /**
+ * 判断稳定错误是否表示单趟 Execution 的回合预算已经耗尽。
+ *
+ * Adapter 负责把外部 Claude 事实映射为 errorCode；外层只通过此领域语义
+ * 分支，避免在 Prompt 或用例中重新解释外部流协议。
+ */
+export function isTurnBudgetExhaustedErrorCode(code: ErrorCode): boolean {
+  return code === 'CLAUDE_TURN_LIMIT_REACHED';
+}
+
+/**
  * 判断终态失败是否携带可由 `resume` 消费的确定性恢复点。
  *
  * 前台中断、Claude 回合预算耗尽以及已启动进程的非零退出，都可能已经
@@ -134,7 +144,7 @@ export function errorClassForCode(code: ErrorCode): ErrorClass {
 export function isResumableErrorCode(code: ErrorCode): boolean {
   return (
     code === 'RUN_INTERRUPTED' ||
-    code === 'CLAUDE_TURN_LIMIT_REACHED' ||
+    isTurnBudgetExhaustedErrorCode(code) ||
     code === 'CLAUDE_EXIT_NONZERO'
   );
 }

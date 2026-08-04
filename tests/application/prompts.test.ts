@@ -348,6 +348,9 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
      * 有界服务生命周期和失败收敛三项关键约束。
      */
     expect(prompt).toContain('若说明要求界面由用户手动验证，不得启动浏览器或开发服务器');
+    expect(prompt).toContain('kind=manual 的步骤严格禁止由 Agent 执行');
+    expect(prompt).toContain('verificationPlan 是本 Task 的封闭验证集合');
+    expect(prompt).toContain('立即返回结构化结果');
     expect(prompt).toContain('不得把独立的开发服务器留在后台');
     expect(prompt).toContain('使用带截止时间的条件轮询');
     expect(prompt).toContain('原则上只进行两轮有针对性的修正');
@@ -409,7 +412,10 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
 
 describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
   it('恢复后继续遵守验证收敛与资源生命周期边界', () => {
-    const prompt = buildExecutionResumePrompt({ task: pendingDefinition });
+    const prompt = buildExecutionResumePrompt({
+      task: pendingDefinition,
+      cause: 'RUN_INTERRUPTED',
+    });
     /*
      * 恢复会话会继承中断前的仓库状态，但不能因此丢失验证资源的所有权。
      * 这里同时确认任务定义和统一验证策略都进入了续接提示。
@@ -418,6 +424,23 @@ describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
     expect(prompt).toContain('不要推倒重来');
     expect(prompt).toContain('不得把独立的开发服务器留在后台');
     expect(prompt).toContain('原则上只进行两轮有针对性的修正');
+    expect(prompt).toContain('RESUME_CAUSE: RUN_INTERRUPTED');
+    expect(prompt).toContain('上一趟会话被前台中断');
+  });
+
+  it('回合预算耗尽后优先复用证据并立即收敛', () => {
+    const prompt = buildExecutionResumePrompt({
+      task: pendingDefinition,
+      cause: 'CLAUDE_TURN_LIMIT_REACHED',
+    });
+    /**
+     * 回合耗尽后的续接不是普通中断：必须携带稳定原因，并明确禁止在已有
+     * 验收证据齐备后继续追加可选检查，防止真实长任务反复耗尽预算。
+     */
+    expect(prompt).toContain('RESUME_CAUSE: CLAUDE_TURN_LIMIT_REACHED');
+    expect(prompt).toContain('已耗尽 maxAgentTurns');
+    expect(prompt).toContain('必须立即返回结构化结果');
+    expect(prompt).toContain('不得重复已通过的验证');
   });
 });
 

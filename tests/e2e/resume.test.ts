@@ -140,6 +140,7 @@ describe('e2e resume (§17)', () => {
         expect(argv[argv.indexOf('--resume') + 1]).toBe(interruptedSessionId);
         expect(argv).toContain('--fork-session');
         expect(argv).toContain('--session-id');
+        expect(resumedInvocation!.stdin).toContain('RESUME_CAUSE: RUN_INTERRUPTED');
         const forkedSessionId = argv[argv.indexOf('--session-id') + 1]!;
         expect(forkedSessionId).not.toBe(interruptedSessionId);
 
@@ -250,6 +251,14 @@ describe('e2e resume (§17)', () => {
           resumedInvocation!.argv[resumedInvocation!.argv.indexOf('--resume') + 1],
         ).toBe(exhaustedSessionId);
         expect(resumedInvocation!.argv).toContain('--fork-session');
+        /**
+         * 真实失败原因必须跨 reopenRun 的 lastError 清空边界继续传入模型，
+         * 让预算耗尽后的接力会话优先收敛，而不是按普通中断继续扩张范围。
+         */
+        expect(resumedInvocation!.stdin).toContain(
+          'RESUME_CAUSE: CLAUDE_TURN_LIMIT_REACHED',
+        );
+        expect(resumedInvocation!.stdin).toContain('必须立即返回结构化结果');
       } finally {
         await harness.cleanup();
       }

@@ -7,6 +7,7 @@
  *
  * 纯函数，不依赖 node:*。
  */
+import { isTurnBudgetExhaustedErrorCode, type ErrorCode } from '../../domain/errors.js';
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type {
@@ -223,8 +224,24 @@ ${toJson(input.task)}
 export function buildExecutionResumePrompt(input: {
   /** 当前 Task 的完整定义。 */
   readonly task: PlannedTask;
+  /** 触发本次显式 resume 的稳定错误码。 */
+  readonly cause: ErrorCode;
 }): string {
-  return `你是 ApexCodingAgent 当前 Task 的执行 Agent。此前的执行会话被前台中断，本会话从中断点继续。
+  /**
+   * 恢复原因必须继续进入模型上下文。回合预算耗尽与人工中断需要不同的
+   * 收敛优先级，不能在重开 Run 时退化成同一句“前台中断”。
+   */
+  const causeInstruction =
+    isTurnBudgetExhaustedErrorCode(input.cause)
+      ? '上一趟会话已耗尽 maxAgentTurns。先利用已有实现和验证证据收敛；如果验收条件已经覆盖，必须立即返回结构化结果，不得开始任何可选检查。'
+      : input.cause === 'RUN_INTERRUPTED'
+        ? '上一趟会话被前台中断。从已有工作树继续，但不要重复中断前已经完成且仍然有效的工作或验证。'
+        : `上一趟会话因可续接错误 ${input.cause} 终止。先核对已有事实，再从最小缺口继续。`;
+
+  return `你是 ApexCodingAgent 当前 Task 的执行 Agent。本会话通过显式 resume 从上一趟执行断点继续。
+
+RESUME_CAUSE: ${input.cause}
+${causeInstruction}
 
 仓库中可能保留你中断前已完成的半成品改动：先核对当前文件状态，在此基础上继续完成 CURRENT_TASK，不要推倒重来，也不要重复已完成的工作。
 
@@ -237,6 +254,7 @@ ${VERIFICATION_POLICY}
 1. 原执行要求与安全边界全部继续有效（不修改 SPEC、不触碰 .apex-coding-agent、不执行危险操作）。
 2. 对每一项 acceptanceCriteria 按原索引返回一条 acceptanceEvidence。
 3. 只有全部 acceptanceCriteria 均 satisfied 且不存在 failed test 时才能返回 completed；无法完成时据实返回 failed 或 replan_required。
+4. 先盘点已有实现与仍有效的测试证据，只处理尚未覆盖的最小缺口；不得重复已通过的验证，也不得追加 verificationPlan 之外的可选工作。
 
 返回 TaskExecutionResult 结构化结果。不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }

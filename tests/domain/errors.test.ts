@@ -11,6 +11,7 @@ import {
   errorClassForCode,
   isApexError,
   isResumableErrorCode,
+  isTurnBudgetExhaustedErrorCode,
   type ErrorClass,
   type ErrorCode,
 } from '../../src/domain/errors.js';
@@ -120,6 +121,16 @@ describe('error model (§15)', () => {
     expect(isResumableErrorCode('CLAUDE_EXIT_NONZERO')).toBe(true);
     expect(isResumableErrorCode('CLAUDE_START_FAILED')).toBe(false);
     expect(isResumableErrorCode('GIT_COMMAND_FAILED')).toBe(false);
+  });
+
+  it('classifies only the stable Execution turn-budget error as exhausted', () => {
+    /**
+     * 外层恢复策略只能消费领域分类，不能自行解释 Claude 原始流；这里锁定
+     * 分类边界，防止普通退出或人工中断误触发预算耗尽的收敛提示。
+     */
+    expect(isTurnBudgetExhaustedErrorCode('CLAUDE_TURN_LIMIT_REACHED')).toBe(true);
+    expect(isTurnBudgetExhaustedErrorCode('CLAUDE_EXIT_NONZERO')).toBe(false);
+    expect(isTurnBudgetExhaustedErrorCode('RUN_INTERRUPTED')).toBe(false);
   });
 
   it('ApexError carries code, derived class, stage and optional facts', () => {

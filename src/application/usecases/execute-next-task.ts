@@ -16,7 +16,7 @@
  * SPEC SHA-256 边界（§3.2）：Task 启动前（变化则转 planning 触发新 Revision）、
  * Session 正常结束后提交结果前（变化走六步变化流程）。
  */
-import { ApexError } from '../../domain/errors.js';
+import { ApexError, type ErrorCode } from '../../domain/errors.js';
 import {
   closeExecutionEpisode,
   type ExecutionEpisodeEnding,
@@ -88,6 +88,8 @@ type SessionLoopOutcome =
 export interface ExecutionResumeHint {
   readonly sessionId: string;
   readonly taskId: string;
+  /** 重开前 Run 的稳定失败原因，用于选择续接会话的收敛策略。 */
+  readonly cause: ErrorCode;
 }
 
 export interface ExecuteNextTaskOptions {
@@ -652,7 +654,9 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     };
 
     const sessionOutcome = await invokeUntilValidResult(
-      resumeHint === null ? null : buildExecutionResumePrompt({ task: taskDef }),
+      resumeHint === null
+        ? null
+        : buildExecutionResumePrompt({ task: taskDef, cause: resumeHint.cause }),
       resumeHint === null ? null : resumeHint.sessionId,
     );
     if (sessionOutcome.kind === 'settled') return sessionOutcome.settled;

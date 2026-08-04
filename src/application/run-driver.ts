@@ -12,7 +12,7 @@
  *   中断落在会话之外时（循环顶部检查），直接把当前 Run 收尾为 failed
  *   （RUN_INTERRUPTED）。
  */
-import { ApexError, isApexError } from '../domain/errors.js';
+import { ApexError, isApexError, type ErrorCode } from '../domain/errors.js';
 import { isTerminalRunStatus } from '../domain/run-state.js';
 import { formatRfc3339InSystemTimeZone } from '../domain/time.js';
 import { selectTaskAwaitingReview } from '../domain/task-state.js';
@@ -47,7 +47,9 @@ export interface RunDriver {
 
 export interface RunDriverOptions {
   /**
-   * resume 命令重开 Run 时传入的恢复点（SPEC §17 resume）：
+   * resume 命令重开 Run 时传入的完整恢复上下文（SPEC §17 resume）。
+   * point 决定调度位置，cause 保留重开前的失败语义，避免续接提示把回合
+   * 耗尽、前台中断和普通非零退出错误地合并成同一种恢复策略：
    * - fromStatus 为 planning：首个 Revision 保持 initial，已有 Revision
    *   时首个 Planning 使用 run_resumed；存在 Session ID 时续接原对话；
    * - fromStatus 为 running 且 taskId/sessionId 非空：按 sessionType 只续接
@@ -55,7 +57,10 @@ export interface RunDriverOptions {
    * - fromStatus 为 final_review：首个 Final Review 会话续接原对话；
    * - 会话之间的恢复点没有 Session ID，按正常新会话继续。
    */
-  readonly resume?: ResumePoint;
+  readonly resume?: {
+    readonly point: ResumePoint;
+    readonly cause: ErrorCode;
+  };
 }
 
 const INITIAL_TRIGGER: PlanRevisionTrigger = {
@@ -71,20 +76,26 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
   const reviewTask = createReviewTask(deps);
   const runFinalReview = createRunFinalReview(deps);
 
-  /** resume 恢复点：首次进入对应分支时消费一次，随后失效。 */
-  const resumePoint = options?.resume ?? null;
+  /** resume 恢复上下文：首次进入对应分支时消费一次，随后失效。 */
+  const resumeContext = options?.resume ?? null;
+  const resumePoint = resumeContext?.point ?? null;
   let planningResumeSessionId =
     resumePoint?.sessionType === 'planning' ? resumePoint.sessionId : null;
   let planReviewResumeSessionId =
     resumePoint?.sessionType === 'plan_review' ? resumePoint.sessionId : null;
   let planningResumePending = resumePoint?.fromStatus === 'planning';
   let executionResumeHint: ExecutionResumeHint | null =
+    resumeContext !== null &&
     resumePoint !== null &&
     resumePoint.fromStatus === 'running' &&
     resumePoint.sessionType === 'execution' &&
     resumePoint.taskId !== null &&
     resumePoint.sessionId !== null
-      ? { sessionId: resumePoint.sessionId, taskId: resumePoint.taskId }
+      ? {
+          sessionId: resumePoint.sessionId,
+          taskId: resumePoint.taskId,
+          cause: resumeContext.cause,
+        }
       : null;
   let taskReviewResumeSessionId =
     resumePoint?.sessionType === 'task_review' ? resumePoint.sessionId : null;

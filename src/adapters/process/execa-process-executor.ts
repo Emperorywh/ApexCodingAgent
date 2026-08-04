@@ -19,6 +19,16 @@ import {
   type WindowsCommandEnvironment,
 } from './windows-command.js';
 
+export interface ExecaProcessExecutorOptions {
+  /**
+   * 仅作用于本执行器启动的子进程，并覆盖同名的继承环境变量。
+   *
+   * 生产组合根不传该选项，继续完整继承用户环境；测试装配用它把每个
+   * Fake CLI 实例绑定到自己的场景文件，避免依赖进程级可变状态。
+   */
+  readonly environmentOverrides?: Readonly<Record<string, string>>;
+}
+
 interface ChunkSink {
   readonly consume: (chunk: Uint8Array) => Promise<void>;
   readonly chunks: Buffer[];
@@ -106,8 +116,20 @@ function normalizeCommand(
  * 文件读取只用于解析用户选择的 shim，不枚举或缓存凭据，也不会把 shim
  * 文本写入日志。
  */
-function systemWindowsCommandEnvironment(): WindowsCommandEnvironment {
+function systemWindowsCommandEnvironment(
+  environmentOverrides: Readonly<Record<string, string>>,
+): WindowsCommandEnvironment {
   const readVariable = (name: string): string | undefined => {
+    /**
+     * 命令解析与最终子进程必须观察同一份环境覆盖。
+     *
+     * 否则覆盖后的 PATH 虽会传给子进程，却无法参与 Windows shim 定位，
+     * 执行器的环境边界会出现前后不一致。
+     */
+    const overrideKey = Object.keys(environmentOverrides).find(
+      (candidate) => candidate.toUpperCase() === name,
+    );
+    if (overrideKey !== undefined) return environmentOverrides[overrideKey];
     const key = Object.keys(process.env).find((candidate) => candidate.toUpperCase() === name);
     return key === undefined ? undefined : process.env[key];
   };
@@ -129,23 +151,31 @@ function systemWindowsCommandEnvironment(): WindowsCommandEnvironment {
 function resolveCommand(
   command: string,
   args: readonly string[],
+  environmentOverrides: Readonly<Record<string, string>>,
 ): { readonly command: string; readonly args: readonly string[] } | null {
   const initial = normalizeCommand(command, args);
   const resolved = resolveWindowsCommand(
     initial.command,
-    systemWindowsCommandEnvironment(),
+    systemWindowsCommandEnvironment(environmentOverrides),
   );
   if (resolved === null) return null;
   return normalizeCommand(resolved, initial.args);
 }
 
-export function createExecaProcessExecutor(): ProcessExecutor {
+export function createExecaProcessExecutor(
+  options: ExecaProcessExecutorOptions = {},
+): ProcessExecutor {
+  const environmentOverrides = options.environmentOverrides ?? {};
   return {
     async execute(request: ProcessExecutionRequest): Promise<ProcessExecutionOutcome> {
       const stdout = createChunkSink(request.collectOutput, request.onStdoutChunk);
       const stderr = createChunkSink(request.collectOutput, request.onStderrChunk);
       try {
-        const normalized = resolveCommand(request.command, request.args);
+        const normalized = resolveCommand(
+          request.command,
+          request.args,
+          environmentOverrides,
+        );
         if (normalized === null) {
           return {
             kind: 'spawn-failed',
@@ -164,6 +194,15 @@ export function createExecaProcessExecutor(): ProcessExecutor {
           ...(request.stdinText === undefined
             ? { stdin: 'ignore' as const }
             : { input: request.stdinText }),
+          /**
+           * Execa 的 extendEnv 会先继承父进程环境，再应用实例级覆盖。
+           *
+           * 这样生产路径仍原样传递凭据与代理配置；测试所需的场景定位
+           * 事实则只进入对应子进程，不再写入共享的 process.env。
+           */
+          ...(Object.keys(environmentOverrides).length === 0
+            ? {}
+            : { env: { ...environmentOverrides }, extendEnv: true }),
           shell: false,
           windowsHide: true,
           /**

@@ -19,15 +19,22 @@ import type {
 } from '../../application/usecases/resume-run.js';
 
 /**
- * `status` 命令的已提交读取结果。
+ * `status` 命令的仓库级查询结果。
  *
- * CLI 只接收渲染所需事实，不接触 StateStore/Git 等次级端口；
- * 仓库解析、一致性读取和适配器装配全部封装在 Composition Root。
+ * 未找到 Run 也是一次成功完成的仓库查询，必须携带已解析的仓库根；这样 CLI
+ * 能说明自己实际检查了哪里，而不需要接触 GitPort 或重复仓库定位逻辑。
+ * 找到分支只暴露渲染所需事实，不向接口层泄漏 StateStore/Git 等次级端口。
  */
-export interface StatusCommandResult {
-  readonly snapshot: ConsistentSnapshot;
-  readonly git: RepositoryStatusFact;
-}
+export type StatusCommandResult =
+  | {
+      readonly kind: 'found';
+      readonly snapshot: ConsistentSnapshot;
+      readonly git: RepositoryStatusFact;
+    }
+  | {
+      readonly kind: 'not_found';
+      readonly repositoryRoot: string;
+    };
 
 export interface SignalHandlerSpec {
   /** 第一次中断信号：§2.4 有界收尾（转发给中断控制器）。 */
@@ -51,7 +58,7 @@ export interface CliRuntime {
    * 具体用例及其端口依赖由 Composition Root 创建，避免接口层承担
    * 依赖注入职责或获得超出命令所需的基础设施能力。
    */
-  readonly status: { execute(): Promise<StatusCommandResult | null> };
+  readonly status: { execute(): Promise<StatusCommandResult> };
   readonly report: { execute(): Promise<GenerateReportResult> };
   readonly abandon: { execute(input: AbandonRunInput): Promise<AbandonRunResult> };
   /**

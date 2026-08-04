@@ -1,0 +1,28 @@
+{
+  "description": "A real Claude error_max_turns ResultMessage maps to a resumable turn-limit error instead of a generic non-zero exit",
+  "sessionType": "execution",
+  "exitCode": 1,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "fixture-model"
+    },
+    {
+      "is_error": true,
+      "num_turns": 73,
+      "stop_reason": "tool_use",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "terminal_reason": "max_turns",
+      "subtype": "error_max_turns",
+      "errors": ["Reached maximum number of turns (72)"],
+      "type": "result"
+    }
+  ],
+  "expect": {
+    "kind": "error",
+    "errorCode": "CLAUDE_TURN_LIMIT_REACHED"
+  }
+}

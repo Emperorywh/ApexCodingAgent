@@ -6,7 +6,12 @@
  * conditions the schema language is not used for. Violations throw
  * STATE_VALIDATION_FAILED.
  */
-import { ApexError, errorClassForCode, type ErrorCode } from './errors.js';
+import {
+  ApexError,
+  errorClassForCode,
+  isResumableErrorCode,
+  type ErrorCode,
+} from './errors.js';
 import {
   validateExecutionResultSemantics,
   validateTaskReviewResultSemantics,
@@ -574,8 +579,8 @@ export function assertRunJsonRules(run: RunJson): void {
       assertCondition(
         run.resumePoint?.taskId === taskId &&
           run.resumePoint.sessionType === 'task_review' &&
-          state.failure?.errorCode === 'RUN_INTERRUPTED',
-        `failed task ${taskId} may retain a candidate only for an interrupted task review`,
+          state.failure !== null && isResumableErrorCode(state.failure.errorCode),
+        `failed task ${taskId} may retain a candidate only for a resumable task review`,
       );
     }
   }
@@ -594,10 +599,9 @@ export function assertRunJsonRules(run: RunJson): void {
   if (run.lastError !== null) assertErrorRecordRules(run.lastError);
 
   /**
-   * resumePoint（SPEC §2.4/§17 resume）：只允许出现在 RUN_INTERRUPTED
-   * 终态失败的 Run 上；fromStatus 必为非终态；taskId 非空时该 Task 必须
-   * 正因同一中断处于 failed（RUN_INTERRUPTED），保证 resume 的复位目标
-   * 唯一且可解释。
+   * resumePoint（SPEC §2.4/§17 resume）：只允许出现在明确可续接的终态失败
+   * Run 上；fromStatus 必为非终态；taskId 非空时该 Task 必须因同一个错误码
+   * 处于 failed，保证 resume 的复位目标唯一且可解释。
    */
   if (run.resumePoint !== null) {
     assertCondition(
@@ -605,8 +609,8 @@ export function assertRunJsonRules(run: RunJson): void {
       `resumePoint requires status failed, got ${run.status}`,
     );
     assertCondition(
-      run.lastError !== null && run.lastError.errorCode === 'RUN_INTERRUPTED',
-      'resumePoint requires lastError RUN_INTERRUPTED',
+      run.lastError !== null && isResumableErrorCode(run.lastError.errorCode),
+      'resumePoint requires a resumable lastError',
     );
     assertCondition(
       run.resumePoint.sessionId !== null ||
@@ -669,8 +673,10 @@ export function assertRunJsonRules(run: RunJson): void {
         interrupted !== undefined &&
           interrupted.status === 'failed' &&
           interrupted.failure !== null &&
-          interrupted.failure.errorCode === 'RUN_INTERRUPTED',
-        `resumePoint task ${run.resumePoint.taskId} must be failed with RUN_INTERRUPTED`,
+          run.lastError !== null &&
+          interrupted.failure.errorCode === run.lastError.errorCode &&
+          isResumableErrorCode(interrupted.failure.errorCode),
+        `resumePoint task ${run.resumePoint.taskId} must carry the resumable Run error`,
       );
       if (run.resumePoint.sessionType === 'task_review') {
         assertCondition(

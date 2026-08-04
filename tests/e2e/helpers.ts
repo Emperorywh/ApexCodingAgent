@@ -131,6 +131,16 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   const scenarioPath = join(fakeRoot, 'scenario.json');
   const recordPath = join(fakeRoot, 'invocations.jsonl');
 
+  /**
+   * Fake Claude 的场景定位属于单个 Harness，而不是 Vitest Worker 的全局状态。
+   * 每个 Claude 进程执行器持有自己的不可变覆盖，超时后的迟到清理也无法
+   * 改写另一个 Harness 正在使用的配置。
+   */
+  const fakeClaudeEnvironment = {
+    APEX_FAKE_CLAUDE_SCENARIO: scenarioPath,
+    APEX_FAKE_CLAUDE_RECORD: recordPath,
+  } as const;
+
   const fileSystem = createNodeFileSystem();
   const clock = createSystemClock();
   const redaction = createRedactor();
@@ -202,7 +212,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         claudePortPaths.push(claudeCliPath);
         return createClaudeRuntime({
           claudePath: claudeCliPath ?? FAKE_CLAUDE_PATH,
-          processExecutor: createTestProcessExecutor(),
+          processExecutor: createTestProcessExecutor(fakeClaudeEnvironment),
           fileSystem,
           redaction,
           probeTimeoutMs: 15_000,
@@ -230,11 +240,6 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
     nodeVersion: process.version,
     agentVersion: E2E_AGENT_VERSION,
   };
-
-  const savedScenario = process.env['APEX_FAKE_CLAUDE_SCENARIO'];
-  const savedRecord = process.env['APEX_FAKE_CLAUDE_RECORD'];
-  process.env['APEX_FAKE_CLAUDE_SCENARIO'] = scenarioPath;
-  process.env['APEX_FAKE_CLAUDE_RECORD'] = recordPath;
 
   const startRun = createStartRun(startDeps);
   const resumeRun = createResumeRun(resumeDeps);
@@ -348,7 +353,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
         }),
         claude: createClaudeRuntime({
           claudePath: FAKE_CLAUDE_PATH,
-          processExecutor: createTestProcessExecutor(),
+          processExecutor: createTestProcessExecutor(fakeClaudeEnvironment),
           fileSystem,
           redaction,
           probeTimeoutMs: 15_000,
@@ -358,10 +363,6 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       });
     },
     async cleanup() {
-      if (savedScenario === undefined) delete process.env['APEX_FAKE_CLAUDE_SCENARIO'];
-      else process.env['APEX_FAKE_CLAUDE_SCENARIO'] = savedScenario;
-      if (savedRecord === undefined) delete process.env['APEX_FAKE_CLAUDE_RECORD'];
-      else process.env['APEX_FAKE_CLAUDE_RECORD'] = savedRecord;
       await repo.cleanup();
       // Windows 上子进程退出滞后时 rmdir 会报 EBUSY，重试吸收
       await rm(fakeRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

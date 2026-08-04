@@ -165,6 +165,99 @@ describe('e2e resume (§17)', () => {
   );
 
   it(
+    'turn-limit ResultMessage ends the budget tranche and resumes the same Execution context only on explicit resume',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
+            {
+              writeFiles: [
+                {
+                  path: 'src/partial.ts',
+                  content: 'export const partialWork = true;\n',
+                },
+              ],
+              stdoutLines: [
+                {
+                  type: 'system',
+                  subtype: 'init',
+                  session_id: '{sessionId}',
+                  model: 'fake-model',
+                },
+                {
+                  type: 'result',
+                  subtype: 'error_max_turns',
+                  is_error: true,
+                  session_id: '{sessionId}',
+                  num_turns: 65,
+                  terminal_reason: 'max_turns',
+                  errors: ['Reached maximum number of turns (64)'],
+                },
+              ],
+              exitCode: 1,
+            },
+          ],
+        });
+
+        const first = await harness.start();
+        expect(first.kind).toBe('failed');
+        if (first.kind !== 'failed') return;
+        expect(first.run.lastError?.errorCode).toBe('CLAUDE_TURN_LIMIT_REACHED');
+        expect(first.run.tasks['TASK-001']!.failure?.errorCode).toBe(
+          'CLAUDE_TURN_LIMIT_REACHED',
+        );
+        expect(first.run.resumePoint).toEqual({
+          fromStatus: 'running',
+          taskId: 'TASK-001',
+          sessionId: expect.any(String),
+          sessionType: 'execution',
+        });
+        const exhaustedSessionId = first.run.resumePoint!.sessionId!;
+
+        /**
+         * 预算耗尽本身不触发自动重试：首次驱动只包含 Planner、自动 Plan
+         * Reviewer 与失败 Execution 三个正式 Session。
+         */
+        const firstInvocations = (await harness.readRecords()).filter((record) =>
+          record.argv.includes('--session-id'),
+        );
+        expect(firstInvocations).toHaveLength(3);
+
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(executionCompleted()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+        const resumed = await harness.resume();
+        expect(resumed.kind).toBe('completed');
+        if (resumed.kind !== 'completed') return;
+        expect(resumed.run.resumePoint).toBeNull();
+        expect(resumed.run.tasks['TASK-001']!.status).toBe('completed');
+
+        const resumedInvocation = (await harness.readRecords()).find((record) =>
+          record.argv.includes('--resume'),
+        );
+        expect(resumedInvocation).toBeDefined();
+        expect(
+          resumedInvocation!.argv[resumedInvocation!.argv.indexOf('--resume') + 1],
+        ).toBe(exhaustedSessionId);
+        expect(resumedInvocation!.argv).toContain('--fork-session');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
     'falls back to a fresh session when the interrupted Claude session cannot be resumed',
     async () => {
       const harness = await createE2EHarness();

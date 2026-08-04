@@ -75,10 +75,13 @@ describe('claude contract centralization', () => {
       'application/usecases/execute-next-task.ts',
       'application/usecases/review-task.ts',
       'application/usecases/resumable-session.ts',
+      // CLI 帮助只展示稳定错误码，不解释任何原始流或进程事实。
+      'interfaces/cli/help.ts',
     ]);
     const claudeCodes = [
       'CLAUDE_START_FAILED',
       'CLAUDE_EXIT_NONZERO',
+      'CLAUDE_TURN_LIMIT_REACHED',
       'CLAUDE_STREAM_FAILED',
       'CLAUDE_RESUME_UNAVAILABLE',
       'CLAUDE_RESULT_INVALID',

@@ -8,6 +8,12 @@
 import { createExecaProcessExecutor } from '../src/adapters/process/execa-process-executor.js';
 import type { ProcessExecutor } from '../src/adapters/process/process-executor.js';
 
-export function createTestProcessExecutor(): ProcessExecutor {
-  return createExecaProcessExecutor();
+export function createTestProcessExecutor(
+  environmentOverrides: Readonly<Record<string, string>> = {},
+): ProcessExecutor {
+  /**
+   * 测试专属环境随执行器实例显式注入，不能通过 process.env 暗中共享。
+   * 该工厂仍返回真实 Execa 实现，不改变任何进程、标准流或超时语义。
+   */
+  return createExecaProcessExecutor({ environmentOverrides });
 }

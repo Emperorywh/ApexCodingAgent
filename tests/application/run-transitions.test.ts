@@ -1,6 +1,6 @@
 /**
  * toTerminalFailedRun 的 resumePoint 附着规则（SPEC §2.4/§17 resume）：
- * 仅 RUN_INTERRUPTED 的终态失败在清槽前记录恢复点（中断前状态、被中断
+ * 前台中断与 Claude 回合预算耗尽会在清槽前记录恢复点（失败前状态、对应
  * Task 与 Claude Session ID），其余错误一律 resumePoint=null。
  */
 import { describe, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import { createRedactor } from '../../src/adapters/redaction/redactor.js';
 import { toTerminalFailedRun } from '../../src/application/usecases/run-transitions.js';
 import { ApexError } from '../../src/domain/errors.js';
 import type { ActiveSession } from '../../src/domain/schemas/active-session.js';
-import { mkResult, mkRun, mkTaskState, OID_B, SHA256_A, T0, T1, UUID_1, UUID_2 } from '../domain/fixtures.js';
+import { mkErrorRecord, mkResult, mkRun, mkTaskState, OID_B, SHA256_A, T0, T1, UUID_1, UUID_2 } from '../domain/fixtures.js';
 
 const redaction = createRedactor();
 
@@ -17,6 +17,14 @@ function interrupted(): ApexError {
     code: 'RUN_INTERRUPTED',
     stage: 'execution',
     message: 'foreground interrupt requested',
+  });
+}
+
+function turnLimitReached(): ApexError {
+  return new ApexError({
+    code: 'CLAUDE_TURN_LIMIT_REACHED',
+    stage: 'execution',
+    message: 'claude reached the configured turn limit before completing the session',
   });
 }
 
@@ -74,6 +82,39 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
       taskId: null,
       sessionId: null,
       sessionType: null,
+    });
+  });
+
+  it('CLAUDE_TURN_LIMIT_REACHED keeps the failed Execution Session resumable', () => {
+    const failure = mkErrorRecord({
+      errorCode: 'CLAUDE_TURN_LIMIT_REACHED',
+      errorClass: 'claude_error',
+      message: 'claude reached the configured turn limit before completing the session',
+    });
+    const run = runningRunWithSession();
+    const terminal = toTerminalFailedRun(
+      {
+        ...run,
+        tasks: {
+          'TASK-001': mkTaskState('TASK-001', 'failed', { failure }),
+        },
+      },
+      turnLimitReached(),
+      T1,
+      redaction,
+    );
+
+    /**
+     * 硬预算仍让 Run 结束为 failed，但必须保留原 Session ID；后续只有用户
+     * 显式执行 resume 才会获得一份新的回合预算。
+     */
+    expect(terminal.status).toBe('failed');
+    expect(terminal.lastError?.errorCode).toBe('CLAUDE_TURN_LIMIT_REACHED');
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: UUID_1,
+      sessionType: 'execution',
     });
   });
 

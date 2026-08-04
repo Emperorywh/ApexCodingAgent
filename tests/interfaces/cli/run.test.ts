@@ -178,7 +178,7 @@ describe('runCli exit codes (§17)', () => {
     expect(stdout).toEqual([]);
   });
 
-  it('resume interrupted failure exits 130, resumable failure exits 1', async () => {
+  it('resume interrupted failure exits 130, turn-limit recovery exits 1', async () => {
     const interruptedRun = makeRunJson({
       status: 'failed',
       terminalAt: '2026-01-01T01:00:00Z',
@@ -191,15 +191,23 @@ describe('runCli exit codes (§17)', () => {
     expect(interrupted.stderr.join('\n')).toContain('已中断 · RUN_INTERRUPTED');
     expect(interrupted.stderr.join('\n')).not.toContain('失败 · RUN_INTERRUPTED');
 
-    const plainRun = makeRunJson({
+    const turnLimitedRun = makeRunJson({
       status: 'failed',
       terminalAt: '2026-01-01T01:00:00Z',
-      lastError: makeErrorRecord('CLAUDE_EXIT_NONZERO'),
+      lastError: makeErrorRecord('CLAUDE_TURN_LIMIT_REACHED'),
+      resumePoint: {
+        fromStatus: 'planning',
+        taskId: null,
+        sessionId: '123e4567-e89b-42d3-a456-426614174001',
+        sessionType: 'planning',
+      },
     });
-    const plain = makeRuntime({
-      resume: { execute: async () => ({ kind: 'failed', run: plainRun }) },
+    const turnLimited = makeRuntime({
+      resume: { execute: async () => ({ kind: 'failed', run: turnLimitedRun }) },
     });
-    expect(await runCli(['resume'], plain.runtime)).toBe(CLI_EXIT.runFailed);
+    expect(await runCli(['resume'], turnLimited.runtime)).toBe(CLI_EXIT.runFailed);
+    expect(turnLimited.stderr.join('\n')).toContain('CLAUDE_TURN_LIMIT_REACHED');
+    expect(turnLimited.stderr.join('\n')).toContain('恢复 ApexCodingAgent resume');
   });
 
   it('resume command failures exit 4, startup validation failures exit 3', async () => {
@@ -334,13 +342,21 @@ describe('runCli exit codes (§17)', () => {
     expect(fake.disposed).toHaveLength(1); // 信号处理随 start 结束解除
   });
 
-  it('status without run.json exits 4 with RUN_NOT_FOUND', async () => {
+  it('status without run.json exits 4 and identifies the repository that was checked', async () => {
     const { runtime, stderr } = makeRuntime({
-      status: { execute: async () => null },
+      status: {
+        execute: async () => ({ kind: 'not_found', repositoryRoot: 'C:/wrong-repository' }),
+      },
     });
     const code = await runCli(['status'], runtime);
     expect(code).toBe(CLI_EXIT.command);
     expect(stderr.join('\n')).toContain('RUN_NOT_FOUND');
+    /**
+     * 回归保护真实故障场景：用户在另一个 Git 仓库执行 status 时，诊断必须
+     * 同时给出实际查询根与切换指引，不能再只报告抽象的 run.json 缺失。
+     */
+    expect(stderr.join('\n')).toContain('C:/wrong-repository');
+    expect(stderr.join('\n')).toContain('请切换到目标 Run 所在的仓库后重试');
   });
 
   it('status keeps STATE_SNAPSHOT_BUSY stable (AC-029)', async () => {

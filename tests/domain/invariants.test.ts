@@ -204,6 +204,23 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
     expect(() => assertRunInvariants(failedWithPoint(), { tasks: [mkTask('TASK-001')] })).not.toThrow();
   });
 
+  it('accepts a resumePoint when an Execution Session reaches its configured turn limit', () => {
+    const failure = mkErrorRecord({
+      errorCode: 'CLAUDE_TURN_LIMIT_REACHED',
+      errorClass: 'claude_error',
+      message: 'claude reached the configured turn limit before completing the session',
+    });
+    const run = failedWithPoint({
+      lastError: failure,
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'failed', { failure }),
+      },
+    });
+
+    expect(() => assertRunJsonRules(run)).not.toThrow();
+    expect(() => assertRunInvariants(run, { tasks: [mkTask('TASK-001')] })).not.toThrow();
+  });
+
   it('rejects resumePoint on non-failed or differently-failed runs', () => {
     expectApexError(
       () =>

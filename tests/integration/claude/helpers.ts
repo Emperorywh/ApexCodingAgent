@@ -110,27 +110,26 @@ export async function createFakeClaudeHarness(): Promise<FakeClaudeHarness> {
   };
 }
 
-/** 把 Fake CLI 指向当前测试文件，并返回恢复环境变量的函数。 */
-export function activateHarness(harness: FakeClaudeHarness): () => void {
-  const savedScenario = process.env['APEX_FAKE_CLAUDE_SCENARIO'];
-  const savedRecord = process.env['APEX_FAKE_CLAUDE_RECORD'];
-  process.env['APEX_FAKE_CLAUDE_SCENARIO'] = harness.scenarioPath;
-  process.env['APEX_FAKE_CLAUDE_RECORD'] = harness.recordPath;
-  return () => {
-    if (savedScenario === undefined) delete process.env['APEX_FAKE_CLAUDE_SCENARIO'];
-    else process.env['APEX_FAKE_CLAUDE_SCENARIO'] = savedScenario;
-    if (savedRecord === undefined) delete process.env['APEX_FAKE_CLAUDE_RECORD'];
-    else process.env['APEX_FAKE_CLAUDE_RECORD'] = savedRecord;
+/**
+ * 为单个 Fake Claude Harness 构造不可变的子进程环境覆盖。
+ * 调用方把它绑定到独立执行器，测试之间不再读写 Worker 级 process.env。
+ */
+export function fakeClaudeEnvironment(
+  harness: FakeClaudeHarness,
+): Readonly<Record<string, string>> {
+  return {
+    APEX_FAKE_CLAUDE_SCENARIO: harness.scenarioPath,
+    APEX_FAKE_CLAUDE_RECORD: harness.recordPath,
   };
 }
 
-export function makeRuntime(options?: {
+export function makeRuntime(harness: FakeClaudeHarness, options?: {
   readonly claudePath?: string;
   readonly fileSystem?: FileSystemPort;
 }): ClaudeRuntimePort {
   return createClaudeRuntime({
     claudePath: options?.claudePath ?? FAKE_CLAUDE_PATH,
-    processExecutor: createTestProcessExecutor(),
+    processExecutor: createTestProcessExecutor(fakeClaudeEnvironment(harness)),
     fileSystem: options?.fileSystem ?? createNodeFileSystem(),
     redaction: createRedactor(),
     probeTimeoutMs: 15_000,

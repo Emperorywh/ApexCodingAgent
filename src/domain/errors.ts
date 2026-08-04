@@ -59,6 +59,7 @@ export const ERROR_CODE_TO_CLASS = {
   // claude_error
   CLAUDE_START_FAILED: 'claude_error',
   CLAUDE_EXIT_NONZERO: 'claude_error',
+  CLAUDE_TURN_LIMIT_REACHED: 'claude_error',
   CLAUDE_STREAM_FAILED: 'claude_error',
   CLAUDE_RESUME_UNAVAILABLE: 'claude_error',
   CLAUDE_RESULT_INVALID: 'claude_error',
@@ -117,6 +118,17 @@ export const ERROR_CODES = Object.keys(ERROR_CODE_TO_CLASS) as ErrorCode[];
 
 export function errorClassForCode(code: ErrorCode): ErrorClass {
   return ERROR_CODE_TO_CLASS[code];
+}
+
+/**
+ * 判断终态失败是否携带可由 `resume` 消费的确定性恢复点。
+ *
+ * 前台中断与 Claude 回合预算耗尽都会保留完整 Session transcript；前者是
+ * 用户控制边界，后者是计划预算边界。两者都必须由用户显式恢复，不能在
+ * 运行中暗自追加预算或重试外部调用。
+ */
+export function isResumableErrorCode(code: ErrorCode): boolean {
+  return code === 'RUN_INTERRUPTED' || code === 'CLAUDE_TURN_LIMIT_REACHED';
 }
 
 export interface ApexErrorInit {

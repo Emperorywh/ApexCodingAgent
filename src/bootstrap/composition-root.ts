@@ -216,9 +216,15 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
     async execute() {
       const deps = await createRepositoryCommandDeps();
       const snapshot = await deps.stateStore.readConsistentSnapshot();
-      if (snapshot === null) return null;
+      /**
+       * 空状态不能丢弃仓库定位事实。显式返回 not_found 结果，让 CLI 能指出
+       * 实际查询的仓库，同时保持跨仓库搜索、提示文案等展示决策不进入组合根。
+       */
+      if (snapshot === null) {
+        return { kind: 'not_found', repositoryRoot: deps.repositoryRoot };
+      }
       const git = await deps.git.readRepositoryStatus(deps.repositoryRoot);
-      return { snapshot, git };
+      return { kind: 'found', snapshot, git };
     },
   };
   const report: CliRuntime['report'] = {

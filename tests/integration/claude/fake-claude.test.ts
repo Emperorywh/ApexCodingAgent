@@ -20,9 +20,9 @@ import { getSchemaJson } from '../../../src/domain/schemas/index.js';
 import type { TaskPlanDraft } from '../../../src/domain/schemas/task-plan-draft.js';
 import { expectApexErrorAsync } from '../../adapters/fixtures.js';
 import {
-  activateHarness,
   COMPLETE_HELP,
   createFakeClaudeHarness,
+  fakeClaudeEnvironment,
   FAKE_CAPABILITY_REPORT,
   FAKE_CLAUDE_PATH,
   FAKE_VERSION,
@@ -56,17 +56,18 @@ function parseSessionLog(text: string): Record<string, unknown>[] {
 }
 
 let harness: FakeClaudeHarness;
-let restoreHarnessEnv: () => void;
 let runtime: ClaudeRuntimePort;
 
 beforeEach(async () => {
   harness = await createFakeClaudeHarness();
-  restoreHarnessEnv = activateHarness(harness);
-  runtime = makeRuntime();
+  runtime = makeRuntime(harness);
 });
 
 afterEach(async () => {
-  restoreHarnessEnv();
+  /**
+   * Provider 继承测试仍会显式修改父进程环境，因此只恢复这些用例自己的事实。
+   * Fake CLI 场景已绑定到执行器实例，不再需要全局恢复步骤。
+   */
   delete process.env['APEX_G4_VISIBLE'];
   delete process.env['APEX_G4_TOKEN'];
   delete process.env['ANTHROPIC_BASE_URL'];
@@ -711,7 +712,9 @@ describe('failure handling (SPEC §9.6)', () => {
   }, TEST_TIMEOUT);
 
   it('a missing executable maps to CLAUDE_START_FAILED with a null process exit code', async () => {
-    const broken = makeRuntime({ claudePath: join(harness.root, 'no-such-claude.exe') });
+    const broken = makeRuntime(harness, {
+      claudePath: join(harness.root, 'no-such-claude.exe'),
+    });
     const error = await expectApexErrorAsync(
       () => broken.invoke(mkRequest(harness)),
       'CLAUDE_START_FAILED',
@@ -740,7 +743,7 @@ describe('failure handling (SPEC §9.6)', () => {
         return base.writeFile(path, data);
       },
     };
-    const failingRuntime = makeRuntime({ fileSystem: failingFileSystem });
+    const failingRuntime = makeRuntime(harness, { fileSystem: failingFileSystem });
     await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('execution') });
     const error = await expectApexErrorAsync(
       () => failingRuntime.invoke(mkRequest(harness)),
@@ -784,21 +787,21 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     await writeFile(join(harness.root, 'claude.cmd'), `"${FAKE_CLAUDE_PATH}"   %*\r\n`, 'utf8');
     const pathKey =
       Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
-    const savedPath = process.env[pathKey];
-    process.env[pathKey] = `${harness.root};${savedPath ?? ''}`;
-    try {
-      const shimmedRuntime = createClaudeRuntime({
-        processExecutor: createTestProcessExecutor(),
-        fileSystem: createNodeFileSystem(),
-        redaction: createRedactor(),
-        probeTimeoutMs: 15_000,
-      });
-      const report = await shimmedRuntime.probeCapabilities();
-      expect(report.version).toBe(FAKE_VERSION);
-      expect(report.capabilities).toHaveLength(10);
-    } finally {
-      if (savedPath === undefined) delete process.env[pathKey];
-      else process.env[pathKey] = savedPath;
-    }
+    /**
+     * PATH 与 Fake CLI 场景使用同一个执行器级环境快照。
+     * 这同时验证 Windows 命令解析和实际子进程观察到完全一致的覆盖值。
+     */
+    const shimmedRuntime = createClaudeRuntime({
+      processExecutor: createTestProcessExecutor({
+        ...fakeClaudeEnvironment(harness),
+        [pathKey]: `${harness.root};${process.env[pathKey] ?? ''}`,
+      }),
+      fileSystem: createNodeFileSystem(),
+      redaction: createRedactor(),
+      probeTimeoutMs: 15_000,
+    });
+    const report = await shimmedRuntime.probeCapabilities();
+    expect(report.version).toBe(FAKE_VERSION);
+    expect(report.capabilities).toHaveLength(10);
   }, TEST_TIMEOUT);
 });

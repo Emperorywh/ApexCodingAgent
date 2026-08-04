@@ -1,8 +1,8 @@
 /**
  * Claude CLI 外部失败到稳定错误码的唯一映射点。其他模块不得解释进程
  * 结果、原始流事件或能力探测输出；Provider、鉴权、网络、代理和额度
- * 失败统一收敛为 CLAUDE_EXIT_NONZERO。只有续接尚未开始时的明确
- * transcript 缺失诊断映射为 CLAUDE_RESUME_UNAVAILABLE。
+ * 失败统一收敛为 CLAUDE_EXIT_NONZERO。只有 ResultMessage 明确给出的
+ * 回合上限与续接尚未开始时的 transcript 缺失诊断使用专用错误码。
  */
 import type { ApexErrorInit } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
@@ -88,6 +88,31 @@ export function claudeExitNonZero(
     ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
     facts: { processExitCode: exitCode, claudeVersion: options.claudeVersion ?? null },
   });
+}
+
+/**
+ * Claude ResultMessage 明确报告 `error_max_turns`。
+ *
+ * 这是配置预算按预期生效，不是 Provider、鉴权或网络故障；调用方可以保存
+ * Session ID 供用户显式续接，但不能在同一次 Run 驱动中自动追加预算。
+ */
+export function claudeTurnLimitReached(
+  stage: SessionType,
+  exitCode: number,
+  stderr: string,
+  redact: (text: string) => string,
+  options: { readonly sessionId?: string; readonly claudeVersion?: string | null },
+): ClaudeInvocationError {
+  return invocationError(
+    'CLAUDE_TURN_LIMIT_REACHED',
+    'claude reached the configured turn limit before completing the session',
+    {
+      stage,
+      toolSummary: summarizeStderr(stderr, redact),
+      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+      facts: { processExitCode: exitCode, claudeVersion: options.claudeVersion ?? null },
+    },
+  );
 }
 
 /**

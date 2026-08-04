@@ -110,7 +110,7 @@ ApexCodingAgent start
 
 ApexCodingAgent 会在当前目录及其子目录内自动找到唯一的 `SPEC.md` 并开始工作。运行期间请保持这个终端窗口开启。
 
-Planning 会为每个 Task 明确写出 `objective`、`nonGoals`、可判定的 `acceptanceCriteria`、逐条关联验收条件的结构化 `verificationPlan`，以及注意力 `budget`。默认目标上下文不超过 24 万 token，30 万 token 是硬边界；Execution 的 Claude 回合数也会被 Task 的 `maxAgentTurns` 实际限制。范围明显无法在预算内闭环的工作必须继续拆分，而不是依赖 100 万 token 窗口硬撑。
+Planning 会为每个 Task 明确写出 `objective`、`nonGoals`、可判定的 `acceptanceCriteria`、逐条关联验收条件的结构化 `verificationPlan`，以及注意力 `budget`。默认目标上下文不超过 24 万 token，30 万 token 是硬边界；Execution 的 Claude 回合数也会被 Task 的 `maxAgentTurns` 实际限制。范围明显无法在预算内闭环的工作必须继续拆分，而不是依赖 100 万 token 窗口硬撑。若 Claude 在返回结果前耗尽该回合预算，Run 会以 `CLAUDE_TURN_LIMIT_REACHED` 结束并保留恢复点，不会自动追加预算。
 
 计划不会由 Planner 自己直接提交。每份候选草稿都会先保存到不可变的 Planning Session Record，再交给一个全新的、严格只读的 Plan Review Session，从 SPEC、仓库架构、任务边界、验证覆盖和预算可完成性独立复核。只有 Reviewer 逐个批准全部 Task，Plan Revision 才会提交；`changes_required` 会把结构化问题送回下一趟 Planning，连续三次仍无法通过则响亮失败。
 
@@ -150,13 +150,13 @@ ApexCodingAgent report
 
 ### 5. 中断与恢复
 
-运行期间按一次 `Ctrl+C` 会安全结束当前任务并将其标记为失败，但会记录恢复点。之后在项目目录中运行：
+运行期间按一次 `Ctrl+C` 会安全结束当前任务并将其标记为失败，但会记录恢复点。Claude 达到 Task 的 `maxAgentTurns` 上限时也会记录同类恢复点。之后在项目目录中运行：
 
 ```powershell
 ApexCodingAgent resume
 ```
 
-即可从中断的步骤继续，已经完成的步骤不会重做；Planning、独立 Plan Review、Execution、独立 Task Review 或最终检查中断时，都会只续接被中断阶段自己的 Claude 对话。Plan Review 不会续接 Planner 对话，Task Review 也不会续接对应的 Execution 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
+即可从中断或回合预算边界继续，已经完成的步骤不会重做；Planning、独立 Plan Review、Execution、独立 Task Review 或最终检查中断时，都会只续接对应阶段自己的 Claude 对话。Plan Review 不会续接 Planner 对话，Task Review 也不会续接对应的 Execution 对话。如果原任务使用了 `--full-access`，恢复时也需要加上同一个选项。
 
 如果程序不是通过 `Ctrl+C` 正常结束（例如直接关闭了终端），任务会停在"正在运行"的状态。前台运行每 5 秒会写入一次存活信号（`heartbeat.json`），进程消失后信号停止更新——超过 30 秒未更新即判定旧进程已崩溃，此时直接运行 `resume` 即可自动接管（无需 `--force`），`start` 也会给出同样的提示；信号仍在更新、缺失或不可读时才需要 `resume --force` 接管，执行前请先确认没有旧的 ApexCodingAgent 或 Claude 进程仍在工作。
 
@@ -191,7 +191,7 @@ ApexCodingAgent start --verbose
 | `ApexCodingAgent start <文件路径>` | 使用指定的需求文档开始任务 |
 | `ApexCodingAgent start --verbose` | 开始任务，并把调试日志同步输出到终端 |
 | `ApexCodingAgent start --push-remote <名称>` | 指定自动推送目标（默认 `origin`） |
-| `ApexCodingAgent resume` | 从中断点继续一个被中断的任务（不重做已完成步骤）；旧进程已崩溃的残留任务自动接管 |
+| `ApexCodingAgent resume` | 从中断或回合预算边界继续任务（不重做已完成步骤）；旧进程已崩溃的残留任务自动接管 |
 | `ApexCodingAgent resume --force` | 旧进程可能仍在运行时，人工确认后接管残留的任务 |
 | `ApexCodingAgent status` | 查看当前进度或失败原因 |
 | `ApexCodingAgent report` | 重新生成最终报告 |

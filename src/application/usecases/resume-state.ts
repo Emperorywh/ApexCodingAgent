@@ -131,7 +131,8 @@ export function classifyResumeRun(
         message:
           run.status === 'failed'
             ? `run ${run.runId} failed with ${run.lastError?.errorCode ?? 'unknown'}; ` +
-              'only RUN_INTERRUPTED failures can be resumed — use abandon --force and start a new run'
+              'only failures with a persisted resume point can be resumed — ' +
+              'use abandon --force and start a new run'
             : `run ${run.runId} is already terminal (${run.status}); nothing to resume`,
       });
     }

@@ -7,9 +7,10 @@
  *
  * 确定性失败顺序保持 SPEC §7.2 不变：
  * 1. 非空行不是 JSON 对象时返回 CLAUDE_STREAM_FAILED；
- * 2. 非零或信号退出时返回 CLAUDE_EXIT_NONZERO；
- * 3. Session ID 冲突、result 缺失或重复时返回结果非法；
- * 4. structured_output 缺失或 Schema 非法时返回结果非法。
+ * 2. 唯一 ResultMessage 明确报告 `error_max_turns` 时返回专用预算错误；
+ * 3. 其余非零或信号退出时返回 CLAUDE_EXIT_NONZERO；
+ * 4. Session ID 冲突、result 缺失或重复时返回结果非法；
+ * 5. structured_output 缺失或 Schema 非法时返回结果非法。
  */
 
 import type {
@@ -24,6 +25,7 @@ import {
   claudeExitNonZero,
   claudeResultInvalid,
   claudeStreamFailed,
+  claudeTurnLimitReached,
   summarizeStderr,
   type ClaudeProcessFacts,
 } from './errors.js';
@@ -47,6 +49,8 @@ export interface CollectedClaudeStream {
   readonly hasContent: boolean;
   readonly sessionIdConflict: boolean;
   readonly terminalEventCount: number;
+  /** 唯一终止事件的 subtype；重复事件时仅保留首个值且不得据此特殊分类。 */
+  readonly terminalSubtype: string | null;
   readonly terminalHasStructuredOutput: boolean;
   readonly structuredOutput: unknown;
   readonly model: string | null;
@@ -294,6 +298,7 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   let parseFailure: StreamParseFailure | null = null;
   let sessionIdConflict = false;
   let terminalEventCount = 0;
+  let terminalSubtype: string | null = null;
   let terminalHasStructuredOutput = false;
   let structuredOutput: unknown;
   let model: string | null = null;
@@ -335,9 +340,12 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
     }
     if (event['type'] === 'result') {
       terminalEventCount += 1;
-      if (terminalEventCount === 1 && 'structured_output' in event) {
-        terminalHasStructuredOutput = true;
-        structuredOutput = event['structured_output'];
+      if (terminalEventCount === 1) {
+        terminalSubtype = typeof event['subtype'] === 'string' ? event['subtype'] : null;
+        if ('structured_output' in event) {
+          terminalHasStructuredOutput = true;
+          structuredOutput = event['structured_output'];
+        }
       }
     }
     const descriptions = describeStreamEvent(event);
@@ -423,6 +431,7 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
           hasContent,
           sessionIdConflict,
           terminalEventCount,
+          terminalSubtype,
           terminalHasStructuredOutput,
           structuredOutput,
           model,
@@ -464,6 +473,28 @@ export function evaluateCollectedStreamOutcome<T extends SessionType>(
     );
   }
   if (input.exitCode !== 0) {
+    /**
+     * ResultMessage.subtype 是 Claude Agent SDK 公开的终止状态主判据。
+     * 只有单一、Session ID 一致的正式终止事件才能把非零退出细分为预算
+     * 耗尽；流冲突、重复 result 与无事件退出仍保持原有失败语义。
+     */
+    if (
+      typeof input.exitCode === 'number' &&
+      input.stream.terminalEventCount === 1 &&
+      !input.stream.sessionIdConflict &&
+      input.stream.terminalSubtype === 'error_max_turns'
+    ) {
+      throw claudeTurnLimitReached(
+        input.sessionType,
+        input.exitCode,
+        input.stderr,
+        input.redact,
+        {
+          sessionId: input.sessionId,
+          claudeVersion: input.claudeVersion,
+        },
+      );
+    }
     throw claudeExitNonZero(input.sessionType, input.exitCode, input.stderr, input.redact, {
       sessionId: input.sessionId,
       claudeVersion: input.claudeVersion,

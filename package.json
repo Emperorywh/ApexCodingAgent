@@ -1,6 +1,6 @@
 {
   "name": "apex-coding-agent",
-  "version": "2.0.19",
+  "version": "2.0.20",
   "description": "Long-running coding agent orchestrator around Claude Code (SPEC v4.1.1)",
   "keywords": [
     "claude-code",

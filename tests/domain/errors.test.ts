@@ -46,6 +46,7 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
   claude_error: [
     'CLAUDE_START_FAILED',
     'CLAUDE_EXIT_NONZERO',
+    'CLAUDE_TURN_LIMIT_REACHED',
     'CLAUDE_STREAM_FAILED',
     'CLAUDE_RESUME_UNAVAILABLE',
     'CLAUDE_RESULT_INVALID',
@@ -88,8 +89,8 @@ const EXPECTED_TABLE: Record<ErrorClass, readonly ErrorCode[]> = {
 };
 
 describe('error model (§15)', () => {
-  it('defines exactly 61 stable error codes and 9 error classes', () => {
-    expect(ERROR_CODES).toHaveLength(61);
+  it('defines exactly 62 stable error codes and 9 error classes', () => {
+    expect(ERROR_CODES).toHaveLength(62);
     expect(ERROR_CLASSES).toHaveLength(9);
   });
 
@@ -104,7 +105,7 @@ describe('error model (§15)', () => {
 
   it('covers every expected code exactly once', () => {
     const allExpected = Object.values(EXPECTED_TABLE).flat();
-    expect(allExpected).toHaveLength(61);
+    expect(allExpected).toHaveLength(62);
     expect([...ERROR_CODES].sort()).toEqual([...allExpected].sort());
   });
 

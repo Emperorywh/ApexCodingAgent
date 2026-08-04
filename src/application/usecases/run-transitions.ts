@@ -11,7 +11,7 @@ import {
   closeFinalReviewEpisode,
   closeTaskReviewEpisode,
 } from '../../domain/episodes.js';
-import type { ApexError } from '../../domain/errors.js';
+import { isResumableErrorCode, type ApexError } from '../../domain/errors.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { RedactionPort } from '../ports/redaction.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
@@ -28,11 +28,10 @@ function redactedSummary(error: ApexError, redaction: RedactionPort): string {
  * activeSession/currentTaskId、lastError、terminalAt=updatedAt=at、
  * stateRevision+1。
  *
- * RUN_INTERRUPTED 时在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：
- * 中断前状态、被中断 Task 与 Claude Session ID，供 resume 命令重开 Run
- * 并续接被中断的 Planning、Plan Review、Execution、Task Review 或 Final Review
- * 会话；其余错误
- * 一律 resumePoint=null。
+ * 可续接失败在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：中断前状态、
+ * 被中断 Task 与 Claude Session ID，供 resume 命令重开 Run 并续接对应的
+ * Planning、Plan Review、Execution、Task Review 或 Final Review 会话。
+ * 普通外部失败一律 resumePoint=null，绝不自动重试。
  *
  * 中断落在「候选已持久化、Reviewer 尚未启动」的窗口时（无 activeSession
  * 但当前 Task 仍 running 且带候选）：被中断 Task 转 failed 并保留候选，
@@ -47,7 +46,7 @@ export function toTerminalFailedRun(
 ): RunJson {
   const currentTask = run.currentTaskId === null ? undefined : run.tasks[run.currentTaskId];
   const awaitingReviewTaskId =
-    error.errorCode === 'RUN_INTERRUPTED' &&
+    isResumableErrorCode(error.errorCode) &&
     !isTerminalRunStatus(run.status) &&
     run.activeSession === null &&
     run.currentTaskId !== null &&
@@ -68,7 +67,7 @@ export function toTerminalFailedRun(
             failure: toErrorRecord(error, at, redaction),
           },
         };
-  const preservePlanningFacts = error.errorCode === 'RUN_INTERRUPTED';
+  const preservePlanningFacts = isResumableErrorCode(error.errorCode);
   return {
     ...run,
     status: applyRunEvent(run.status, 'RUN_ERROR'),
@@ -82,7 +81,7 @@ export function toTerminalFailedRun(
     updatedAt: at,
     stateRevision: run.stateRevision + 1,
     resumePoint:
-      error.errorCode === 'RUN_INTERRUPTED' && !isTerminalRunStatus(run.status)
+      isResumableErrorCode(error.errorCode) && !isTerminalRunStatus(run.status)
         ? {
             fromStatus: run.status,
             taskId: run.currentTaskId,

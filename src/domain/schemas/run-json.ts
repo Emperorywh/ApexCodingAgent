@@ -92,8 +92,8 @@ export interface PlanReviewFeedbackRef {
 }
 
 /**
- * RUN_INTERRUPTED 终态失败时记录的恢复点（SPEC §2.4/§17 resume）：中断前
- * 的非终态状态、被中断的 Task 与 Claude Session（后者供 resume 命令经
+ * 可续接终态失败时记录的恢复点（SPEC §2.4/§17 resume）：失败前的非终态
+ * 状态、对应 Task 与 Claude Session（后者供 resume 命令经
  * `--resume --fork-session` 续接对话上下文）。仅 `resume` 命令消费；
  * 其余失败终态恒为 null。
  */

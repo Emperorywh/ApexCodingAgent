@@ -9,6 +9,7 @@
  * CLI 失败同时输出稳定 errorCode（经脱敏），绝不透传工具原始退出码。
  */
 import { ApexError, isApexError } from '../../domain/errors.js';
+import type { RunJson } from '../../domain/schemas/run-json.js';
 import { parseCliArgs, type CliCommand } from './args.js';
 import { HELP_TEXT } from './help.js';
 import { renderStatus } from './status-render.js';
@@ -67,6 +68,17 @@ function printRunFailed(
 }
 
 /**
+ * 终态失败只有在领域层持久化了恢复点时才展示续接命令。
+ *
+ * 这同时覆盖用户中断和 Claude 回合预算耗尽；普通进程、鉴权、网络与额度
+ * 失败没有恢复点，因此不会得到误导性的重试提示。
+ */
+function printRunResumeHint(runtime: CliRuntime, run: Pick<RunJson, 'resumePoint'>): void {
+  if (run.resumePoint === null) return;
+  runtime.stderr(runtime.redaction.redactText('  恢复 ApexCodingAgent resume'));
+}
+
+/**
  * 仓库级命令的错误边界（SPEC §15.2、G6 退出码矩阵）。
  *
  * 已有 command_error 保留其精确稳定码；适配器的 startup/git/state 等
@@ -115,11 +127,9 @@ async function runStart(
     if (result.kind === 'failed') {
       const lastError = result.run.lastError;
       printRunFailed(runtime, result.run.runId, lastError);
+      printRunResumeHint(runtime, result.run);
       // §17：中断导致 Run 持久化为 failed 时退出码 130，优先于 1。
       if (lastError?.errorCode === 'RUN_INTERRUPTED') {
-        runtime.stderr(
-          runtime.redaction.redactText('  恢复 ApexCodingAgent resume'),
-        );
         return CLI_EXIT.interrupted;
       }
       return CLI_EXIT.runFailed;
@@ -167,10 +177,8 @@ async function runResume(
     if (result.kind === 'failed') {
       const lastError = result.run.lastError;
       printRunFailed(runtime, result.run.runId, lastError);
+      printRunResumeHint(runtime, result.run);
       if (lastError?.errorCode === 'RUN_INTERRUPTED') {
-        runtime.stderr(
-          runtime.redaction.redactText('  恢复 ApexCodingAgent resume'),
-        );
         return CLI_EXIT.interrupted;
       }
       return CLI_EXIT.runFailed;
@@ -211,11 +219,17 @@ async function runStatus(runtime: CliRuntime): Promise<number> {
       }
       throw error;
     }
-    if (result === null) {
+    /**
+     * status 严格限定在当前 Git 仓库内，不跨目录猜测其他 Run。未找到时把组合根
+     * 已解析出的仓库根带入诊断，直接消除“状态丢失”和“查错仓库”的歧义。
+     */
+    if (result.kind === 'not_found') {
       throw new ApexError({
         code: 'RUN_NOT_FOUND',
         stage: 'status',
-        message: 'no run.json exists; nothing to show',
+        message:
+          `仓库 ${result.repositoryRoot} 中不存在 .apex-coding-agent/run.json；` +
+          '请切换到目标 Run 所在的仓库后重试',
       });
     }
     for (const line of renderStatus(result.snapshot, result.git)) {

@@ -76,6 +76,47 @@ describe('createExecaProcessExecutor', () => {
     expect(outcome).toMatchObject({ kind: 'exited', code: 7 });
   });
 
+  it('applies executor-scoped environment without mutating the parent process', async () => {
+    const variableName = 'APEX_EXECUTOR_SCOPED_VALUE';
+    const parentValue = process.env[variableName];
+
+    /**
+     * 两个执行器刻意并发启动并使用不同覆盖值。
+     * 子进程输出发生在事件循环后，确保生命周期真实重叠而非顺序碰巧通过。
+     */
+    const executeWithValue = (value: string) =>
+      createExecaProcessExecutor({
+        environmentOverrides: { [variableName]: value },
+      }).execute({
+        command: process.execPath,
+        args: [
+          '-e',
+          `setTimeout(() => process.stdout.write(process.env.${variableName} ?? ''), 50)`,
+        ],
+        collectOutput: true,
+      });
+    const [first, second] = await Promise.all([
+      executeWithValue('isolated-child-one'),
+      executeWithValue('isolated-child-two'),
+    ]);
+
+    /**
+     * 覆盖值必须只进入本执行器创建的子进程。
+     * 父进程保持原值，证明并行测试之间不存在可被迟到 cleanup 改写的共享槽位。
+     */
+    expect(first).toMatchObject({
+      kind: 'exited',
+      code: 0,
+      stdout: 'isolated-child-one',
+    });
+    expect(second).toMatchObject({
+      kind: 'exited',
+      code: 0,
+      stdout: 'isolated-child-two',
+    });
+    expect(process.env[variableName]).toBe(parentValue);
+  });
+
   it('streams long output without returning a second collected copy', async () => {
     let receivedBytes = 0;
     const outputSize = 1024 * 1024;

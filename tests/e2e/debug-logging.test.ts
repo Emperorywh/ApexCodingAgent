@@ -21,6 +21,12 @@ const ONE_TASK = {
   ],
 } as const;
 
+/**
+ * 该文件会完整经过能力探测、五类 Session 与多次真实 Git 子进程。
+ * Windows 全量并发时沿用 E2E 套件的统一预算，避免把资源竞争误判为业务超时。
+ */
+const E2E_TIMEOUT = 180_000;
+
 describe('e2e debug logging', () => {
   it('completed run 落盘结构化调试日志并输出阶段行；默认不镜像', async () => {
     const harness = await createE2EHarness();
@@ -62,7 +68,7 @@ describe('e2e debug logging', () => {
     } finally {
       await harness.cleanup();
     }
-  }, 60_000);
+  }, E2E_TIMEOUT);
 
   it('verbose=true 时调试日志行同步镜像', async () => {
     const harness = await createE2EHarness();
@@ -77,5 +83,5 @@ describe('e2e debug logging', () => {
     } finally {
       await harness.cleanup();
     }
-  }, 60_000);
+  }, E2E_TIMEOUT);
 });

@@ -14,6 +14,13 @@ import { parseCliArgs, type CliCommand } from './args.js';
 import { HELP_TEXT } from './help.js';
 import { renderStatus } from './status-render.js';
 import type { CliRuntime } from './runtime.js';
+import {
+  renderCommandError,
+  renderCommandHeader,
+  renderCommandSuccess,
+  renderRunCommandFailure,
+  type ExecutableCommandKind,
+} from './command-presentation.js';
 
 export const CLI_EXIT = {
   ok: 0,
@@ -24,19 +31,27 @@ export const CLI_EXIT = {
   interrupted: 130,
 } as const;
 
-function printError(runtime: CliRuntime, error: ApexError): void {
-  /*
-   * 错误摘要按“结论 → 分类 → 原因”分层输出。
-   * 稳定 errorCode 保持在首行便于搜索，动态详情逐行脱敏，避免单个超长句
-   * 同时承担用户提示和机器诊断两种职责。
-   */
-  for (const line of [
-    `✗ 命令失败 · ${error.errorCode}`,
-    `  类型 ${error.errorClass} · 阶段 ${error.stage}`,
-    `  原因 ${error.message}`,
-  ]) {
-    runtime.stderr(runtime.redaction.redactText(line));
+/** 所有命令级文本逐行脱敏后写入指定 Sink。 */
+function printLines(
+  runtime: CliRuntime,
+  sink: 'stdout' | 'stderr',
+  lines: readonly string[],
+): void {
+  for (const line of lines) {
+    runtime[sink](runtime.redaction.redactText(line));
   }
+}
+
+function printError(
+  runtime: CliRuntime,
+  kind: ExecutableCommandKind | null,
+  error: ApexError,
+): void {
+  /*
+   * 命令失败同样经过统一终态呈现模型；稳定 errorCode 保持在标题行，
+   * 分类、阶段与原因作为次级事实，不再由每个命令独立拼接。
+   */
+  printLines(runtime, 'stderr', renderCommandError(kind, error));
 }
 
 /**
@@ -47,24 +62,19 @@ function printError(runtime: CliRuntime, error: ApexError): void {
  */
 function printRunFailed(
   runtime: CliRuntime,
+  kind: 'start' | 'resume',
   runId: string,
   error: Pick<ApexError, 'errorCode' | 'stage' | 'message'> | null,
 ): void {
-  const errorCode = error?.errorCode ?? 'unknown';
   /*
-   * RUN_INTERRUPTED 的持久化状态仍是 failed，但用户主动中断不是执行缺陷。
-   * 这里只改变展示语义，不引入新的领域状态或改变既有恢复协议。
+   * RUN_INTERRUPTED 的持久化状态仍是 failed；呈现模型只改变用户语义，
+   * 不引入领域状态。Run ID 与失败阶段来自同一次用例返回值。
    */
-  const heading =
-    errorCode === 'RUN_INTERRUPTED'
-      ? `◇ Run ${runId} 已中断 · ${errorCode}`
-      : `✗ Run ${runId} 失败 · ${errorCode}`;
-  runtime.stderr(runtime.redaction.redactText(heading));
-  if (error !== null) {
-    runtime.stderr(
-      runtime.redaction.redactText(`  阶段 ${error.stage} · 原因 ${error.message}`),
-    );
-  }
+  printLines(
+    runtime,
+    'stderr',
+    renderRunCommandFailure({ kind, runId, error }),
+  );
 }
 
 /**
@@ -121,15 +131,12 @@ async function runStart(
       environment: runtime.environment,
     });
     if (result.kind === 'completed') {
-      /*
-       * RunDriver 已在最终状态提交后输出唯一成功摘要。
-       * CLI 这里只映射退出码，避免同一个完成事实连续打印两次。
-       */
+      printLines(runtime, 'stdout', renderCommandSuccess({ kind: 'start', run: result.run }));
       return CLI_EXIT.ok;
     }
     if (result.kind === 'failed') {
       const lastError = result.run.lastError;
-      printRunFailed(runtime, result.run.runId, lastError);
+      printRunFailed(runtime, 'start', result.run.runId, lastError);
       printRunResumeHint(runtime, result.run);
       // §17：中断导致 Run 持久化为 failed 时退出码 130，优先于 1。
       if (lastError?.errorCode === 'RUN_INTERRUPTED') {
@@ -137,7 +144,7 @@ async function runStart(
       }
       return CLI_EXIT.runFailed;
     }
-    printError(runtime, result.error);
+    printError(runtime, 'start', result.error);
     return CLI_EXIT.startup;
   } catch (error) {
     // StartRun 已尽力持久化失败事实；这里只兜底表面化稳定码。
@@ -149,7 +156,7 @@ async function runStart(
           message: error instanceof Error ? error.message : String(error),
           cause: error,
         });
-    printError(runtime, apex);
+    printError(runtime, 'start', apex);
     return apex.errorClass === 'startup_validation' ? CLI_EXIT.startup : CLI_EXIT.runFailed;
   } finally {
     disposeSignals();
@@ -175,18 +182,19 @@ async function runResume(
       environment: runtime.environment,
     });
     if (result.kind === 'completed') {
+      printLines(runtime, 'stdout', renderCommandSuccess({ kind: 'resume', run: result.run }));
       return CLI_EXIT.ok;
     }
     if (result.kind === 'failed') {
       const lastError = result.run.lastError;
-      printRunFailed(runtime, result.run.runId, lastError);
+      printRunFailed(runtime, 'resume', result.run.runId, lastError);
       printRunResumeHint(runtime, result.run);
       if (lastError?.errorCode === 'RUN_INTERRUPTED') {
         return CLI_EXIT.interrupted;
       }
       return CLI_EXIT.runFailed;
     }
-    printError(runtime, result.error);
+    printError(runtime, 'resume', result.error);
     if (result.kind === 'startup-failed') return CLI_EXIT.startup;
     // command-failed：按错误类别映射（startup_validation 视为前置校验失败）。
     return result.error.errorClass === 'startup_validation' ? CLI_EXIT.startup : CLI_EXIT.command;
@@ -199,7 +207,7 @@ async function runResume(
           message: error instanceof Error ? error.message : String(error),
           cause: error,
         });
-    printError(runtime, apex);
+    printError(runtime, 'resume', apex);
     return CLI_EXIT.command;
   } finally {
     disposeSignals();
@@ -238,9 +246,14 @@ async function runStatus(runtime: CliRuntime): Promise<number> {
     for (const line of renderStatus(result.snapshot, result.git)) {
       runtime.stdout(runtime.redaction.redactText(line));
     }
+    printLines(
+      runtime,
+      'stdout',
+      renderCommandSuccess({ kind: 'status', run: result.snapshot.run }),
+    );
     return CLI_EXIT.ok;
   } catch (error) {
-    printError(runtime, asCommandError('status', error));
+    printError(runtime, 'status', asCommandError('status', error));
     return CLI_EXIT.command;
   }
 }
@@ -248,10 +261,22 @@ async function runStatus(runtime: CliRuntime): Promise<number> {
 async function runReport(runtime: CliRuntime): Promise<number> {
   try {
     const result = await runtime.report.execute();
-    runtime.stdout(runtime.redaction.redactText(`✓ 报告已生成 · ${result.reportPath}`));
+    printLines(
+      runtime,
+      'stdout',
+      renderCommandSuccess({
+        kind: 'report',
+        runId: result.runId,
+        reportPath: result.reportPath,
+      }),
+    );
     return CLI_EXIT.ok;
   } catch (error) {
-    printError(runtime, asCommandError('report', error, 'REPORT_COMMAND_FAILED'));
+    printError(
+      runtime,
+      'report',
+      asCommandError('report', error, 'REPORT_COMMAND_FAILED'),
+    );
     return CLI_EXIT.command;
   }
 }
@@ -262,12 +287,14 @@ async function runAbandon(
 ): Promise<number> {
   try {
     const result = await runtime.abandon.execute({ force: command.force });
-    runtime.stdout(
-      runtime.redaction.redactText(`✓ Run ${result.run.runId} 已放弃`),
+    printLines(
+      runtime,
+      'stdout',
+      renderCommandSuccess({ kind: 'abandon', run: result.run }),
     );
     return CLI_EXIT.ok;
   } catch (error) {
-    printError(runtime, asCommandError('abandon', error));
+    printError(runtime, 'abandon', asCommandError('abandon', error));
     return CLI_EXIT.command;
   }
 }
@@ -279,6 +306,7 @@ export async function runCli(argv: readonly string[], runtime: CliRuntime): Prom
   } catch (error) {
     printError(
       runtime,
+      null,
       isApexError(error)
         ? error
         : new ApexError({
@@ -290,6 +318,21 @@ export async function runCli(argv: readonly string[], runtime: CliRuntime): Prom
     );
     runtime.stderr(HELP_TEXT);
     return CLI_EXIT.usage;
+  }
+
+  if (command.kind !== 'help') {
+    /*
+     * 参数成功解析后立即输出统一首屏；后续即使环境门禁拒绝，用户仍能看到
+     * 确切版本、命令意图和调用目录。动态内容逐行经过同一脱敏边界。
+     */
+    printLines(
+      runtime,
+      'stdout',
+      renderCommandHeader(command, {
+        agentVersion: runtime.environment.agentVersion,
+        cwd: runtime.cwd,
+      }),
+    );
   }
 
   switch (command.kind) {

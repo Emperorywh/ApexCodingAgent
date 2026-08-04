@@ -5,7 +5,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createE2EHarness, executionCompleted, finalReviewCompleted, planDraft, streamOf, COMPLETE_HELP, E2E_AGENT_VERSION, FAKE_VERSION } from './helpers.js';
+import { createE2EHarness, executionCompleted, finalReviewCompleted, planDraft, streamOf, COMPLETE_HELP, FAKE_VERSION } from './helpers.js';
 import { seedRepo } from '../integration/git/helpers.js';
 
 const ONE_TASK = {
@@ -53,13 +53,16 @@ describe('e2e debug logging', () => {
       /*
        * 默认控制台只保留稳定的阶段、模型与结果摘要。
        * 全量结构化事件继续由上面的 apex-debug.log 断言负责，避免把调试日志和用户进度混为一层。
-       */
+      */
       const progress = harness.outputLines;
-      expect(progress.some((line) => line.includes('◆ 规划') && line.includes('会话'))).toBe(true);
+      expect(progress).toContain('◆ 规划');
+      expect(progress.some((line) => line.includes('计划版本') && line.includes('会话'))).toBe(true);
       expect(progress.some((line) => line.includes('✓ 规划完成') && line.includes('用时'))).toBe(true);
 
-      // 启动横幅先输出 Apex 自身版本；探测后输出 Claude 版本行；init 元数据到达后输出模型行
-      expect(progress.some((line) => line.includes(`ApexCodingAgent ${E2E_AGENT_VERSION}`))).toBe(true);
+      /*
+       * 产品与命令首屏属于 CLI Interface，本 E2E 直接驱动 StartRun，因此只
+       * 断言 Application 拥有的 Claude 探测和 Session 模型事实。
+       */
       expect(progress.some((line) => line.includes(`Claude Code ${FAKE_VERSION}`))).toBe(true);
       expect(progress.some((line) => line.includes('模型 fake-model'))).toBe(true);
 

@@ -1,9 +1,10 @@
 /**
  * 前台进度文案的统一呈现模型。
  *
- * Application 用例只提供已经确认的业务事实，本模块负责把事实压缩成稳定、
- * 易扫读的单行文本。终端颜色和控制序列清理由 Interface 层负责，结构化
- * 调试事实仍由 LoggerPort 独立保存，避免“用户进度”和“排错日志”再次混杂。
+ * Application 用例只提供已经确认的业务事实，本模块负责把 Session 活动
+ * 压缩成单行、把阶段迁移组织成稳定里程碑块。终端颜色和控制序列清理由
+ * Interface 层负责，结构化调试事实仍由 LoggerPort 独立保存，避免“用户
+ * 进度”和“排错日志”再次混杂。
  */
 import type {
   ClaudeStreamDisplayEvent,
@@ -31,6 +32,50 @@ const TOOL_LABELS: Readonly<Record<string, string>> = {
   WebSearch: '搜索网络',
   Write: '写入',
 };
+
+/**
+ * 阶段里程碑由“空行 + 标题 + 缩进事实”组成。
+ *
+ * 空行是稳定的纯文本层级，不依赖 ANSI；TTY、CI 和 Session 日志摘录看到的
+ * 信息结构完全一致。调用方必须逐行写入，不能把多行重新拼成隐式字符串。
+ */
+export type ProgressBlock = readonly string[];
+
+function milestone(heading: string, ...details: readonly string[]): ProgressBlock {
+  return ['', heading, ...details.map((detail) => `  ${detail}`)];
+}
+
+/** Run 与专用 Git 分支均持久化后的首次可恢复里程碑。 */
+export function renderRunCreated(input: {
+  readonly runId: string;
+  readonly specPath: string;
+  readonly runBranch: string;
+}): ProgressBlock {
+  return milestone(
+    '◇ 运行已创建',
+    `Run ${input.runId}`,
+    `SPEC ${input.specPath} · 分支 ${input.runBranch}`,
+  );
+}
+
+/** resume 提交重开状态后的明确恢复点摘要。 */
+export function renderRunResumed(input: {
+  readonly runId: string;
+  readonly stage: 'planning' | 'running' | 'final_review';
+  readonly taskId: string | null;
+}): ProgressBlock {
+  const stageLabels = {
+    planning: '规划',
+    running: '任务执行',
+    final_review: '最终复核',
+  } as const;
+  const task = input.taskId === null ? '' : ` · ${input.taskId}`;
+  return milestone(
+    '↻ 运行已恢复',
+    `Run ${input.runId}`,
+    `继续阶段 ${stageLabels[input.stage]}${task}`,
+  );
+}
 
 /**
  * 用大小写不敏感的方式压缩工作区绝对路径。
@@ -74,11 +119,6 @@ export function sessionDisplayName(type: SessionType): string {
   return SESSION_LABELS[type];
 }
 
-/** 启动横幅只出现一次，后续行通过缩进与语义符号形成视觉层级。 */
-export function renderAgentBanner(version: string): string {
-  return `ApexCodingAgent ${version}`;
-}
-
 /** Claude 能力探测开始行。 */
 export function renderClaudeProbeStarted(): string {
   return '◇ 正在检查 Claude Code 运行环境…';
@@ -89,17 +129,17 @@ export function renderClaudeProbeCompleted(version: string, capabilityCount: num
   return `✓ Claude Code ${version} · ${capabilityCount} 项能力就绪`;
 }
 
-/** Session 开始行：阶段、Task、Revision 与短 Session ID 在一行内完整呈现。 */
+/** Session 开始块：阶段单独成标题，Revision 与短 Session ID 作为次级事实。 */
 export function renderSessionStarted(input: {
   readonly sessionId: string;
   readonly type: SessionType;
   readonly taskId: string | null;
   readonly planRevision: number;
-}): string {
-  const task = input.taskId === null ? '' : ` ${input.taskId}`;
-  return (
-    `◆ ${sessionDisplayName(input.type)}${task}` +
-    ` · 计划版本 ${input.planRevision} · 会话 ${input.sessionId.slice(0, 8)}`
+}): ProgressBlock {
+  const task = input.taskId === null ? '' : ` · ${input.taskId}`;
+  return milestone(
+    `◆ ${sessionDisplayName(input.type)}${task}`,
+    `计划版本 ${input.planRevision} · 会话 ${input.sessionId.slice(0, 8)}`,
   );
 }
 
@@ -167,54 +207,61 @@ export function renderSessionFailed(
 }
 
 /** Planning 成功提交后的阶段摘要，同时保留本轮任务规模。 */
-export function renderPlanCommitted(planRevision: number, taskCount: number): string {
-  return `✓ 规划完成 · 计划版本 ${planRevision} · ${taskCount} 个任务`;
+export function renderPlanCommitted(planRevision: number, taskCount: number): ProgressBlock {
+  return milestone(
+    '✓ 规划已通过独立复核',
+    `计划版本 ${planRevision} · ${taskCount} 个任务`,
+  );
 }
 
 /** SPEC 变化触发的新一轮规划。 */
-export function renderSpecReplanning(): string {
-  return '↻ SPEC 已变化 · 正在重新规划';
+export function renderSpecReplanning(): ProgressBlock {
+  return milestone('↻ SPEC 已变化', '正在重新规划');
 }
 
 /** 单个 Task 完成后的稳定 Checkpoint 摘要。 */
-export function renderTaskCompleted(taskId: string, checkpoint: string): string {
-  return `✓ ${taskId} 完成 · Checkpoint ${checkpoint.slice(0, 12)}`;
+export function renderTaskCompleted(taskId: string, checkpoint: string): ProgressBlock {
+  return milestone(
+    `✓ ${taskId} 已通过独立复核`,
+    `Checkpoint ${checkpoint.slice(0, 12)}`,
+  );
 }
 
 /** Planner 草稿已持久化，等待独立计划复核。 */
-export function renderPlanReviewStarted(planRevision: number): string {
-  return `◇ 计划草稿已生成 · 开始独立复核 · 计划版本 ${planRevision}`;
+export function renderPlanReviewStarted(planRevision: number): ProgressBlock {
+  return milestone(
+    '◇ 计划草稿已保存',
+    `计划版本 ${planRevision} · 开始独立复核`,
+  );
 }
 
 /** 独立计划复核打回后，下一趟 Planner 将消费结构化反馈。 */
-export function renderPlanReviewChangesRequired(attempt: number): string {
-  return `↻ 计划独立复核未通过 · 正在重新规划 · 第 ${attempt} 轮反馈`;
+export function renderPlanReviewChangesRequired(attempt: number): ProgressBlock {
+  return milestone(
+    '↻ 计划独立复核未通过',
+    `正在重新规划 · 第 ${attempt} 轮反馈`,
+  );
 }
 
 /** Execution 只产生候选交付物，明确提示尚未越过独立复核门禁。 */
-export function renderTaskReviewStarted(taskId: string, checkpoint: string): string {
-  return `◇ ${taskId} 候选实现已保存 · 开始独立复核 · Checkpoint ${checkpoint.slice(0, 12)}`;
+export function renderTaskReviewStarted(taskId: string, checkpoint: string): ProgressBlock {
+  return milestone(
+    `◇ ${taskId} 候选实现已保存`,
+    `Checkpoint ${checkpoint.slice(0, 12)} · 开始独立复核`,
+  );
 }
 
 /** Reviewer 打回当前 Task 后，下一趟 Execution 将基于候选 Checkpoint 修复。 */
-export function renderTaskReviewChangesRequired(taskId: string): string {
-  return `↻ ${taskId} 独立复核未通过 · 正在进入修复执行`;
+export function renderTaskReviewChangesRequired(taskId: string): ProgressBlock {
+  return milestone(`↻ ${taskId} 独立复核未通过`, '正在进入修复执行');
 }
 
 /** Execution 或 Final Review 请求重新规划。 */
-export function renderReplanRequested(trigger: string): string {
-  return `↻ 需要重新规划 · ${trigger}`;
+export function renderReplanRequested(trigger: string): ProgressBlock {
+  return milestone('↻ 需要重新规划', trigger);
 }
 
 /** 所有 Task 完成后进入 Final Review。 */
-export function renderFinalReviewStarted(): string {
-  return '◇ 所有任务已完成 · 开始最终复核';
-}
-
-/** Run 的唯一成功终态摘要。 */
-export function renderRunCompleted(
-  runId: string,
-  reportPath: string,
-): string {
-  return `✓ Run ${runId} 完成 · 报告 ${reportPath}`;
+export function renderFinalReviewStarted(): ProgressBlock {
+  return milestone('◆ 所有任务已完成', '开始最终复核');
 }

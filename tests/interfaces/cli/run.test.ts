@@ -157,7 +157,11 @@ describe('runCli exit codes (§17)', () => {
   });
 
   it('resume completed exits 0 and passes --force/--full-access through', async () => {
-    const run = makeRunJson({ status: 'completed', terminalAt: '2026-01-01T01:00:00Z' });
+    const run = makeRunJson({
+      status: 'completed',
+      reportPath: 'report.md',
+      terminalAt: '2026-01-01T01:00:00Z',
+    });
     let received: ResumeRunInput | null = null;
     const { runtime, stdout } = makeRuntime({
       resume: {
@@ -172,10 +176,21 @@ describe('runCli exit codes (§17)', () => {
     expect(received!.force).toBe(true);
     expect(received!.fullAccess).toBe(true);
     /*
-     * 成功摘要由 RunDriver 在真实执行链中唯一输出。
-     * CLI 命令层只映射退出码，避免同一 Run 完成信息打印两次。
+     * 首屏与最终结果都属于 CLI 命令边界，即使测试替换了内部用例，
+     * 用户仍能看到统一的恢复意图、显式权限与 Run 终态事实。
      */
-    expect(stdout).toEqual([]);
+    expect(stdout).toEqual([
+      'ApexCodingAgent 0.0.0-test',
+      '',
+      '◆ 恢复运行',
+      '  目录 /repo',
+      '  方式 强制接管',
+      '  权限 完全访问（显式启用）',
+      '',
+      '✓ 恢复完成',
+      `  Run ${run.runId}`,
+      '  报告 report.md',
+    ]);
   });
 
   it('resume interrupted failure exits 130, turn-limit recovery exits 1', async () => {
@@ -243,17 +258,32 @@ describe('runCli exit codes (§17)', () => {
   });
 
   it('start completed exits 0', async () => {
-    const run = makeRunJson({ status: 'completed', terminalAt: '2026-01-01T01:00:00Z' });
+    const run = makeRunJson({
+      status: 'completed',
+      reportPath: 'report.md',
+      terminalAt: '2026-01-01T01:00:00Z',
+    });
     const { runtime, stdout } = makeRuntime({
       startRun: stubStartRun({ kind: 'completed', run }),
     });
     const code = await runCli(['start'], runtime);
     expect(code).toBe(CLI_EXIT.ok);
     /*
-     * 此处使用的是绕过 RunDriver 的 stub，因此 stdout 应为空。
-     * 真实进程测试会覆盖 RunDriver 产生的唯一完成摘要。
+     * 命令首屏和终态不依赖 RunDriver 的内部进度事件；CLI 只消费参数事实
+     * 与 StartRun 返回值，因此替换用例也不会破坏用户可见结构。
      */
-    expect(stdout).toEqual([]);
+    expect(stdout).toEqual([
+      'ApexCodingAgent 0.0.0-test',
+      '',
+      '◆ 开始新运行',
+      '  目录 /repo',
+      '  SPEC 自动发现',
+      '  权限 自动',
+      '',
+      '✓ 运行完成',
+      `  Run ${run.runId}`,
+      '  报告 report.md',
+    ]);
   });
 
   it('start run failed exits 1 and surfaces the stable error code', async () => {
@@ -300,7 +330,11 @@ describe('runCli exit codes (§17)', () => {
   });
 
   it('start 把 --verbose 与 --push-remote 透传进 StartRunInput', async () => {
-    const run = makeRunJson({ status: 'completed', terminalAt: '2026-01-01T01:00:00Z' });
+    const run = makeRunJson({
+      status: 'completed',
+      reportPath: 'report.md',
+      terminalAt: '2026-01-01T01:00:00Z',
+    });
     let received: StartRunInput | null = null;
     const { runtime } = makeRuntime({
       startRun: {
@@ -480,6 +514,12 @@ describe('environment gate (§8.1 items 1/3, mocked facts)', () => {
       environment: collectEnvironmentFacts(environment),
       stdout: () => {},
       stderr: (text) => stderr.push(text),
+      /*
+       * 环境门禁在创建 Session 前结束，不会建立活动状态。
+       * 注入完整呈现契约可确保测试仍经过真实 Composition Root。
+       */
+      updateStatus: () => {},
+      clearStatus: () => {},
     });
     const code = await runCli(['start'], runtime);
     expect(code).toBe(CLI_EXIT.startup);

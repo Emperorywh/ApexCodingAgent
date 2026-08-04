@@ -272,7 +272,15 @@ function makeAbandon(harness: E2EHarness): {
   lines: string[];
 } {
   const lines: string[] = [];
-  const output: OutputPort = { writeLine: (line) => lines.push(line) };
+  /*
+   * abandon 用例只产生持久风险提示；仍提供完整 OutputPort 契约，确保测试
+   * 替身不会掩盖未来误用临时状态能力的问题。
+   */
+  const output: OutputPort = {
+    writeLine: (line) => lines.push(line),
+    updateStatus: (line) => lines.push(line),
+    clearStatus: () => {},
+  };
   const deps = harness.makeBoundDeps();
   const abandon = createAbandonRun({
     stateStore: deps.stateStore,

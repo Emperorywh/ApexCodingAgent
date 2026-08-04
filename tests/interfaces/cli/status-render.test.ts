@@ -54,7 +54,8 @@ describe('renderStatus', () => {
     };
 
     const lines = renderStatus({ run, tasks }, git);
-    expect(lines).toContain('→ 执行中 · RUN-123e4567-e89b-42d3-a456-426614174000');
+    expect(lines).toContain('◆ 运行概览');
+    expect(lines).toContain('  → 执行中 · RUN-123e4567-e89b-42d3-a456-426614174000');
     expect(lines).toContain('◆ 任务进度');
     expect(lines).toContain('  ░░░░░░░░░░░░░░░░░░░░░░░░  0/2 · 0%');
     expect(lines).toContain('  待处理 1 · 已跳过 1');
@@ -119,7 +120,7 @@ describe('renderStatus', () => {
     };
 
     const lines = renderStatus({ run, tasks }, git);
-    expect(lines).toContain(`✗ 运行失败 · ${RUN_ID}`);
+    expect(lines).toContain(`  ✗ 运行失败 · ${RUN_ID}`);
     expect(lines).toContain('! 最近错误 · RUN_INTERRUPTED · execution');
     expect(lines).toContain('  → 恢复运行  ApexCodingAgent resume');
     expect(lines).toContain('  已完成 1 · 失败 1 · 待处理 1');

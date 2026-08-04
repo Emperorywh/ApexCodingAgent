@@ -3,8 +3,8 @@
  * 进度摘要）：前台串行调度循环 planning → 独立 plan_review → 每个 Task
  * 的 execution → 独立 task_review → final_review → 终态。
  *
- * - 顶层 Task 串行、同一时刻最多一个 Claude Session；每次状态迁移输出一行
- *   经脱敏的进度摘要。
+ * - 顶层 Task 串行、同一时刻最多一个 Claude Session；每次重要状态迁移输出
+ *   一个经脱敏的标题/事实里程碑块。
  * - Plan Revision 触发原因（trigger）在进程内随循环传递：Execution/Final
  *   Review 给出的 replan 原因在下一轮 Planning 中使用；提交后清零。
  * - `requestInterrupt()` 只转发给中断控制器：停止启动新 Session、经绑定的
@@ -24,11 +24,11 @@ import {
   renderPlanReviewChangesRequired,
   renderPlanReviewStarted,
   renderReplanRequested,
-  renderRunCompleted,
   renderSpecReplanning,
   renderTaskCompleted,
   renderTaskReviewChangesRequired,
   renderTaskReviewStarted,
+  type ProgressBlock,
 } from './presentation/progress.js';
 import type { UseCaseDeps } from './usecase-deps.js';
 import { createExecuteNextTask, type ExecutionResumeHint } from './usecases/execute-next-task.js';
@@ -91,12 +91,14 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
   let finalReviewResumeSessionId =
     resumePoint?.sessionType === 'final_review' ? resumePoint.sessionId : null;
 
-  function progress(line: string): void {
+  function progress(block: ProgressBlock): void {
     /*
-     * 阶段摘要已经由 presentation 模块携带统一符号与层级。
-     * 这里仅执行脱敏和端口转发，不再自行拼接产品前缀或英文状态机文本。
+     * 阶段摘要已经由 presentation 模块携带统一标题、缩进和空行层级。
+     * 这里逐行执行脱敏与端口转发，不重新拼接多行字符串，也不解释业务事实。
      */
-    deps.output.writeLine(deps.redaction.redactText(line));
+    for (const line of block) {
+      deps.output.writeLine(deps.redaction.redactText(line));
+    }
   }
 
   /** 意外失败兜底：尽力把当前 Run 收尾为 failed（state_error 仅输出诊断）。 */
@@ -332,12 +334,10 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
                 runId: run.runId,
                 reportPath: result.run.reportPath ?? 'report.md',
               });
-              progress(
-                renderRunCompleted(
-                  run.runId,
-                  result.run.reportPath ?? 'report.md',
-                ),
-              );
+              /*
+               * Final Review 的 Session 完成行已经表达阶段结论；Run 的唯一
+               * 命令终态由 CLI 根据 StartRun/ResumeRun 返回值统一封口。
+               */
               return result.run;
             }
             if (result.kind === 'replan-needed') {

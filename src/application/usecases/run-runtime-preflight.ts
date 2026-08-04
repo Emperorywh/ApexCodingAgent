@@ -14,7 +14,6 @@ import type { LoggerPort } from '../ports/logger.js';
 import type { OutputPort } from '../ports/output.js';
 import type { RedactionPort } from '../ports/redaction.js';
 import {
-  renderAgentBanner,
   renderClaudeProbeCompleted,
   renderClaudeProbeStarted,
 } from '../presentation/progress.js';
@@ -81,25 +80,6 @@ export async function assertStateDirectoryWritable(
       cause: error,
     });
   }
-}
-
-/**
- * 启动横幅第一项：ApexCodingAgent 自身版本。
- *
- * 在任何前置校验之前输出，即使启动因环境门禁失败，排障时也能拿到
- * 确切的安装版本。模型与 Provider 属于 Session 事实，只能在首个
- * Session 的 system/init 事件到达后由 Session 进度行输出，不在此伪造。
- */
-export function reportApexVersion(
-  output: OutputPort,
-  redaction: RedactionPort,
-  agentVersion: string,
-): void {
-  /*
-   * 横幅建立一次性的产品身份，后续进度行不再重复 `[apex]` 前缀。
-   * 空行由首个阶段标题自然形成层级，不在应用层输出终端控制序列。
-   */
-  output.writeLine(redaction.redactText(renderAgentBanner(agentVersion)));
 }
 
 /**

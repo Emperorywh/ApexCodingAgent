@@ -160,9 +160,9 @@ function sessionTypeLabel(type: SessionType): string {
 function renderOverview(run: RunJson): string[] {
   const presentation = RUN_STATUS_PRESENTATION[run.status];
   const lines = [
-    'ApexCodingAgent · 运行状态',
     '',
-    `${presentation.icon} ${presentation.label} · ${run.runId}`,
+    '◆ 运行概览',
+    `  ${presentation.icon} ${presentation.label} · ${run.runId}`,
     `  SPEC      ${run.spec.path} · sha256 ${run.spec.sha256.slice(0, 12)}…`,
     `  计划修订  ${run.planRevision}`,
     `  创建时间  ${run.createdAt}`,

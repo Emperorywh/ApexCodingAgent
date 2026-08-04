@@ -309,16 +309,18 @@ export async function invokeSession<T extends SessionType>(
     });
   }
 
-  deps.output.writeLine(
-    deps.redaction.redactText(
-      renderSessionStarted({
-        sessionId: handle.sessionId,
-        type: handle.type,
-        taskId: handle.taskId,
-        planRevision: handle.planRevision,
-      }),
-    ),
-  );
+  /*
+   * Session 切换是长任务中的一级里程碑：标题和元数据必须逐行写入，保证
+   * TTY 与重定向输出拥有相同层级，也避免多行文本绕过单行脱敏边界。
+   */
+  for (const line of renderSessionStarted({
+    sessionId: handle.sessionId,
+    type: handle.type,
+    taskId: handle.taskId,
+    planRevision: handle.planRevision,
+  })) {
+    deps.output.writeLine(deps.redaction.redactText(line));
+  }
   const startedMs = deps.clock.now().getTime();
   const elapsedMs = (): number => deps.clock.now().getTime() - startedMs;
   let activity: ClaudeStreamActivity = {
@@ -384,6 +386,13 @@ export async function invokeSession<T extends SessionType>(
       }
     },
   });
+  /*
+   * 交互终端把该状态作为底部唯一活动区域原位刷新；非 TTY 实现则写成
+   * 普通纯文本行。工具动作仍是可回看的持久事实，不会被状态替换覆盖。
+   */
+  deps.output.updateStatus(
+    deps.redaction.redactText(renderSessionHeartbeat(formatElapsed(elapsedMs()), 0)),
+  );
   const settled: Promise<InvokeRaceOutcome<T>> = invokePromise.then(
     (fact): InvokeRaceOutcome<T> => ({ kind: 'fact', fact }),
     (error: unknown): InvokeRaceOutcome<T> => ({ kind: 'error', error }),
@@ -407,7 +416,7 @@ export async function invokeSession<T extends SessionType>(
       if (deps.clock.now().getTime() - lastVisibleActivityMs < deps.sessionHeartbeatMs) {
         continue;
       }
-      deps.output.writeLine(
+      deps.output.updateStatus(
         deps.redaction.redactText(
           renderSessionHeartbeat(
             formatElapsed(elapsedMs()),
@@ -421,6 +430,7 @@ export async function invokeSession<T extends SessionType>(
   void heartbeat.catch(() => undefined);
 
   function progressFailed(errorCode: string): void {
+    deps.output.clearStatus();
     deps.output.writeLine(
       deps.redaction.redactText(
         renderSessionFailed(handle.type, formatElapsed(elapsedMs()), errorCode),
@@ -432,6 +442,7 @@ export async function invokeSession<T extends SessionType>(
     const outcome = await Promise.race([settled, interruptTimeout]);
 
     if (outcome.kind === 'fact') {
+      deps.output.clearStatus();
       deps.output.writeLine(
         deps.redaction.redactText(
           renderSessionFinished(
@@ -508,6 +519,11 @@ export async function invokeSession<T extends SessionType>(
     });
   } finally {
     heartbeatActive = false;
+    /*
+     * 所有异常分支共享最后一道呈现清理边界。
+     * clearStatus 必须幂等，确保日志/状态写入异常也不会留下悬空活动行。
+     */
+    deps.output.clearStatus();
   }
 }
 

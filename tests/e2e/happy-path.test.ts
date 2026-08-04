@@ -152,17 +152,14 @@ describe('e2e happy path', () => {
         expect(tracked).not.toContain('.apex-coding-agent');
 
         /*
-         * 进度输出采用用户语义，不暴露内部状态机迁移字符串。
-         * Run ID、任务 ID 与终态仍必须保留，便于从控制台定位持久化状态和调试日志。
+         * Application 进度以阶段块表达规划、任务复核与最终复核；Run ID 和
+         * 命令终态由更外层 CLI 根据 StartRun 返回值统一输出。
          */
-        expect(harness.outputLines.some((line) => line.includes('规划完成') && line.includes('2 个任务'))).toBe(true);
-        expect(harness.outputLines.some((line) => line.includes('TASK-001 完成'))).toBe(true);
+        expect(harness.outputLines).toContain('✓ 规划已通过独立复核');
+        expect(harness.outputLines.some((line) => line.includes('计划版本 1') && line.includes('2 个任务'))).toBe(true);
+        expect(harness.outputLines).toContain('✓ TASK-001 已通过独立复核');
         expect(harness.outputLines.some((line) => line.includes('最终复核'))).toBe(true);
-        expect(
-          harness.outputLines.some(
-            (line) => line.includes(`Run ${run.runId} 完成`),
-          ),
-        ).toBe(true);
+        expect(harness.outputLines.some((line) => line.includes('✓ 最终复核完成'))).toBe(true);
 
         // ---- 参数数组：planning/plan_review=plan，其余会话按执行权限运行 ----
         const invocations = await harness.readRecords();

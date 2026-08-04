@@ -6,10 +6,34 @@
  * 处理，也避免把颜色码写进 CI 日志。
  */
 import { stripVTControlCharacters, styleText } from 'node:util';
+import { createLogUpdate } from 'log-update';
 
 export interface ConsoleOutputStream {
   readonly isTTY?: boolean;
   write(text: string): unknown;
+}
+
+/**
+ * `log-update` 需要真实可写流及终端尺寸事实。
+ *
+ * 该类型只存在于 Interface 层，不会沿 Composition Root 进入 Application；
+ * Node 的 stdout/stderr 直接满足契约，测试则可注入内存 Writable。
+ */
+export type InteractiveConsoleStream = NodeJS.WritableStream & {
+  readonly isTTY?: boolean;
+  readonly columns?: number;
+  readonly rows?: number;
+};
+
+export interface ConsolePresenter {
+  /** 写入 stdout 的永久内容；活动状态存在时会先让出终端区域。 */
+  writeStdout(text: string): void;
+  /** 写入 stderr 的永久内容；不会破坏 stdout 上的活动状态。 */
+  writeStderr(text: string): void;
+  /** 创建或替换底部唯一活动状态。 */
+  updateStatus(text: string): void;
+  /** 清理活动状态与动画计时器。 */
+  clearStatus(): void;
 }
 
 /**
@@ -106,4 +130,117 @@ export function writeConsoleText(
 ): void {
   const rendered = formatConsoleText(text, colorEnabled && stream.isTTY === true);
   stream.write(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
+}
+
+/**
+ * Claude Code 风格的低频呼吸动画。
+ *
+ * 帧只负责表达“仍在活动”，状态正文仍由 Application 生成；复杂的光标移动、
+ * ANSI 宽度计算和 Windows 终端换行全部交给 log-update，避免在项目内维护
+ * 一套易出错的终端状态机。
+ */
+const LIVE_FRAMES = ['✻', '✽', '✶', '✳', '✢', '·', '✢', '✳', '✶', '✽'] as const;
+const LIVE_FRAME_INTERVAL_MS = 90;
+
+/** 把 Application 的稳定省略号标记替换为当前动画帧。 */
+function formatLiveStatus(text: string, frame: string, useColor: boolean): string {
+  const safe = sanitizeConsoleText(text);
+  const match = /^(\s*)…(?:\s+|$)(.*)$/s.exec(safe);
+  if (match === null) return formatConsoleText(safe, useColor);
+
+  const indentation = match[1] ?? '';
+  const detail = match[2] ?? '';
+  const renderedFrame = useColor ? applyStyle('magenta', frame) : frame;
+  return `${indentation}${renderedFrame}${detail === '' ? '' : ` ${detail}`}`;
+}
+
+/**
+ * 创建进程级控制台呈现器。
+ *
+ * 交互式 stdout 使用一个可替换的底部区域：永久 stdout 行通过 persist 写入
+ * 滚动历史，stderr 写入前则暂时清空再恢复。非 TTY/CI 不发送任何光标控制
+ * 序列，状态更新逐行落地，继续保留可审计的纯文本进度。
+ */
+export function createConsolePresenter(options: {
+  readonly stdout: InteractiveConsoleStream;
+  readonly stderr: InteractiveConsoleStream;
+  readonly colorEnabled: boolean;
+}): ConsolePresenter {
+  const interactive = options.stdout.isTTY === true;
+  const liveRenderer = interactive
+    ? createLogUpdate(options.stdout, { showCursor: true })
+    : null;
+  let liveText: string | null = null;
+  let frameIndex = 0;
+  let animationTimer: NodeJS.Timeout | null = null;
+
+  function renderLiveStatus(): void {
+    if (liveRenderer === null || liveText === null) return;
+    const frame = LIVE_FRAMES[frameIndex % LIVE_FRAMES.length]!;
+    liveRenderer(formatLiveStatus(liveText, frame, options.colorEnabled));
+  }
+
+  function startAnimation(): void {
+    if (animationTimer !== null) return;
+    animationTimer = setInterval(() => {
+      frameIndex = (frameIndex + 1) % LIVE_FRAMES.length;
+      renderLiveStatus();
+    }, LIVE_FRAME_INTERVAL_MS);
+    /*
+     * 动画只是呈现增强，绝不能让已完成的 CLI 进程继续存活。
+     * Session 正常/失败/中断收尾仍会显式 clearStatus，这里是进程级安全兜底。
+     */
+    animationTimer.unref();
+  }
+
+  function pauseLiveStatus(): boolean {
+    if (liveRenderer === null || liveText === null) return false;
+    liveRenderer.clear();
+    return true;
+  }
+
+  function resumeLiveStatus(shouldResume: boolean): void {
+    if (shouldResume) renderLiveStatus();
+  }
+
+  return {
+    writeStdout(text) {
+      if (liveRenderer !== null && liveText !== null) {
+        /*
+         * persist 会原子清除旧活动区域并把稳定内容写入滚动历史。
+         * 随后立即恢复同一状态，工具动作不会把动态行留成重复历史。
+         */
+        liveRenderer.persist(formatConsoleText(text, options.colorEnabled));
+        renderLiveStatus();
+        return;
+      }
+      writeConsoleText(options.stdout, text, options.colorEnabled);
+    },
+    writeStderr(text) {
+      const shouldResume = pauseLiveStatus();
+      writeConsoleText(options.stderr, text, options.colorEnabled);
+      resumeLiveStatus(shouldResume);
+    },
+    updateStatus(text) {
+      if (liveRenderer === null) {
+        writeConsoleText(options.stdout, text, options.colorEnabled);
+        return;
+      }
+      liveText = text;
+      renderLiveStatus();
+      startAnimation();
+    },
+    clearStatus() {
+      if (animationTimer !== null) {
+        clearInterval(animationTimer);
+        animationTimer = null;
+      }
+      if (liveRenderer !== null && liveText !== null) {
+        liveRenderer.clear();
+        liveRenderer.done();
+      }
+      liveText = null;
+      frameIndex = 0;
+    },
+  };
 }

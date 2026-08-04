@@ -6,7 +6,7 @@
  */
 import { createCliRuntime } from '../../bootstrap/composition-root.js';
 import { collectEnvironmentFacts } from '../../bootstrap/environment.js';
-import { writeConsoleText } from './console-output.js';
+import { createConsolePresenter } from './console-output.js';
 import { runCli } from './run.js';
 
 /*
@@ -14,16 +14,24 @@ import { runCli } from './run.js';
  * 遵循 NO_COLOR 约定，用户无需额外 Apex 专用配置即可关闭颜色。
  */
 const colorEnabled = process.env['NO_COLOR'] === undefined;
+/*
+ * stdout 与 stderr 必须共享同一个呈现器：活动状态位于 stdout 底部，任何
+ * stderr 诊断写入前都要暂时让出该区域，否则两个流可能交错破坏终端布局。
+ * 呈现器只处理终端能力，业务输出仍经 Composition Root 注入 OutputPort。
+ */
+const consolePresenter = createConsolePresenter({
+  stdout: process.stdout,
+  stderr: process.stderr,
+  colorEnabled,
+});
 
 const runtime = createCliRuntime({
   cwd: process.cwd(),
   environment: collectEnvironmentFacts(),
-  stdout: (text) => {
-    writeConsoleText(process.stdout, text, colorEnabled);
-  },
-  stderr: (text) => {
-    writeConsoleText(process.stderr, text, colorEnabled);
-  },
+  stdout: (text) => consolePresenter.writeStdout(text),
+  stderr: (text) => consolePresenter.writeStderr(text),
+  updateStatus: (text) => consolePresenter.updateStatus(text),
+  clearStatus: () => consolePresenter.clearStatus(),
 });
 
 const exitCode = await runCli(process.argv.slice(2), runtime);

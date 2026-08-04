@@ -46,6 +46,8 @@ export interface CliRuntimeOptions {
   readonly environment: EnvironmentFacts;
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
+  readonly updateStatus: (text: string) => void;
+  readonly clearStatus: () => void;
 }
 
 /**
@@ -76,8 +78,17 @@ export function createCliRuntime(options: CliRuntimeOptions): CliRuntime {
    */
   const processExecutor = createExecaProcessExecutor();
   const interrupt = createInterruptController();
-  // OutputPort 只承载单行、已脱敏文本（§18.4 控制台 Sink）。
-  const output = { writeLine: (line: string) => options.stdout(line) };
+  /*
+   * OutputPort 只承载单行、已脱敏文本（§18.4 控制台 Sink）。
+   *
+   * 持久事实与瞬时活动在端口上显式分离；Composition Root 只转接能力，
+   * 不判断 TTY，也不包含动画或终端控制规则。
+   */
+  const output: OutputPort = {
+    writeLine: (line) => options.stdout(line),
+    updateStatus: (line) => options.updateStatus(line),
+    clearStatus: () => options.clearStatus(),
+  };
   const wait = (ms: number): Promise<void> =>
     new Promise((resolve) => {
       // unref：会话结束后遗留的心跳定时器不得拖延进程退出。

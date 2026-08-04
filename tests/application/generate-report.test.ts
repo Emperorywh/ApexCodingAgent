@@ -45,6 +45,7 @@ describe('GenerateReport consistent snapshot', () => {
 
     const result = await createGenerateReport({ stateStore, git, reporter }).execute();
 
+    expect(result.runId).toBe(run.runId);
     expect(result.reportPath).toBe('report.md');
     expect(readConsistentSnapshot).toHaveBeenCalledTimes(1);
     expect(readRun).not.toHaveBeenCalled();

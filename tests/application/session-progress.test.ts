@@ -1,8 +1,8 @@
 /**
  * invokeSession 的用户反馈测试（SPEC §17 start 进度语义）：
  * - Session 开始/结束各一行阶段行（类型、Revision、Task、耗时、结果）；
- * - Session 运行期间按 sessionHeartbeatMs 产出心跳行（已耗时、有效事件
- *   计数），settle 后不再产出；
+ * - Session 启动后建立临时状态，并按 sessionHeartbeatMs 原位更新已耗时与
+ *   有效事件计数，settle 后清理且不再产出；
  * - 默认只即时输出关键工具动作，思考、系统事件与成功结果留在完整日志；
  * - 结构化事件通过 sequence 去重，避免底层 stdout 分块导致重复展示；
  * - 失败行携带稳定 errorCode。
@@ -63,6 +63,7 @@ function makeFact(): ClaudeInvocationFact<'planning'> {
 interface FakeDeps {
   readonly deps: UseCaseDeps;
   readonly lines: string[];
+  readonly statusLines: string[];
   readonly waitResolvers: Array<() => void>;
   readonly invoke: ReturnType<typeof vi.fn>;
   readonly clock: { nowMs: number };
@@ -70,11 +71,20 @@ interface FakeDeps {
 
 function createDeps(invokeImpl: (request: unknown) => Promise<unknown>): FakeDeps {
   const lines: string[] = [];
+  const statusLines: string[] = [];
   const waitResolvers: Array<() => void> = [];
   const clock = { nowMs: 0 };
   const invoke = vi.fn(invokeImpl);
   const deps = {
-    output: { writeLine: (line: string) => lines.push(line) },
+    /*
+     * 持久行与瞬时状态分开录制，防止测试把 TTY 原位刷新误判为新增日志。
+     * clearStatus 使用 spy，后续可直接验证各终态都释放了呈现资源。
+     */
+    output: {
+      writeLine: (line: string) => lines.push(line),
+      updateStatus: (line: string) => statusLines.push(line),
+      clearStatus: vi.fn(),
+    },
     redaction: { redactText: (text: string) => text },
     logger: createNullLogger(),
     clock: { now: () => new Date(clock.nowMs) },
@@ -90,7 +100,7 @@ function createDeps(invokeImpl: (request: unknown) => Promise<unknown>): FakeDep
     claude: { invoke, abort: vi.fn() },
     capabilityReport: { version: 'test', capabilities: [] },
   } as unknown as UseCaseDeps;
-  return { deps, lines, waitResolvers, invoke, clock };
+  return { deps, lines, statusLines, waitResolvers, invoke, clock };
 }
 
 /** 让已排队的微任务与 then 链全部 settle。 */
@@ -103,24 +113,28 @@ async function settleMicrotasks(): Promise<void> {
 }
 
 describe('invokeSession 用户反馈', () => {
-  it('会话开始与正常结束各输出一行阶段行', async () => {
+  it('会话开始输出阶段块，正常结束输出缩进结论', async () => {
     const { deps, lines } = createDeps(async () => makeFact());
 
     const fact = await invokeSession(deps, handle, input);
 
     expect(fact.model).toBe('fake-model');
-    expect(lines[0]).toBe('◆ 规划 · 计划版本 1 · 会话 123e4567');
-    expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain('✓ 规划完成 · 用时 0s');
-    expect(lines[1]).toContain('模型 fake-model');
+    expect(lines.slice(0, 3)).toEqual([
+      '',
+      '◆ 规划',
+      '  计划版本 1 · 会话 123e4567',
+    ]);
+    expect(lines).toHaveLength(4);
+    expect(lines[3]).toContain('✓ 规划完成 · 用时 0s');
+    expect(lines[3]).toContain('模型 fake-model');
   });
 
-  it('会话运行期间输出心跳行（已耗时 + 流活跃事实），settle 后不再输出', async () => {
+  it('会话运行期间更新临时状态（已耗时 + 流活跃事实），settle 后不再更新', async () => {
     let capturedRequest: {
       onStreamActivity?: (activity: ClaudeStreamActivity) => void;
     } | null = null;
     let resolveInvoke: ((fact: ClaudeInvocationFact<'planning'>) => void) | null = null;
-    const { deps, lines, waitResolvers, clock } = createDeps(
+    const { deps, lines, statusLines, waitResolvers, clock } = createDeps(
       (request) =>
         new Promise((resolve) => {
           capturedRequest = request as typeof capturedRequest;
@@ -143,21 +157,26 @@ describe('invokeSession 用户反馈', () => {
     waitResolvers[0]!();
     await settleMicrotasks();
 
-    const heartbeats = lines.filter((line) => line.includes(' running '));
-    const compactHeartbeats = lines.filter((line) => line.includes('Claude 仍在工作'));
+    const heartbeats = statusLines.filter((line) => line.includes(' running '));
+    const compactHeartbeats = statusLines.filter((line) => line.includes('Claude 仍在工作'));
     expect(heartbeats).toHaveLength(0);
-    expect(compactHeartbeats).toHaveLength(1);
-    expect(compactHeartbeats[0]).toContain('已运行 15s');
-    expect(compactHeartbeats[0]).toContain('已处理 2 个有效事件');
+    /*
+     * 首个状态立即建立活动区域，15 秒心跳只替换它而不进入持久行。
+     * 录制端口保留每次更新，便于证明状态内容确实向前推进。
+     */
+    expect(compactHeartbeats).toHaveLength(2);
+    expect(compactHeartbeats.at(-1)).toContain('已运行 15s');
+    expect(compactHeartbeats.at(-1)).toContain('已处理 2 个有效事件');
     expect(waitResolvers.length).toBeGreaterThanOrEqual(2);
 
     // 会话 settle 后：结束行出现，后续 wait 到期也不再产出心跳
     resolveInvoke!(makeFact());
     const fact = await pending;
     expect(fact.exitCode).toBe(0);
+    const statusCountAfterSettle = statusLines.length;
     for (const resolve of waitResolvers.splice(0)) resolve();
     await settleMicrotasks();
-    expect(lines.filter((line) => line.includes('Claude 仍在工作'))).toHaveLength(1);
+    expect(statusLines).toHaveLength(statusCountAfterSettle);
     expect(lines.some((line) => line.includes('用时 15s'))).toBe(true);
   });
 
@@ -177,8 +196,8 @@ describe('invokeSession 用户反馈', () => {
 
     await expect(invokeSession(deps, handle, input)).rejects.toBe(failure);
 
-    expect(lines[0]).toContain('◆ 规划');
-    expect(lines[1]).toContain('✗ 规划失败 · 用时 0s · CLAUDE_EXIT_NONZERO');
+    expect(lines[1]).toBe('◆ 规划');
+    expect(lines[3]).toContain('✗ 规划失败 · 用时 0s · CLAUDE_EXIT_NONZERO');
   });
 
   it('用户中断显示为已中断而不是任务失败', async () => {
@@ -200,8 +219,8 @@ describe('invokeSession 用户反馈', () => {
      * 领域与持久化仍使用 RUN_INTERRUPTED 失败协议；这里只锁定前台语义，
      * 防止可恢复的用户动作再次被渲染为 Claude 执行缺陷。
      */
-    expect(lines[1]).toContain('◇ 规划已中断 · 用时 0s · RUN_INTERRUPTED');
-    expect(lines[1]).not.toContain('规划失败');
+    expect(lines[3]).toContain('◇ 规划已中断 · 用时 0s · RUN_INTERRUPTED');
+    expect(lines[3]).not.toContain('规划失败');
   });
 
   it('默认只打印工具动作，隐藏 thinking 与其他低信噪比事件', async () => {

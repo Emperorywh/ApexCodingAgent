@@ -20,6 +20,8 @@ export interface GenerateReportDeps {
 }
 
 export interface GenerateReportResult {
+  /** 已确认处于终态、作为本次报告事实来源的 Run。 */
+  readonly runId: string;
   readonly reportPath: string;
 }
 
@@ -125,7 +127,11 @@ export function createGenerateReport(deps: GenerateReportDeps): {
         error,
       );
     }
-    return { reportPath };
+    /*
+     * CLI 终态摘要只能使用本次一致性快照已经确认的 Run ID。
+     * 显式返回该事实，避免 Interface 为展示报告归属再次读取 run.json。
+     */
+    return { runId: run.runId, reportPath };
   }
 
   return { execute };

@@ -22,6 +22,7 @@ import type { LoggerPort } from '../ports/logger.js';
 import type { RunCommandDeps } from '../run-command-deps.js';
 import { createRunDriver } from '../run-driver.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
+import { renderRunCreated } from '../presentation/progress.js';
 import { DEFAULT_PUSH_REMOTE, loadSettings } from './settings.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 import { createNullLogger } from '../ports/logger.js';
@@ -29,7 +30,6 @@ import {
   assertEnvironmentSupported,
   assertStateDirectoryWritable,
   probeClaudeCapabilities,
-  reportApexVersion,
   type EnvironmentFacts,
 } from './run-runtime-preflight.js';
 import {
@@ -126,8 +126,6 @@ export function createStartRun(deps: RunCommandDeps): {
       readonly run: RunJson;
     };
     try {
-      // 启动横幅先行：即使环境门禁拒绝启动，输出版本也有助排障。
-      reportApexVersion(deps.output, deps.redaction, input.environment.agentVersion);
       assertEnvironmentSupported(input.environment);
 
       // 先用 CLI 提供（或默认）的 Git 入口解析仓库与设置，再按 §16 优先级
@@ -348,6 +346,17 @@ export function createStartRun(deps: RunCommandDeps): {
       };
       await bound.stateStore.writeRun(run);
       logger.log('debug', 'run.branch_created', { runId, runBranch });
+      /*
+       * run.json 与专用分支都成功后才可声称运行已创建；此前任何失败都不能
+       * 打印可恢复里程碑。动态事实逐行脱敏后进入统一 OutputPort。
+       */
+      for (const line of renderRunCreated({
+        runId,
+        specPath: run.spec.path,
+        runBranch,
+      })) {
+        deps.output.writeLine(deps.redaction.redactText(line));
+      }
     } catch (error) {
       const apex = isApexError(error)
         ? (error as ApexError)

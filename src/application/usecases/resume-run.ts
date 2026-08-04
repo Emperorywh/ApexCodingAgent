@@ -30,7 +30,6 @@ import {
   assertEnvironmentSupported,
   assertStateDirectoryWritable,
   probeClaudeCapabilities,
-  reportApexVersion,
   type EnvironmentFacts,
 } from './run-runtime-preflight.js';
 import {
@@ -41,6 +40,7 @@ import {
 } from './run-heartbeat.js';
 import { loadSettings } from './settings.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
+import { renderRunResumed } from '../presentation/progress.js';
 
 export interface ResumeRunInput {
   /** 命令调用目录。 */
@@ -143,8 +143,6 @@ export function createResumeRun(deps: RunCommandDeps): {
    * 显式修复已失效的可执行路径。
    */
   async function prepare(input: ResumeRunInput): Promise<PreparedResume | ResumeRunResult> {
-    // 与 start 一致：横幅先行，环境门禁拒绝时也保留版本事实。
-    reportApexVersion(deps.output, deps.redaction, input.environment.agentVersion);
     try {
       assertEnvironmentSupported(input.environment);
     } catch (error) {
@@ -343,11 +341,17 @@ export function createResumeRun(deps: RunCommandDeps): {
       scheduleInterval: deps.scheduleInterval,
     });
     heartbeat.start();
-    deps.output.writeLine(
-      deps.redaction.redactText(
-        `↻ Run ${run.runId} 已恢复 · ${run.status} → ${classification.point.fromStatus}`,
-      ),
-    );
+    /*
+     * 重开提交点成功后才输出恢复里程碑；用中文阶段名表达继续位置，不把
+     * domain 状态枚举直接泄漏给用户。任务断点存在时作为同一事实块展示。
+     */
+    for (const line of renderRunResumed({
+      runId: run.runId,
+      stage: classification.point.fromStatus,
+      taskId: classification.point.taskId,
+    })) {
+      deps.output.writeLine(deps.redaction.redactText(line));
+    }
     logger.log('debug', 'resume.reopened', {
       runId: run.runId,
       from: run.status,

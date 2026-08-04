@@ -23,6 +23,7 @@ import { createRunArchiver } from '../../src/adapters/state/run-archiver.js';
 import { createInterruptController, type InterruptController } from '../../src/application/interrupt.js';
 import { createDebugLogger } from '../../src/adapters/logging/debug-file-logger.js';
 import { createNullLogger } from '../../src/application/ports/logger.js';
+import type { OutputPort } from '../../src/application/ports/output.js';
 import {
   createStartRun,
   type StartRunInput,
@@ -148,6 +149,15 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
   // resume 走独立的控制器：start 的中断是一次性事实，恢复执行不得继承。
   const resumeInterrupt = createInterruptController();
   const outputLines: string[] = [];
+  /*
+   * E2E Harness 模拟非 TTY Sink：临时状态按纯文本行记录，既不引入 ANSI，
+   * 也让测试能够观察长 Session 的存活反馈。clearStatus 在非交互模式无输出。
+   */
+  const output: OutputPort = {
+    writeLine: (line) => outputLines.push(line),
+    updateStatus: (line) => outputLines.push(line),
+    clearStatus: () => {},
+  };
   const gitPortPaths: Array<string | null> = [];
   const claudePortPaths: Array<string | null> = [];
   const wait = (ms: number): Promise<void> =>
@@ -168,7 +178,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       redaction,
       reporter: createMarkdownReporter({ stateDir: dir, fileSystem, redaction }),
       archiver: createRunArchiver({ stateDir: dir, fs: fileSystem, clock }),
-      output: { writeLine: (line) => outputLines.push(line) },
+      output,
       logger,
       interrupt: intCtrl,
       wait,
@@ -182,7 +192,7 @@ export async function createE2EHarness(options: E2EOptions = {}): Promise<E2EHar
       fileSystem,
       clock,
       redaction,
-      output: { writeLine: (line) => outputLines.push(line) },
+      output,
       interrupt: intCtrl,
       wait,
       interruptWaitMs,

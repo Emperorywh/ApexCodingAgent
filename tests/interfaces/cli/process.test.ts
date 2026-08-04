@@ -146,12 +146,14 @@ describe('cli process: start exit codes', () => {
       );
       expect(started.code).toBe(0);
       /*
-       * 控制台使用面向用户的阶段摘要，内部状态迁移仍只进入结构化调试日志。
-       * 默认模式不得把 JSON 调试行镜像到 stderr。
+       * 真实 CLI 同时覆盖命令首屏、Application 阶段块与唯一终态；内部状态
+       * 迁移仍只进入结构化调试日志，默认模式不得把 JSON 镜像到 stderr。
        */
+      expect(started.stdout).toContain('◆ 开始新运行');
       expect(started.stdout).toContain('规划完成');
-      expect(started.stdout).toContain('Run ');
       expect(started.stdout).toContain('◆ 规划');
+      expect(started.stdout).toContain('✓ 运行完成');
+      expect(started.stdout).toContain('  Run ');
       expect(started.stderr).not.toContain('"event":"');
 
       const status = await awaitOutcome(
@@ -159,16 +161,20 @@ describe('cli process: start exit codes', () => {
         15_000,
       );
       expect(status.code).toBe(0);
+      expect(status.stdout).toContain('◆ 查看运行状态');
       expect(status.stdout).toContain('✓ 已完成 · RUN-');
       expect(status.stdout).toContain('TASK-001');
       expect(status.stdout).toContain('✓ TASK-001');
+      expect(status.stdout).toContain('✓ 状态读取完成');
 
       const report = await awaitOutcome(
         spawnCli(['report'], { cwd: fixture.repo.root, env: fixture.fake.env }),
         15_000,
       );
       expect(report.code).toBe(0);
-      expect(report.stdout).toContain('报告已生成 · report.md');
+      expect(report.stdout).toContain('◆ 生成运行报告');
+      expect(report.stdout).toContain('✓ 报告生成完成');
+      expect(report.stdout).toContain('  报告 report.md');
     } finally {
       await cleanupFixture(fixture);
     }
@@ -340,6 +346,8 @@ describe('cli process: abandon flow after an interrupted run (§17, AC-027/028)'
        * 可能已超时（报"未发送存活信号"）——两种文案都含"存活信号"。
        */
       expect(forced.stdout + forced.stderr).toContain('存活信号');
+      expect(forced.stdout).toContain('◆ 放弃当前运行');
+      expect(forced.stdout).toContain('⊘ 运行已放弃');
       const abandoned = await readRunJson(fixture.stateDir);
       expect(abandoned.status).toBe('abandoned');
       expect(abandoned.lastError?.errorCode).toBe('RUN_ABANDONED_BY_USER');
@@ -438,7 +446,9 @@ describe('cli process: owner heartbeat crash detection (§2.4)', () => {
         90_000,
       );
       expect(resumed.code, resumed.stderr).toBe(0);
+      expect(resumed.stdout).toContain('◆ 恢复运行');
       expect(resumed.stdout).toContain('判定为崩溃离场');
+      expect(resumed.stdout).toContain('✓ 恢复完成');
       expect((await readRunJson(fixture.stateDir)).status).toBe('completed');
     } finally {
       await cleanupFixture(fixture);

@@ -18,8 +18,9 @@ export const HELP_TEXT = `ApexCodingAgent — 围绕 Claude Code 的前台长时
 
 命令:
   start     创建并前台运行一个新 Run 直到终态，每次状态迁移输出一行进度摘要
-  resume    恢复带有明确恢复点的 Run（RUN_INTERRUPTED 或
-            CLAUDE_TURN_LIMIT_REACHED）：重开为失败前状态并前台运行到终态；
+  resume    恢复带有明确恢复点的 Run（RUN_INTERRUPTED、
+            CLAUDE_TURN_LIMIT_REACHED 或 CLAUDE_EXIT_NONZERO）：重开为
+            失败前状态并前台运行到终态；
             Planning、Plan Review、Execution、Task Review 或 Final Review
             会话结束时续接原 Claude 对话上下文。仅确认原 transcript 不可用时回退为
             一趟全新会话。对崩溃残留的非终态 Run：存活信号判定旧进程已

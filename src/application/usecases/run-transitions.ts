@@ -28,10 +28,12 @@ function redactedSummary(error: ApexError, redaction: RedactionPort): string {
  * activeSession/currentTaskId、lastError、terminalAt=updatedAt=at、
  * stateRevision+1。
  *
- * 可续接失败在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：中断前状态、
- * 被中断 Task 与 Claude Session ID，供 resume 命令重开 Run 并续接对应的
+ * 可续接失败在清槽前记录 resumePoint（SPEC §2.4/§17 resume）：失败前状态、
+ * 对应 Task 与 Claude Session ID，供用户显式执行 resume 后重开 Run 并续接
  * Planning、Plan Review、Execution、Task Review 或 Final Review 会话。
- * 普通外部失败一律 resumePoint=null，绝不自动重试。
+ *
+ * “可续接”不等于自动重试：包括通用非零退出在内的外部失败仍立即终结
+ * 当前驱动；只有后续独立的 resume 命令可以消费这里持久化的恢复点。
  *
  * 中断落在「候选已持久化、Reviewer 尚未启动」的窗口时（无 activeSession
  * 但当前 Task 仍 running 且带候选）：被中断 Task 转 failed 并保留候选，

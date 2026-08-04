@@ -70,8 +70,11 @@ function printRunFailed(
 /**
  * 终态失败只有在领域层持久化了恢复点时才展示续接命令。
  *
- * 这同时覆盖用户中断和 Claude 回合预算耗尽；普通进程、鉴权、网络与额度
- * 失败没有恢复点，因此不会得到误导性的重试提示。
+ * 这同时覆盖用户中断、Claude 回合预算耗尽和已启动进程的非零退出。
+ *
+ * 提示只表达“可以由用户再次显式执行”；它不会让当前命令自动重试。
+ * 即使非零退出来自鉴权、网络或额度，用户也可先修复外部条件再恢复，
+ * transcript 不存在时仍由统一的续接不可用协议创建一趟全新会话。
  */
 function printRunResumeHint(runtime: CliRuntime, run: Pick<RunJson, 'resumePoint'>): void {
   if (run.resumePoint === null) return;

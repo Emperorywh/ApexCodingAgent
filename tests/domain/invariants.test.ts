@@ -221,6 +221,27 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
     expect(() => assertRunInvariants(run, { tasks: [mkTask('TASK-001')] })).not.toThrow();
   });
 
+  it('accepts a resumePoint when a started Claude process exits nonzero', () => {
+    const failure = mkErrorRecord({
+      errorCode: 'CLAUDE_EXIT_NONZERO',
+      errorClass: 'claude_error',
+      message: 'claude exited with code 1',
+    });
+    const run = failedWithPoint({
+      lastError: failure,
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'failed', { failure }),
+      },
+    });
+
+    /**
+     * 非零退出的 Run 仍是终态 failed；这里只验证它可以携带用户后续显式
+     * 消费的恢复点，并且 Task 与 Run 必须引用同一个稳定错误码。
+     */
+    expect(() => assertRunJsonRules(run)).not.toThrow();
+    expect(() => assertRunInvariants(run, { tasks: [mkTask('TASK-001')] })).not.toThrow();
+  });
+
   it('rejects resumePoint on non-failed or differently-failed runs', () => {
     expectApexError(
       () =>
@@ -242,7 +263,13 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
     expectApexError(
       () =>
         assertRunJsonRules(
-          failedWithPoint({ lastError: mkErrorRecord() }),
+          failedWithPoint({
+            lastError: mkErrorRecord({
+              errorCode: 'GIT_COMMAND_FAILED',
+              errorClass: 'git_error',
+              message: 'git failed',
+            }),
+          }),
         ),
       'STATE_VALIDATION_FAILED',
     );

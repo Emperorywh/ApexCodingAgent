@@ -123,12 +123,20 @@ export function errorClassForCode(code: ErrorCode): ErrorClass {
 /**
  * 判断终态失败是否携带可由 `resume` 消费的确定性恢复点。
  *
- * 前台中断与 Claude 回合预算耗尽都会保留完整 Session transcript；前者是
- * 用户控制边界，后者是计划预算边界。两者都必须由用户显式恢复，不能在
- * 运行中暗自追加预算或重试外部调用。
+ * 前台中断、Claude 回合预算耗尽以及已启动进程的非零退出，都可能已经
+ * 在 transcript 中留下可继续的工作。恢复资格只表示允许用户显式执行
+ * `resume`；当前 Run 仍立即失败，绝不在原驱动循环中自动重试外部调用。
+ *
+ * 通用非零退出可能发生在 transcript 尚未建立之前。此时恢复协调器会让
+ * Claude 明确判定续接不可用，再按既有协议创建一次全新 Session；这比按
+ * 易变的退出码猜测“鉴权失败”或“进程中断”更稳定，也不会丢失已完成工作。
  */
 export function isResumableErrorCode(code: ErrorCode): boolean {
-  return code === 'RUN_INTERRUPTED' || code === 'CLAUDE_TURN_LIMIT_REACHED';
+  return (
+    code === 'RUN_INTERRUPTED' ||
+    code === 'CLAUDE_TURN_LIMIT_REACHED' ||
+    code === 'CLAUDE_EXIT_NONZERO'
+  );
 }
 
 export interface ApexErrorInit {

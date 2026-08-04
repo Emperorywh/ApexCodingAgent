@@ -1,7 +1,8 @@
 /**
  * toTerminalFailedRun 的 resumePoint 附着规则（SPEC §2.4/§17 resume）：
- * 前台中断与 Claude 回合预算耗尽会在清槽前记录恢复点（失败前状态、对应
- * Task 与 Claude Session ID），其余错误一律 resumePoint=null。
+ * 前台中断、Claude 回合预算耗尽与已启动进程的非零退出会在清槽前记录
+ * 恢复点（失败前状态、对应 Task 与 Claude Session ID）；非会话型错误不
+ * 得伪造恢复点。
  */
 import { describe, expect, it } from 'vitest';
 import { createRedactor } from '../../src/adapters/redaction/redactor.js';
@@ -118,13 +119,36 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
     });
   });
 
-  it('non-interrupt failures never carry a resume point', () => {
+  it('CLAUDE_EXIT_NONZERO keeps the started Execution Session for explicit resume', () => {
     const claudeFailure = new ApexError({
       code: 'CLAUDE_EXIT_NONZERO',
       stage: 'execution',
       message: 'claude exited 1',
     });
     const terminal = toTerminalFailedRun(runningRunWithSession(), claudeFailure, T1, redaction);
+    /**
+     * 非零退出仍立即结束 Run，但不能抹掉已经持久化的 Session 身份；是否
+     * 真有 transcript 由后续显式 resume 的标准续接/全新会话协议判定。
+     */
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: UUID_1,
+      sessionType: 'execution',
+    });
+  });
+
+  it('non-session failures never carry a resume point', () => {
+    const gitFailure = new ApexError({
+      code: 'GIT_COMMAND_FAILED',
+      stage: 'checkpoint',
+      message: 'git failed',
+    });
+    const terminal = toTerminalFailedRun(runningRunWithSession(), gitFailure, T1, redaction);
+    /**
+     * Git 等非 Session 错误没有可续接的 Claude 上下文；即使清槽前恰好还
+     * 有 activeSession 事实，也不能越过错误策略生成恢复点。
+     */
     expect(terminal.resumePoint).toBeNull();
   });
 

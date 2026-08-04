@@ -471,19 +471,25 @@ export function assertRunJsonRules(run: RunJson): void {
   /**
    * 未提交计划草稿与上一轮复核反馈是互斥的瞬态 Planning 事实。
    *
-   * RUN_INTERRUPTED 会把它们原样保留在可恢复终态；其他状态不得携带，
-   * 且二者始终指向下一个尚未提交的 Revision。
+   * 统一恢复策略认可的 Session 失败会把它们原样保留在可恢复终态；其他
+   * 状态不得携带，且二者始终指向下一个尚未提交的 Revision。
    */
   assertCondition(
     run.planCandidate === null || run.planReviewFeedback === null,
     'planCandidate and planReviewFeedback must not coexist',
   );
   const hasPlanningFact = run.planCandidate !== null || run.planReviewFeedback !== null;
+  /**
+   * Planning/Plan Review 的候选事实属于待续接上下文。只要终态失败携带
+   * 经过统一错误策略认可的恢复点，就必须保留这些事实，不能再把规则
+   * 硬编码到 RUN_INTERRUPTED 这一种退出分类上。
+   */
   const planningFactAllowed =
     run.status === 'planning' ||
     (run.status === 'failed' &&
       run.resumePoint?.fromStatus === 'planning' &&
-      run.lastError?.errorCode === 'RUN_INTERRUPTED');
+      run.lastError !== null &&
+      isResumableErrorCode(run.lastError.errorCode));
   assertCondition(
     !hasPlanningFact || planningFactAllowed,
     `plan candidate or feedback is not allowed while run status is ${run.status}`,

@@ -10,6 +10,7 @@ import {
   ERROR_CODES,
   errorClassForCode,
   isApexError,
+  isResumableErrorCode,
   type ErrorClass,
   type ErrorCode,
 } from '../../src/domain/errors.js';
@@ -107,6 +108,18 @@ describe('error model (§15)', () => {
     const allExpected = Object.values(EXPECTED_TABLE).flat();
     expect(allExpected).toHaveLength(62);
     expect([...ERROR_CODES].sort()).toEqual([...allExpected].sort());
+  });
+
+  it('keeps started-session exits eligible only for explicit resume', () => {
+    /**
+     * 这组策略值决定终态是否持久化 resumePoint。通用非零退出必须保留
+     * Session 身份，而启动前失败和非 Session 错误不能伪造续接上下文。
+     */
+    expect(isResumableErrorCode('RUN_INTERRUPTED')).toBe(true);
+    expect(isResumableErrorCode('CLAUDE_TURN_LIMIT_REACHED')).toBe(true);
+    expect(isResumableErrorCode('CLAUDE_EXIT_NONZERO')).toBe(true);
+    expect(isResumableErrorCode('CLAUDE_START_FAILED')).toBe(false);
+    expect(isResumableErrorCode('GIT_COMMAND_FAILED')).toBe(false);
   });
 
   it('ApexError carries code, derived class, stage and optional facts', () => {

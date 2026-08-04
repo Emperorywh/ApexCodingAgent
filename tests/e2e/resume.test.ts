@@ -346,6 +346,16 @@ describe('e2e resume (§17)', () => {
         expect(resumed.kind).toBe('failed');
         if (resumed.kind !== 'failed') return;
         expect(resumed.run.lastError?.errorCode).toBe('CLAUDE_EXIT_NONZERO');
+        /**
+         * 鉴权/额度失败不在本次 resume 内自动重试，但新失败 Session 仍形成
+         * 下一次显式恢复点，用户修复外部条件后无需放弃整个 Run。
+         */
+        expect(resumed.run.resumePoint).toEqual({
+          fromStatus: 'running',
+          taskId: 'TASK-001',
+          sessionId: expect.any(String),
+          sessionType: 'execution',
+        });
         expect(harness.outputLines.join('\n')).not.toContain('CLAUDE_RESUME_UNAVAILABLE');
 
         /**

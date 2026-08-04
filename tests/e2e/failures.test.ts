@@ -64,6 +64,16 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(run.tasks['TASK-001']!.status).toBe('failed');
         expect(run.tasks['TASK-001']!.failure?.errorCode).toBe('CLAUDE_EXIT_NONZERO');
         expect(run.tasks['TASK-001']!.executionEpisodes[0]!.outcome).toBe('session_error');
+        /**
+         * 不自动重试与允许用户稍后显式恢复是两个独立协议：首次驱动仍只
+         * 调用一次 Execution，但终态必须保存已经启动的 Session 身份。
+         */
+        expect(run.resumePoint).toEqual({
+          fromStatus: 'running',
+          taskId: 'TASK-001',
+          sessionId: expect.any(String),
+          sessionType: 'execution',
+        });
         // 失败 Session Record：exitCode 3、无结构化结果。
         const records = await harness.listSessionRecords();
         expect(records).toHaveLength(3);

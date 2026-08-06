@@ -262,3 +262,43 @@ export function buildPlanningResumePrompt(): string {
 
 返回完整 TaskPlanDraft。不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }
+
+/**
+ * 确定性校验打回后的 Planning 续接修正提示词。
+ *
+ * 原 transcript 已包含完整 SPEC、仓库事实、规划契约与被拒草稿本身；
+ * 修正会话只携带精确的校验结论，模型据此做定向修正，而不是盲目重规划。
+ */
+export function buildPlanningCorrectionPrompt(error: string): string {
+  return `你上一轮返回的 TaskPlanDraft 未通过系统的确定性校验，未被提交。
+
+VALIDATION_ERROR（确定性校验结论）：
+${error}
+
+请针对该校验结论修正计划，并返回一份完整的修正后 TaskPlanDraft：不是局部补丁，也不要只解释原因。Planning 的只读边界、Task 拆分规则、依赖约束、验收条件必须由 verificationPlan 逐条覆盖等结构化结果契约全部继续有效。
+
+不要返回 Markdown，不要在结构化结果之外输出解释。`;
+}
+
+/**
+ * 修正轮次无法续接原会话时的全新会话附录。
+ *
+ * 全新会话没有原 transcript，必须随完整规划提示重新提供被拒草稿与
+ * 确定性校验结论；小节格式与 PLAN_REVIEW_FEEDBACK 保持一致。
+ */
+export function buildPlanningCorrectionAppendix(
+  rejectedDraft: TaskPlanDraft,
+  error: string,
+): string {
+  return [
+    'PLAN_DRAFT_CORRECTION（上一趟 Planning 草稿未通过系统确定性校验）：',
+    '',
+    'REJECTED_DRAFT（JSON）：',
+    toJson(rejectedDraft),
+    '',
+    'VALIDATION_ERROR（确定性校验结论）：',
+    error,
+    '',
+    '必须针对该校验结论修正后返回一份完整的新 TaskPlanDraft；不要返回局部补丁，也不要只解释原方案。',
+  ].join('\n');
+}

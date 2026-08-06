@@ -10,9 +10,16 @@
  *
  * 失败语义：会话未启动的启动期失败直接终态 failed；会话启动后的失败先
  * 尽力写失败 Session Record（已完成 Record 不可变、不补写），再清槽并把
- * Run 转 failed；不自动重试、不降级。
+ * Run 转 failed；外部失败不自动重试、不降级。
+ *
+ * 唯一的例外是草稿确定性校验打回（PLAN_INVALID / PLAN_REVISION_CONFLICT）：
+ * 校验结论精确且可由模型定向修正，因此续接刚完成的 Planner 会话（原
+ * transcript 保留完整 SPEC 与仓库分析），把校验错误作为反馈交还模型，
+ * 最多修正 MAX_PLAN_DRAFT_CORRECTIONS 轮；仍不通过才按终态失败收尾。
+ * 该回路与独立 Plan Review 的语义打回反馈回路同级，不修复草稿本身
+ * （SPEC §7.5 仍原样拒绝），只是不把可修正的模型疏漏升级为整 Run 终止。
  */
-import { ApexError } from '../../domain/errors.js';
+import { ApexError, isApexError } from '../../domain/errors.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
@@ -20,6 +27,8 @@ import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 import {
+  buildPlanningCorrectionAppendix,
+  buildPlanningCorrectionPrompt,
   buildPlanningPrompt,
   buildPlanningResumePrompt,
   type CompletedTaskSummary,
@@ -33,9 +42,29 @@ import {
   writeCompletedSessionRecord,
   type ActiveSessionHandle,
 } from './claude-session.js';
-import { invokeResumableSession } from './resumable-session.js';
+import { invokeResumableSession, type SessionResumeHint } from './resumable-session.js';
 import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js';
 import { sanitizePlanRevisionTrigger } from './plan-revision-trigger.js';
+
+/**
+ * 同一趟 Planning 内确定性校验打回的最大修正轮数。
+ *
+ * 首轮草稿之后最多续接修正两轮（共三份草稿），与独立 Plan Review 的
+ * 返工上限同量级；计数只在单次驱动内有效，进程崩溃后经 resume 重开时
+ * 重新计数——与既有 resume 语义一致，不为此扩展持久化契约。
+ */
+export const MAX_PLAN_DRAFT_CORRECTIONS = 2;
+
+/**
+ * 只有草稿自身的确定性缺陷才可交还模型修正；Revision 上限、状态损坏与
+ * 外部基础设施问题重规划也无法消除，不在修正回路内。
+ */
+function isCorrectablePlanDraftError(error: unknown): error is ApexError {
+  return (
+    isApexError(error) &&
+    (error.errorCode === 'PLAN_INVALID' || error.errorCode === 'PLAN_REVISION_CONFLICT')
+  );
+}
 
 export type GeneratePlanRevisionResult =
   /** 草稿已通过确定性校验并持久化引用，等待独立 Plan Review。 */
@@ -185,16 +214,6 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       return failTerminal(run, error as ApexError);
     }
 
-    // §8.3：Planning 前置 Git 不变量 + Planning 快照。
-    let startFact;
-    try {
-      startFact = await deps.git.assertSessionStart(root, sessionGitFacts(run), {
-        readOnlySessionType: 'planning',
-      });
-    } catch (error) {
-      return failTerminal(run, error as ApexError);
-    }
-
     let planReviewFeedback;
     try {
       planReviewFeedback = await readPlanReviewFeedback(deps, run);
@@ -226,92 +245,148 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       permissionMode: 'plan',
       repositoryRoot: root,
     } as const;
-    const invocation = await invokeResumableSession(deps, {
-      run,
-      session: sessionBase,
-      freshPrompt: prompt,
-      resume:
-        options?.resumeFromSessionId === undefined
-          ? null
-          : {
-              sessionId: options.resumeFromSessionId,
-              prompt: buildPlanningResumePrompt(),
-            },
-      // Planning 没有 Episode；失败 Record 已由协调器保存，新 activeSession
-      // 会在同一个 run.json 提交点直接接管旧槽位。
-      closeResumeAttempt: (handle) => handle.run,
-    });
-    if (invocation.kind === 'failed') {
-      return failWithSession(invocation.handle, invocation.error);
-    }
-    const { handle, fact } = invocation;
 
-    // §6.3 第 5 步：先写 completed Session Record，再提交业务结果。
-    try {
-      await writeCompletedSessionRecord(deps, handle, fact);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
-    }
+    /*
+     * 确定性校验修正回路：首轮消费 resume 命令传入的一次性续接提示；草稿
+     * 被确定性校验（SPEC §7.5）打回时改为续接刚完成的 Planner 会话——原
+     * transcript 保留完整 SPEC 与仓库分析，模型凭精确校验结论定向修正，
+     * 而不是丢弃整趟规划。每轮会话重新执行 §8.3 前置不变量，只读边界与
+     * SPEC 复核语义与首轮完全一致；轮次有界，耗尽后按终态失败收尾。
+     */
+    let resumeHint: SessionResumeHint | null =
+      options?.resumeFromSessionId === undefined
+        ? null
+        : {
+            sessionId: options.resumeFromSessionId,
+            prompt: buildPlanningResumePrompt(),
+          };
+    let freshPrompt = prompt;
+    let sessionRun = run;
+    let corrections = 0;
 
-    // §8.3：Planning 副作用检测（不自动回滚）。
-    try {
-      await deps.git.assertSessionEnd(root, sessionGitFacts(run), startFact);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
-    }
+    for (;;) {
+      // §8.3：Planning 前置 Git 不变量 + Planning 快照。
+      let startFact;
+      try {
+        startFact = await deps.git.assertSessionStart(root, sessionGitFacts(sessionRun), {
+          readOnlySessionType: 'planning',
+        });
+      } catch (error) {
+        return failTerminal(sessionRun, error as ApexError);
+      }
 
-    // §3.2：Session 正常结束后、提交结果前重算 SPEC SHA-256。
-    let specAfter;
-    try {
-      specAfter = await deps.git.readSpecFact(root, run.spec.path);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
-    }
-    if (specAfter.sha256 !== specBefore.sha256) {
-      // SPEC 在 Planning 期间变化：草稿基于旧 SPEC，丢弃；SPEC_CHANGED
-      // planning→planning 不换状态，清槽后由驱动器用新 SPEC 重跑。
-      deps.logger.log('debug', 'planning.spec_changed', {
-        sessionId: handle.sessionId,
-        nextRevision: run.planRevision + 1,
+      const invocation = await invokeResumableSession(deps, {
+        run: sessionRun,
+        session: sessionBase,
+        freshPrompt,
+        resume: resumeHint,
+        // Planning 没有 Episode；失败 Record 已由协调器保存，新 activeSession
+        // 会在同一个 run.json 提交点直接接管旧槽位。
+        closeResumeAttempt: (handle) => handle.run,
       });
-      const stayed: RunJson = {
-        ...handle.run,
-        activeSession: null,
-        stateRevision: handle.run.stateRevision + 1,
-        updatedAt: now(),
-      };
-      await deps.stateStore.writeRun(stayed);
-      return { kind: 'spec-changed', run: stayed };
-    }
+      if (invocation.kind === 'failed') {
+        return failWithSession(invocation.handle, invocation.error);
+      }
+      const { handle, fact } = invocation;
 
-    try {
-      const draft = deps.redaction.redactStructured(fact.structuredResult);
-      preparePlanRevisionMerge(handle.run, tasks, draft);
-      const reviewAttempt = (run.planReviewFeedback?.reviewAttempt ?? 0) + 1;
-      const staged: RunJson = {
-        ...handle.run,
-        activeSession: null,
-        planCandidate: {
-          planRevision: run.planRevision + 1,
-          plannerSessionId: handle.sessionId,
-          specSha256: specBefore.sha256,
-          trigger: safeTrigger,
+      // §6.3 第 5 步：先写 completed Session Record，再提交业务结果。
+      try {
+        await writeCompletedSessionRecord(deps, handle, fact);
+      } catch (error) {
+        return failWithSession(handle, error as ApexError);
+      }
+
+      // §8.3：Planning 副作用检测（不自动回滚）。
+      try {
+        await deps.git.assertSessionEnd(root, sessionGitFacts(sessionRun), startFact);
+      } catch (error) {
+        return failWithSession(handle, error as ApexError);
+      }
+
+      // §3.2：Session 正常结束后、提交结果前重算 SPEC SHA-256。
+      let specAfter;
+      try {
+        specAfter = await deps.git.readSpecFact(root, run.spec.path);
+      } catch (error) {
+        return failWithSession(handle, error as ApexError);
+      }
+      if (specAfter.sha256 !== specBefore.sha256) {
+        // SPEC 在 Planning 期间变化：草稿基于旧 SPEC，丢弃；SPEC_CHANGED
+        // planning→planning 不换状态，清槽后由驱动器用新 SPEC 重跑。
+        deps.logger.log('debug', 'planning.spec_changed', {
+          sessionId: handle.sessionId,
+          nextRevision: run.planRevision + 1,
+        });
+        const stayed: RunJson = {
+          ...handle.run,
+          activeSession: null,
+          stateRevision: handle.run.stateRevision + 1,
+          updatedAt: now(),
+        };
+        await deps.stateStore.writeRun(stayed);
+        return { kind: 'spec-changed', run: stayed };
+      }
+
+      let draft: TaskPlanDraft | null = null;
+      try {
+        draft = deps.redaction.redactStructured(fact.structuredResult);
+        preparePlanRevisionMerge(handle.run, tasks, draft);
+        const reviewAttempt = (run.planReviewFeedback?.reviewAttempt ?? 0) + 1;
+        const staged: RunJson = {
+          ...handle.run,
+          activeSession: null,
+          planCandidate: {
+            planRevision: run.planRevision + 1,
+            plannerSessionId: handle.sessionId,
+            specSha256: specBefore.sha256,
+            trigger: safeTrigger,
+            reviewAttempt,
+          },
+          planReviewFeedback: null,
+          stateRevision: handle.run.stateRevision + 1,
+          updatedAt: now(),
+        };
+        await deps.stateStore.writeRun(staged);
+        deps.logger.log('debug', 'planning.candidate_staged', {
+          sessionId: handle.sessionId,
+          planRevision: staged.planCandidate!.planRevision,
+          taskCount: draft.tasks.length,
           reviewAttempt,
-        },
-        planReviewFeedback: null,
-        stateRevision: handle.run.stateRevision + 1,
-        updatedAt: now(),
-      };
-      await deps.stateStore.writeRun(staged);
-      deps.logger.log('debug', 'planning.candidate_staged', {
-        sessionId: handle.sessionId,
-        planRevision: staged.planCandidate!.planRevision,
-        taskCount: draft.tasks.length,
-        reviewAttempt,
-      });
-      return { kind: 'review-needed', run: staged };
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
+        });
+        return { kind: 'review-needed', run: staged };
+      } catch (error) {
+        if (
+          draft !== null &&
+          corrections < MAX_PLAN_DRAFT_CORRECTIONS &&
+          isCorrectablePlanDraftError(error)
+        ) {
+          corrections += 1;
+          // 校验消息嵌入模型生成的草稿事实，进入提示词与终端前统一脱敏。
+          const safeMessage = deps.redaction.redactText(error.message);
+          deps.logger.log('warn', 'planning.draft_correction', {
+            sessionId: handle.sessionId,
+            errorCode: error.errorCode,
+            message: safeMessage,
+            correction: corrections,
+          });
+          deps.output.writeLine(
+            deps.redaction.redactText(
+              `↻ 计划草稿未通过确定性校验 · ${error.errorCode} · ` +
+                `续接 Planner 定向修正（第 ${corrections}/${MAX_PLAN_DRAFT_CORRECTIONS} 轮）· ${safeMessage}`,
+            ),
+          );
+          resumeHint = {
+            sessionId: handle.sessionId,
+            prompt: buildPlanningCorrectionPrompt(safeMessage),
+          };
+          // resume 不可用时的全新会话没有原 transcript，必须随完整规划
+          // 提示重新注入被拒草稿与校验结论。
+          freshPrompt = `${prompt}\n\n${buildPlanningCorrectionAppendix(draft, safeMessage)}`;
+          sessionRun = handle.run;
+          continue;
+        }
+        return failWithSession(handle, error as ApexError);
+      }
     }
   }
 

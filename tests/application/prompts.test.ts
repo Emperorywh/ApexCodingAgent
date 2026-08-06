@@ -3,6 +3,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildPlanningCorrectionAppendix,
+  buildPlanningCorrectionPrompt,
   buildPlanningPrompt,
   buildPlanningResumePrompt,
   type CompletedTaskSummary,
@@ -285,6 +287,43 @@ describe('buildPlanningResumePrompt（Planning 断点续接）', () => {
     expect(prompt).toContain('只读边界');
     expect(prompt).toContain('完整 TaskPlanDraft');
     expect(prompt).not.toContain(REPOSITORY_ROOT);
+  });
+});
+
+describe('buildPlanningCorrectionPrompt（确定性校验打回后的续接修正）', () => {
+  it('携带精确校验结论并要求返回完整修正稿', () => {
+    const prompt = buildPlanningCorrectionPrompt(
+      'task TASK-008 acceptance criterion 3 has no verification step',
+    );
+    // 续接会话复用原 transcript：只注入校验结论，不重复 SPEC 与仓库上下文。
+    expect(prompt).toContain('VALIDATION_ERROR');
+    expect(prompt).toContain('task TASK-008 acceptance criterion 3 has no verification step');
+    expect(prompt).toContain('完整的修正后 TaskPlanDraft');
+    expect(prompt).toContain('只读边界');
+    expect(prompt).toContain('verificationPlan 逐条覆盖');
+    expect(prompt).not.toContain(REPOSITORY_ROOT);
+    expect(prompt).not.toContain('REJECTED_DRAFT');
+  });
+});
+
+describe('buildPlanningCorrectionAppendix（resume 不可用后的全新会话附录）', () => {
+  it('重新注入被拒草稿与校验结论，格式与 PLAN_REVIEW_FEEDBACK 呼应', () => {
+    const appendix = buildPlanningCorrectionAppendix(
+      {
+        summary: '覆盖缺口的草稿',
+        assumptions: [],
+        retainedCheckpointDispositions: [],
+        tasks: [pendingDefinition],
+      },
+      'task TASK-002 acceptance criterion 0 has no verification step',
+    );
+    expect(appendix).toContain('PLAN_DRAFT_CORRECTION');
+    expect(appendix).toContain('REJECTED_DRAFT');
+    expect(appendix).toContain('覆盖缺口的草稿');
+    expect(appendix).toContain('"id": "TASK-002"');
+    expect(appendix).toContain('VALIDATION_ERROR');
+    expect(appendix).toContain('task TASK-002 acceptance criterion 0 has no verification step');
+    expect(appendix).toContain('完整的新 TaskPlanDraft');
   });
 });
 

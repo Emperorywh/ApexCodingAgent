@@ -203,6 +203,13 @@ describe('e2e replan_required', () => {
       const harness = await createE2EHarness();
       try {
         await seedRepo(harness.repo);
+        // Revision 3 复用已 skipped 的 ID：确定性校验打回后进入有界修正
+        // 回路，Planner 连续给出同一非法草稿，耗尽修正轮次后才终态失败。
+        const invalidRevision = {
+          stdoutLines: streamOf(
+            planDraft([{ id: 'TASK-001' }, { id: 'TASK-002', title: '复用旧 ID 的新任务' }]),
+          ),
+        };
         await harness.writeScenario({
           version: FAKE_VERSION,
           help: COMPLETE_HELP,
@@ -213,12 +220,10 @@ describe('e2e replan_required', () => {
             { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }], { summary: '收缩计划' })) },
             // TASK-001 再次请求 replan。
             { stdoutLines: streamOf(REPLAN_RESULT) },
-            // Revision 3：复用已 skipped 的 TASK-002 ID → 必须拒绝。
-            {
-              stdoutLines: streamOf(
-                planDraft([{ id: 'TASK-001' }, { id: 'TASK-002', title: '复用旧 ID 的新任务' }]),
-              ),
-            },
+            // Revision 3：复用已 skipped 的 TASK-002 ID → 首轮 + 两轮修正均拒绝。
+            invalidRevision,
+            invalidRevision,
+            invalidRevision,
           ],
         });
 
@@ -227,9 +232,14 @@ describe('e2e replan_required', () => {
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('PLAN_REVISION_CONFLICT');
         expect(result.run.tasks['TASK-002']!.status).toBe('skipped');
-        // 两个已提交 Revision 各有独立 Plan Review；非法第三版在确定性校验处失败。
+        expect(harness.outputLines.join('\n')).toContain('续接 Planner 定向修正（第 2/2 轮）');
+        /*
+         * 两个已提交 Revision 各有独立 Plan Review；非法第三版在确定性
+         * 校验处失败。业务会话：3 趟正式 Planning + 2 趟修正续接 +
+         * 2 趟 Plan Review + 2 趟 Execution。
+         */
         const records = await harness.readRecords();
-        expect(records.filter((record) => record.argv.includes('--session-id'))).toHaveLength(7);
+        expect(records.filter((record) => record.argv.includes('--session-id'))).toHaveLength(9);
       } finally {
         await harness.cleanup();
       }
@@ -243,6 +253,11 @@ describe('e2e replan_required', () => {
       const harness = await createE2EHarness();
       try {
         await seedRepo(harness.repo);
+        // 缺 disposition 的 Revision 同样先进入修正回路；Planner 连续
+        // 返回同一非法草稿，耗尽修正轮次后按 PLAN_REVISION_CONFLICT 终态。
+        const invalidRevision = {
+          stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }], { summary: '缺归属计划' })),
+        };
         await harness.writeScenario({
           version: FAKE_VERSION,
           help: COMPLETE_HELP,
@@ -253,8 +268,10 @@ describe('e2e replan_required', () => {
               writeFiles: [{ path: 'src/draft-work.ts', content: 'export const draft = 1;\n' }],
               stdoutLines: streamOf(REPLAN_RESULT),
             },
-            // Revision 2 不含 disposition → PLAN_REVISION_CONFLICT。
-            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }], { summary: '缺归属计划' })) },
+            // Revision 2 不含 disposition → 首轮 + 两轮修正均 PLAN_REVISION_CONFLICT。
+            invalidRevision,
+            invalidRevision,
+            invalidRevision,
           ],
         });
 

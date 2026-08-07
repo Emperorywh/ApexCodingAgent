@@ -2,8 +2,9 @@
  * Run state machine (SPEC §6.1): six states, an explicit transition table and
  * the domain event table. Terminal states never recover through domain events;
  * the single exception is the `resume` command (SPEC §17), which may reopen a
- * `failed` Run whose terminal error is RUN_INTERRUPTED back to its recorded
- * pre-interrupt status — all other continued work requires a new Run.
+ * `failed` Run whose terminal error carries a resume point (see
+ * `isResumableErrorCode`) back to its recorded pre-failure status — all other
+ * continued work requires a new Run.
  */
 import { ApexError } from './errors.js';
 import { RUN_STATUSES, type RunStatus } from './schemas/run-json.js';
@@ -27,7 +28,7 @@ export const RUN_TRANSITIONS: Readonly<Record<RunStatus, readonly RunStatus[]>> 
   running: ['planning', 'final_review', 'failed', 'abandoned'],
   final_review: ['planning', 'completed', 'failed', 'abandoned'],
   completed: [],
-  // failed -> 非终态只由 resume 命令（RUN_INTERRUPTED 恢复点）使用；
+  // failed -> 非终态只由 resume 命令（携带恢复点的可续接失败）使用；
   // 域事件表不含任何离开终态的事件。
   failed: ['planning', 'running', 'final_review'],
   abandoned: [],

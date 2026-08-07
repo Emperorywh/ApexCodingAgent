@@ -771,6 +771,87 @@ describe('e2e independent task review', () => {
   );
 
   it(
+    '复核与修复会话均非法时保留候选与恢复点，resume 续接后批准完成',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApproveTaskReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
+            {
+              writeFiles: [{ path: 'src/feature.ts', content: 'export const value = 1;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            // 语义非法：approved 却携带非空 issues（领域门禁拒绝）。
+            {
+              stdoutLines: streamOf(
+                taskReviewApproved(1, { issues: ['approved 不允许携带非空 issues'] }),
+              ),
+            },
+            // 修复会话同样非法：耗尽接力次数后转 failed。
+            {
+              stdoutLines: streamOf(
+                taskReviewApproved(1, { issues: ['approved 不允许携带非空 issues'] }),
+              ),
+            },
+          ],
+        });
+
+        const result = await harness.start();
+        expect(result.kind).toBe('failed');
+        if (result.kind !== 'failed') return;
+        expect(result.run.lastError?.errorCode).toBe('TASK_REVIEW_RESULT_INVALID');
+
+        /**
+         * 结果契约失败不得报废候选：failed Task 保留候选结果与 Checkpoint，
+         * 恢复点续接最后返回非法结果的修复会话。
+         */
+        const taskBeforeResume = result.run.tasks['TASK-001']!;
+        expect(taskBeforeResume.status).toBe('failed');
+        expect(taskBeforeResume.candidateResult?.decision).toBe('completed');
+        expect(taskBeforeResume.candidateCheckpoint).not.toBeNull();
+        expect(result.run.resumePoint?.sessionType).toBe('task_review');
+        expect(result.run.resumePoint?.taskId).toBe('TASK-001');
+        const repairSessionId = result.run.resumePoint!.sessionId!;
+        expect(repairSessionId).not.toBe('');
+
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApproveTaskReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(taskReviewApproved()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+        const resumed = await harness.resume();
+        expect(resumed.kind, JSON.stringify(resumed)).toBe('completed');
+        if (resumed.kind !== 'completed') return;
+
+        // resume 不重跑 Execution：续接的 Reviewer 复核保留的候选后直接批准。
+        const task = resumed.run.tasks['TASK-001']!;
+        expect(task.status).toBe('completed');
+        expect(task.executionEpisodes).toHaveLength(1);
+        const invocations = await harness.readRecords();
+        const resumedInvocation = invocations.find((record) => record.argv.includes('--resume'));
+        expect(resumedInvocation).toBeDefined();
+        expect(
+          resumedInvocation!.argv[resumedInvocation!.argv.indexOf('--resume') + 1],
+        ).toBe(repairSessionId);
+        expect(isTaskReviewInvocation(resumedInvocation!)).toBe(true);
+        expect(resumedInvocation!.stdin).toContain('未通过契约校验');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
     '同一 Task 连续三次 changes_required 后以 TASK_REVIEW_REWORK_LIMIT_EXCEEDED 终止',
     async () => {
       const harness = await createE2EHarness();

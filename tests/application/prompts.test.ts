@@ -373,10 +373,19 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
   });
 
   it('恢复提示只续接 Reviewer 自己的上下文', () => {
-    const prompt = buildPlanReviewResumePrompt();
+    const prompt = buildPlanReviewResumePrompt({ cause: 'RUN_INTERRUPTED' });
+    expect(prompt).toContain('被前台中断');
     expect(prompt).toContain('只续接 Reviewer 自己的复核上下文');
     expect(prompt).toContain('不得恢复或引用 Planning Session');
     expect(prompt).toContain('完整 PlanReviewResult');
+    expect(prompt).toContain('approved 的 assessment 不得携带任何 issue');
+  });
+
+  it('结果契约失败的恢复提示如实陈述断点原因', () => {
+    const prompt = buildPlanReviewResumePrompt({ cause: 'PLAN_REVIEW_RESULT_INVALID' });
+    expect(prompt).toContain('未通过契约校验');
+    expect(prompt).not.toContain('被前台中断');
+    expect(prompt).toContain('重新返回合法结果');
     expect(prompt).toContain('approved 的 assessment 不得携带任何 issue');
   });
 });
@@ -661,11 +670,20 @@ describe('buildTaskReviewPrompt（独立 Task 完成复核）', () => {
   });
 
   it('恢复提示只续接 Reviewer 自身上下文，不接触 Execution Session', () => {
-    const prompt = buildTaskReviewResumePrompt();
+    const prompt = buildTaskReviewResumePrompt({ cause: 'RUN_INTERRUPTED' });
+    expect(prompt).toContain('被前台中断');
     expect(prompt).toContain('只续接该 Reviewer 自己的复核上下文');
     expect(prompt).toContain('不得恢复或引用产生候选实现的 Execution Session');
     expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
     expect(prompt).toContain('TaskReviewResult');
+  });
+
+  it('结果契约失败的恢复提示如实陈述断点原因', () => {
+    const prompt = buildTaskReviewResumePrompt({ cause: 'TASK_REVIEW_RESULT_INVALID' });
+    expect(prompt).toContain('未通过契约校验');
+    expect(prompt).not.toContain('被前台中断');
+    expect(prompt).toContain('重新返回合法结果');
+    expect(prompt).toContain('不得恢复或引用产生候选实现的 Execution Session');
   });
 });
 
@@ -789,16 +807,25 @@ describe('buildFinalReviewPrompt（SPEC §26 + §14.1）', () => {
 
 describe('buildFinalReviewResumePrompt（Final Review 断点续接）', () => {
   it('要求保留中断前修改并继续完成整体复核', () => {
-    const prompt = buildFinalReviewResumePrompt();
+    const prompt = buildFinalReviewResumePrompt({ cause: 'RUN_INTERRUPTED' });
     /**
      * Final Review 是可写会话，恢复提示必须显式保留当前仓库事实，避免
      * 模型把中断前已经产生但尚未收尾的复核修改当作应回滚内容。
      */
+    expect(prompt).toContain('被前台中断');
     expect(prompt).toContain('从原对话断点继续');
     expect(prompt).toContain('不要推倒重来');
     expect(prompt).toContain('完成整体复核');
     expect(prompt).toContain('不得把独立的开发服务器留在后台');
     expect(prompt).toContain('原则上只进行两轮有针对性的修正');
+    expect(prompt).toContain('FinalReviewResult');
+  });
+
+  it('结果契约失败的恢复提示如实陈述断点原因', () => {
+    const prompt = buildFinalReviewResumePrompt({ cause: 'FINAL_REVIEW_RESULT_INVALID' });
+    expect(prompt).toContain('未通过契约校验');
+    expect(prompt).not.toContain('被前台中断');
+    expect(prompt).toContain('重新返回合法结果');
     expect(prompt).toContain('FinalReviewResult');
   });
 });

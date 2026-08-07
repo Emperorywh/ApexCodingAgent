@@ -6,6 +6,7 @@
  *
  * 纯函数，不依赖 node:*。
  */
+import { isResultContractErrorCode, type ErrorCode } from '../../domain/errors.js';
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type {
@@ -160,11 +161,19 @@ export function buildFinalReviewPrompt(input: FinalReviewPromptInput): string {
  *
  * 原 transcript 已包含全部 Task 证据与 Review 契约；仓库可能保留中断前
  * 的复核修改，因此恢复后必须基于当前文件继续，而不是重新开始或撤销。
+ * 首句必须如实陈述断点原因：结果契约失败的上一趟会话并未被中断，其
+ * 复核事实仍然有效，只需按契约重新表达结论。
  */
-export function buildFinalReviewResumePrompt(): string {
-  return `此前的 Final Review 会话被前台中断，本会话从原对话断点继续。
+export function buildFinalReviewResumePrompt(input: { readonly cause: ErrorCode }): string {
+  const causeSentence =
+    input.cause === 'RUN_INTERRUPTED'
+      ? '此前的 Final Review 会话被前台中断，本会话从原对话断点继续。'
+      : isResultContractErrorCode(input.cause)
+        ? '此前的 Final Review 会话进程正常结束，但返回的 FinalReviewResult 未通过契约校验；本会话续接原复核上下文，基于已完成的复核事实重新返回合法结果。'
+        : `此前的 Final Review 会话因可续接错误 ${input.cause} 终止，本会话从原对话断点继续。`;
+  return `${causeSentence}
 
-仓库可能保留中断前的复核修改：先核对当前文件与 Git 状态，在此基础上继续完成整体复核，不要推倒重来。原安全边界、验收证据核对、测试要求、replan_required 规则和 FinalReviewResult 结构化结果契约全部继续有效。
+仓库可能保留此前会话的复核修改：先核对当前文件与 Git 状态，在此基础上继续完成整体复核，不要推倒重来。原安全边界、验收证据核对、测试要求、replan_required 规则和 FinalReviewResult 结构化结果契约全部继续有效。
 
 ${VERIFICATION_POLICY}
 

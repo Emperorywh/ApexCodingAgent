@@ -242,6 +242,41 @@ describe('resumePoint rules (§2.4/§17 resume)', () => {
     expect(() => assertRunInvariants(run, { tasks: [mkTask('TASK-001')] })).not.toThrow();
   });
 
+  it('accepts a planning resumePoint with a retained candidate after a result-contract failure', () => {
+    /**
+     * 计划复核结果契约失败：Run 终态 failed，恢复点续接 Reviewer 会话，
+     * 候选草稿引用必须保留供 resume 后复核同一份草稿。
+     */
+    const failure = mkErrorRecord({
+      errorCode: 'PLAN_REVIEW_RESULT_INVALID',
+      errorClass: 'claude_error',
+      stage: 'plan_review',
+      taskId: null,
+      message: 'approved task assessment TASK-001 requires an empty issues list',
+    });
+    const run = mkRun({
+      status: 'failed',
+      terminalAt: T1,
+      lastError: failure,
+      planCandidate: {
+        planRevision: 1,
+        plannerSessionId: UUID_1,
+        specSha256: SHA256_A,
+        trigger: { type: 'initial', reason: '初始计划', sourceSessionId: null },
+        reviewAttempt: 1,
+      },
+      resumePoint: {
+        fromStatus: 'planning',
+        taskId: null,
+        sessionId: UUID_2,
+        sessionType: 'plan_review',
+      },
+    });
+
+    expect(() => assertRunJsonRules(run)).not.toThrow();
+    expect(() => assertRunInvariants(run, null)).not.toThrow();
+  });
+
   it('rejects resumePoint on non-failed or differently-failed runs', () => {
     expectApexError(
       () =>

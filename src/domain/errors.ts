@@ -131,6 +131,22 @@ export function isTurnBudgetExhaustedErrorCode(code: ErrorCode): boolean {
 }
 
 /**
+ * 判断稳定错误是否为结构化结果的契约校验失败。
+ *
+ * 四个阶段的 *_RESULT_INVALID 共享同一形态：Claude 会话进程正常结束、
+ * transcript 与已持久化事实（计划草稿引用、Task 候选结果与 Checkpoint）
+ * 完好，唯一缺陷是结构化结果未通过 Schema 或领域语义门禁。
+ */
+export function isResultContractErrorCode(code: ErrorCode): boolean {
+  return (
+    code === 'CLAUDE_RESULT_INVALID' ||
+    code === 'PLAN_REVIEW_RESULT_INVALID' ||
+    code === 'TASK_REVIEW_RESULT_INVALID' ||
+    code === 'FINAL_REVIEW_RESULT_INVALID'
+  );
+}
+
+/**
  * 判断终态失败是否携带可由 `resume` 消费的确定性恢复点。
  *
  * 前台中断与已启动进程的非零退出，都可能已经在 transcript 中留下可继续
@@ -138,6 +154,12 @@ export function isTurnBudgetExhaustedErrorCode(code: ErrorCode): boolean {
  * 续接（fork 原会话并追加一趟等额预算），追加次数用尽后才按可续接失败
  * 终结当前 Run；除此之外，恢复资格只表示允许用户显式执行 `resume`，
  * 当前 Run 仍立即失败，绝不在原驱动循环中自动重试外部调用。
+ *
+ * 结果契约失败同样必须可续接：会话进程正常结束，transcript 与候选事实
+ * 完好，进程内的结果修复接力耗尽只说明结果通道与当前模型系统性失配；
+ * 持久化恢复点（并保留计划候选）让用户可以显式 resume——例如先升级
+ * CLI 或修正提示词——续接同一会话重新交付合法结果，而不是把已完成
+ * 的规划与执行成果整体报废。
  *
  * 通用非零退出可能发生在 transcript 尚未建立之前。此时恢复协调器会让
  * Claude 明确判定续接不可用，再按既有协议创建一次全新 Session；这比按
@@ -147,7 +169,8 @@ export function isResumableErrorCode(code: ErrorCode): boolean {
   return (
     code === 'RUN_INTERRUPTED' ||
     isTurnBudgetExhaustedErrorCode(code) ||
-    code === 'CLAUDE_EXIT_NONZERO'
+    code === 'CLAUDE_EXIT_NONZERO' ||
+    isResultContractErrorCode(code)
   );
 }
 

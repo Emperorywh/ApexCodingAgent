@@ -4,6 +4,7 @@
  * 该提示词不注入 Execution transcript、思考过程、自报结果或会话续接
  * 信息；复核模型必须从全新上下文独立读取仓库并验证候选实现。
  */
+import { isResultContractErrorCode, type ErrorCode } from '../../domain/errors.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import { VERIFICATION_POLICY } from './verification-policy.js';
 
@@ -67,10 +68,18 @@ ${VERIFICATION_POLICY}
  * 中断恢复只续接 Reviewer 自己的对话，不接触候选 Execution Session。
  *
  * 原始完整上下文已经存在于 Reviewer transcript；恢复提示只重申只读边界
- * 和结果契约，防止中断后的模型误把复核变成实现会话。
+ * 和结果契约，防止中断后的模型误把复核变成实现会话。首句必须如实陈述
+ * 断点原因：结果契约失败的上一趟会话并未被中断，只是把复核结论重新
+ * 按契约表达，不能让模型误以为复核工作未完成而推倒重来。
  */
-export function buildTaskReviewResumePrompt(): string {
-  return `此前的独立 Task Review Session 被前台中断，本会话只续接该 Reviewer 自己的复核上下文。
+export function buildTaskReviewResumePrompt(input: { readonly cause: ErrorCode }): string {
+  const causeSentence =
+    input.cause === 'RUN_INTERRUPTED'
+      ? '此前的独立 Task Review Session 被前台中断，本会话只续接该 Reviewer 自己的复核上下文。'
+      : isResultContractErrorCode(input.cause)
+        ? '此前的独立 Task Review Session 进程正常结束，但返回的 TaskReviewResult 未通过契约校验；本会话续接该 Reviewer 的复核上下文，基于已完成的复核事实重新返回合法结果。'
+        : `此前的独立 Task Review Session 因可续接错误 ${input.cause} 终止，本会话只续接该 Reviewer 自己的复核上下文。`;
+  return `${causeSentence}
 
 继续从仓库事实核对 CURRENT_TASK 和候选 Checkpoint。不得恢复或引用产生候选实现的 Execution Session；不得修改、创建、删除、暂存或提交文件，也不得移动 HEAD。
 

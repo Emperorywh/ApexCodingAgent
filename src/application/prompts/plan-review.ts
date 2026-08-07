@@ -4,6 +4,7 @@
  * Reviewer 不继承 Planner 对话，只接收已经通过确定性领域校验的完整草稿，
  * 并从仓库、SPEC 与任务预算事实独立判断是否允许提交 Plan Revision。
  */
+import { isResultContractErrorCode, type ErrorCode } from '../../domain/errors.js';
 import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 
 export interface PlanReviewPromptInput {
@@ -62,10 +63,18 @@ ${toJson(input.draft)}
  * Plan Review 中断后只续接 Reviewer 自己的上下文。
  *
  * 原 transcript 已含完整草稿与仓库边界，本提示只重申独立性、只读性和
- * 结构化结果契约，防止恢复后退化为 Planner 自审。
+ * 结构化结果契约，防止恢复后退化为 Planner 自审。首句必须如实陈述断点
+ * 原因：结果契约失败的上一趟会话并未被中断，其复核事实仍然有效，只需
+ * 按契约重新表达结论，不能让模型误以为复核未完成而推倒重来。
  */
-export function buildPlanReviewResumePrompt(): string {
-  return `此前的独立 Plan Review Session 被前台中断，本会话只续接 Reviewer 自己的复核上下文。
+export function buildPlanReviewResumePrompt(input: { readonly cause: ErrorCode }): string {
+  const causeSentence =
+    input.cause === 'RUN_INTERRUPTED'
+      ? '此前的独立 Plan Review Session 被前台中断，本会话只续接 Reviewer 自己的复核上下文。'
+      : isResultContractErrorCode(input.cause)
+        ? '此前的独立 Plan Review Session 进程正常结束，但返回的 PlanReviewResult 未通过契约校验；本会话续接该 Reviewer 的复核上下文，基于已完成的复核事实重新返回合法结果。'
+        : `此前的独立 Plan Review Session 因可续接错误 ${input.cause} 终止，本会话只续接 Reviewer 自己的复核上下文。`;
+  return `${causeSentence}
 
 继续基于仓库、SPEC 与原 PLAN_CANDIDATE 检查 Task 单一目标、nonGoals、结构化验证覆盖和预算可完成性。不得恢复或引用 Planning Session，不得修改仓库或移动 HEAD。
 

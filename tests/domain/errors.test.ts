@@ -11,6 +11,7 @@ import {
   errorClassForCode,
   isApexError,
   isResumableErrorCode,
+  isResultContractErrorCode,
   isTurnBudgetExhaustedErrorCode,
   type ErrorClass,
   type ErrorCode,
@@ -121,6 +122,22 @@ describe('error model (§15)', () => {
     expect(isResumableErrorCode('CLAUDE_EXIT_NONZERO')).toBe(true);
     expect(isResumableErrorCode('CLAUDE_START_FAILED')).toBe(false);
     expect(isResumableErrorCode('GIT_COMMAND_FAILED')).toBe(false);
+  });
+
+  it('keeps result-contract failures resumable across all four stages', () => {
+    /**
+     * 结果契约失败时进程正常结束、transcript 与候选事实完好；修复接力
+     * 耗尽后持久化恢复点，显式 resume 续接同一会话重新交付合法结果，
+     * 而不是报废整个 Run。
+     */
+    expect(isResumableErrorCode('CLAUDE_RESULT_INVALID')).toBe(true);
+    expect(isResumableErrorCode('PLAN_REVIEW_RESULT_INVALID')).toBe(true);
+    expect(isResumableErrorCode('TASK_REVIEW_RESULT_INVALID')).toBe(true);
+    expect(isResumableErrorCode('FINAL_REVIEW_RESULT_INVALID')).toBe(true);
+    expect(isResultContractErrorCode('CLAUDE_RESULT_INVALID')).toBe(true);
+    expect(isResultContractErrorCode('FINAL_REVIEW_RESULT_INVALID')).toBe(true);
+    expect(isResultContractErrorCode('CLAUDE_EXIT_NONZERO')).toBe(false);
+    expect(isResultContractErrorCode('RUN_INTERRUPTED')).toBe(false);
   });
 
   it('classifies only the stable Execution turn-budget error as exhausted', () => {

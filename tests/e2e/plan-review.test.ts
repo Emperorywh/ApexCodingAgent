@@ -301,7 +301,7 @@ describe('e2e independent plan review — 边界与失败语义', () => {
   );
 
   it(
-    '修复会话仍返回非法结果后以 PLAN_REVIEW_RESULT_INVALID 终止',
+    '修复会话仍返回非法结果时保留候选与恢复点，resume 续接复核会话后提交计划',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -324,13 +324,63 @@ describe('e2e independent plan review — 边界与失败语义', () => {
         expect(result.run.lastError?.errorCode).toBe('PLAN_REVIEW_RESULT_INVALID');
         expect(result.run.planRevision).toBe(0);
         expect(result.run.tasksSha256).toBeNull();
-        expect(result.run.planCandidate).toBeNull();
+        /**
+         * 结果契约失败不得报废 Run（2026-08 真实 Run 复盘）：候选草稿引用
+         * 与恢复点必须持久化，恢复点续接最后返回非法结果的修复会话；
+         * 计划尚未提交，planReviewFeedback 不存在。
+         */
+        expect(result.run.planCandidate).not.toBeNull();
+        expect(result.run.planCandidate?.reviewAttempt).toBe(1);
         expect(result.run.planReviewFeedback).toBeNull();
-        expect((await harness.listSessionRecords()).map((record) => record.type)).toEqual([
+        const failedRecords = await harness.listSessionRecords();
+        expect(failedRecords.map((record) => record.type)).toEqual([
           'planning',
           'plan_review',
           'plan_review',
         ]);
+        expect(result.run.planCandidate?.plannerSessionId).toBe(failedRecords[0]!.sessionId);
+        expect(result.run.resumePoint).toEqual({
+          fromStatus: 'planning',
+          taskId: null,
+          sessionId: failedRecords[2]!.sessionId,
+          sessionType: 'plan_review',
+        });
+
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApprovePlanReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(planReviewApproved(['TASK-001'])) },
+            {
+              writeFiles: [{ path: 'src/focused.ts', content: 'export const focused = true;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+        const resumed = await harness.resume();
+        expect(resumed.kind, JSON.stringify(resumed)).toBe('completed');
+        if (resumed.kind !== 'completed') return;
+
+        // resume 的首趟复核调用经 --resume 续接修复会话，提示词如实陈述
+        // 契约失败原因；计划由该续接会话批准后提交。
+        const resumeInvocations = (await harness.readRecords()).filter((record) =>
+          record.argv.includes('--resume'),
+        );
+        expect(resumeInvocations).toHaveLength(1);
+        expect(
+          resumeInvocations[0]!.argv[resumeInvocations[0]!.argv.indexOf('--resume') + 1],
+        ).toBe(failedRecords[2]!.sessionId);
+        expect(resumeInvocations[0]!.stdin).toContain('未通过契约校验');
+        expect(resumeInvocations[0]!.stdin).not.toContain('被前台中断');
+
+        const reviewRecords = (await harness.listSessionRecords()).filter(
+          (record) => record.type === 'plan_review',
+        );
+        expect(reviewRecords).toHaveLength(3);
+        const tasks = await harness.readTasksJson();
+        expect(tasks.planReviewerSessionId).toBe(reviewRecords[2]!.sessionId);
       } finally {
         await harness.cleanup();
       }

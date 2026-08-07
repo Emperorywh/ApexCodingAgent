@@ -1,8 +1,8 @@
 /**
  * toTerminalFailedRun 的 resumePoint 附着规则（SPEC §2.4/§17 resume）：
- * 前台中断、Claude 回合预算耗尽与已启动进程的非零退出会在清槽前记录
- * 恢复点（失败前状态、对应 Task 与 Claude Session ID）；非会话型错误不
- * 得伪造恢复点。
+ * 前台中断、Claude 回合预算耗尽、已启动进程的非零退出与结果契约失败会
+ * 在清槽前记录恢复点（失败前状态、对应 Task 与 Claude Session ID）；
+ * 非会话型错误不得伪造恢复点。
  */
 import { describe, expect, it } from 'vitest';
 import { createRedactor } from '../../src/adapters/redaction/redactor.js';
@@ -210,5 +210,127 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
       sessionType: 'task_review',
     });
     expect(terminal.tasks['TASK-001']!.status).toBe('running');
+  });
+
+  it('PLAN_REVIEW_RESULT_INVALID keeps the plan candidate and reviewer session resumable', () => {
+    /**
+     * 结果修复接力耗尽后的真实失败形状（2026-08 真实 Run 复盘）：进程正常
+     * 结束、transcript 与候选草稿引用完好，只有结果未过语义门禁。恢复点
+     * 续接复核会话，候选引用必须保留，否则 resume 无草稿可审。
+     */
+    const contractFailure = new ApexError({
+      code: 'PLAN_REVIEW_RESULT_INVALID',
+      stage: 'plan_review',
+      message: 'approved task assessment TASK-001 requires an empty issues list',
+    });
+    const candidate = {
+      planRevision: 1,
+      plannerSessionId: UUID_1,
+      specSha256: SHA256_A,
+      trigger: { type: 'initial' as const, reason: '初始计划', sourceSessionId: null },
+      reviewAttempt: 1,
+    };
+    const reviewing = mkRun({
+      status: 'planning',
+      planCandidate: candidate,
+      activeSession: { ...activeSession, sessionId: UUID_2, type: 'plan_review', taskId: null },
+    });
+    const terminal = toTerminalFailedRun(reviewing, contractFailure, T1, redaction);
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'planning',
+      taskId: null,
+      sessionId: UUID_2,
+      sessionType: 'plan_review',
+    });
+    expect(terminal.planCandidate).toEqual(candidate);
+  });
+
+  it('TASK_REVIEW_RESULT_INVALID keeps the failed task candidate for the resumed reviewer', () => {
+    /**
+     * review-task.failWithSession 已把 Task 转 failed 并保留候选；本函数
+     * 不得再清候选，resumePoint 续接返回非法结果的 Reviewer 会话。
+     */
+    const contractFailure = new ApexError({
+      code: 'TASK_REVIEW_RESULT_INVALID',
+      stage: 'task_review',
+      message: 'approved requires an empty issues list',
+    });
+    const reviewing = mkRun({
+      status: 'running',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      currentTaskId: 'TASK-001',
+      activeSession: { ...activeSession, sessionId: UUID_2, type: 'task_review' },
+      tasks: {
+        'TASK-001': mkTaskState('TASK-001', 'failed', {
+          failure: mkErrorRecord({
+            errorCode: 'TASK_REVIEW_RESULT_INVALID',
+            message: 'approved requires an empty issues list',
+          }),
+          candidateResult: mkResult(),
+          candidateCheckpoint: OID_B,
+        }),
+      },
+    });
+    const terminal = toTerminalFailedRun(reviewing, contractFailure, T1, redaction);
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: UUID_2,
+      sessionType: 'task_review',
+    });
+    const task = terminal.tasks['TASK-001']!;
+    expect(task.status).toBe('failed');
+    expect(task.candidateResult).not.toBeNull();
+    expect(task.candidateCheckpoint).toBe(OID_B);
+  });
+
+  it('CLAUDE_RESULT_INVALID keeps the failed execution session resumable', () => {
+    const contractFailure = new ApexError({
+      code: 'CLAUDE_RESULT_INVALID',
+      stage: 'execution',
+      message: 'acceptanceEvidence missing criterionIndex 1',
+    });
+    const run = runningRunWithSession();
+    const terminal = toTerminalFailedRun(
+      {
+        ...run,
+        tasks: {
+          'TASK-001': mkTaskState('TASK-001', 'failed', {
+            failure: mkErrorRecord({ errorCode: 'CLAUDE_RESULT_INVALID' }),
+          }),
+        },
+      },
+      contractFailure,
+      T1,
+      redaction,
+    );
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: UUID_1,
+      sessionType: 'execution',
+    });
+  });
+
+  it('FINAL_REVIEW_RESULT_INVALID keeps the final review session resumable', () => {
+    const contractFailure = new ApexError({
+      code: 'FINAL_REVIEW_RESULT_INVALID',
+      stage: 'final_review',
+      message: 'decision completed requires replanReason to be null',
+    });
+    const reviewing = mkRun({
+      status: 'final_review',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      activeSession: { ...activeSession, sessionId: UUID_2, type: 'final_review', taskId: null },
+    });
+    const terminal = toTerminalFailedRun(reviewing, contractFailure, T1, redaction);
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'final_review',
+      taskId: null,
+      sessionId: UUID_2,
+      sessionType: 'final_review',
+    });
   });
 });

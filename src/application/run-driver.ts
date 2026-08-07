@@ -191,7 +191,10 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
               const review = await reviewPlanCandidate.execute(
                 planReviewResumeSessionId === null
                   ? undefined
-                  : { resumeFromSessionId: planReviewResumeSessionId },
+                  : {
+                      resumeFromSessionId: planReviewResumeSessionId,
+                      resumeCause: resumeContext?.cause ?? 'RUN_INTERRUPTED',
+                    },
               );
               planReviewResumeSessionId = null;
               planningResumePending = false;
@@ -263,7 +266,10 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
               const review = await reviewTask.execute(
                 taskReviewResumeSessionId === null
                   ? undefined
-                  : { resumeFromSessionId: taskReviewResumeSessionId },
+                  : {
+                      resumeFromSessionId: taskReviewResumeSessionId,
+                      resumeCause: resumeContext?.cause ?? 'RUN_INTERRUPTED',
+                    },
               );
               taskReviewResumeSessionId = null;
               if (review.kind === 'task-completed') {
@@ -337,7 +343,10 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
             const result = await runFinalReview.execute(
               finalReviewResumeSessionId === null
                 ? undefined
-                : { resumeFromSessionId: finalReviewResumeSessionId },
+                : {
+                    resumeFromSessionId: finalReviewResumeSessionId,
+                    resumeCause: resumeContext?.cause ?? 'RUN_INTERRUPTED',
+                  },
             );
             finalReviewResumeSessionId = null;
             if (result.kind === 'completed') {

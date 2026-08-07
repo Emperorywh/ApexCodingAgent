@@ -3,7 +3,7 @@
  * 只有 approved 才提交 Plan Revision；changes_required 则保存结构化反馈并
  * 回到下一趟 Planning。草稿与复核结果始终来自不可变 Session Record。
  */
-import { ApexError } from '../../domain/errors.js';
+import { ApexError, type ErrorCode } from '../../domain/errors.js';
 import {
   isPlanReviewResultInvalid,
   validatePlanReviewResultSemantics,
@@ -31,6 +31,8 @@ import { persistRunBestEffort, toTerminalFailedRun } from './run-transitions.js'
 export interface ReviewPlanCandidateOptions {
   /** resume 命令传入的被中断 Plan Review Session，只消费一次。 */
   readonly resumeFromSessionId?: string;
+  /** 重开前 Run 的稳定失败原因，供续接提示如实陈述断点语境。 */
+  readonly resumeCause?: ErrorCode;
 }
 
 export type ReviewPlanCandidateResult =
@@ -227,7 +229,9 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
           repairAttempt === 0 && options?.resumeFromSessionId !== undefined
             ? {
                 sessionId: options.resumeFromSessionId,
-                prompt: buildPlanReviewResumePrompt(),
+                prompt: buildPlanReviewResumePrompt({
+                  cause: options.resumeCause ?? 'RUN_INTERRUPTED',
+                }),
               }
             : null,
         closeResumeAttempt: (relayHandle) => relayHandle.run,

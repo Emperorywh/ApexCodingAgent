@@ -6,7 +6,7 @@
  * 转 completed。Reviewer 被 Git 快照约束为严格只读。
  */
 import { closeTaskReviewEpisode } from '../../domain/episodes.js';
-import { ApexError } from '../../domain/errors.js';
+import { ApexError, isResumableErrorCode, type ErrorCode } from '../../domain/errors.js';
 import {
   isTaskReviewResultInvalid,
   normalizeTaskReviewResult,
@@ -48,6 +48,8 @@ export type ReviewTaskResult =
 export interface ReviewTaskOptions {
   /** 仅用于恢复被中断的 Reviewer 自身上下文，绝不指向 Execution Session。 */
   readonly resumeFromSessionId?: string;
+  /** 重开前 Run 的稳定失败原因，供续接提示如实陈述断点语境。 */
+  readonly resumeCause?: ErrorCode;
 }
 
 /**
@@ -93,8 +95,11 @@ export function createReviewTask(deps: UseCaseDeps): {
   /**
    * 关闭 Reviewer Episode 并把当前 Task 转 failed。
    *
-   * 候选字段必须一并清空，避免 failed Task 仍携带可被误认为待批准的结果；
-   * Execution Episode 已保留候选 Checkpoint，可供失败报告审计。
+   * 可续接失败（中断、非零退出、回合预算耗尽、结果契约失败）必须保留候选：
+   * run.json 不变量要求 task_review 恢复点指向的 failed Task 携带候选结果
+   * 与 Checkpoint，resume 后由续接的 Reviewer 复核同一候选。其余失败没有
+   * 恢复点，候选字段一并清空，避免 failed Task 仍携带可被误认为待批准的
+   * 结果；Execution Episode 已保留候选 Checkpoint，可供失败报告审计。
    */
   async function failWithSession(
     handle: ActiveSessionHandle<'task_review'>,
@@ -124,7 +129,7 @@ export function createReviewTask(deps: UseCaseDeps): {
         error.errorCode === 'TASK_REVIEW_RESULT_INVALID' ? 'result_invalid' :
           'claude_call_failed',
     );
-    const preserveCandidate = error.errorCode === 'RUN_INTERRUPTED';
+    const preserveCandidate = isResumableErrorCode(error.errorCode);
     const next: RunJson = {
       ...handle.run,
       tasks: {
@@ -391,7 +396,9 @@ export function createReviewTask(deps: UseCaseDeps): {
           repairAttempt === 0 && options?.resumeFromSessionId !== undefined
             ? {
                 sessionId: options.resumeFromSessionId,
-                prompt: buildTaskReviewResumePrompt(),
+                prompt: buildTaskReviewResumePrompt({
+                  cause: options.resumeCause ?? 'RUN_INTERRUPTED',
+                }),
               }
             : null,
         closeResumeAttempt: (relayHandle, error) => closeEpisodeForRelay(relayHandle, error),

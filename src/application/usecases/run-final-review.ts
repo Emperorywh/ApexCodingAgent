@@ -11,7 +11,7 @@
  * 报告前。任一边界发现变化都不提交基于旧 SPEC 的结论，按五步变化流程转
  * planning 并通过新增 pending Task 表达新需求。
  */
-import { ApexError } from '../../domain/errors.js';
+import { ApexError, type ErrorCode } from '../../domain/errors.js';
 import {
   closeFinalReviewEpisode,
   type FinalReviewEpisodeEnding,
@@ -61,6 +61,8 @@ export type RunFinalReviewResult =
 export interface RunFinalReviewOptions {
   /** resume 命令传入的被中断 Final Review Session ID，仅消费一次。 */
   readonly resumeFromSessionId?: string;
+  /** 重开前 Run 的稳定失败原因，供续接提示如实陈述断点语境。 */
+  readonly resumeCause?: ErrorCode;
 }
 
 export function createRunFinalReview(deps: UseCaseDeps): {
@@ -329,7 +331,9 @@ export function createRunFinalReview(deps: UseCaseDeps): {
           ? null
           : {
               sessionId: options.resumeFromSessionId,
-              prompt: buildFinalReviewResumePrompt(),
+              prompt: buildFinalReviewResumePrompt({
+                cause: options.resumeCause ?? 'RUN_INTERRUPTED',
+              }),
             },
       closeResumeAttempt: (handle, error) =>
         closeFinalReviewEpisodeAsSessionError(

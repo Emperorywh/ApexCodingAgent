@@ -180,7 +180,7 @@ export function validStructuredResult(sessionType: SessionType): Record<string, 
             likelyPaths: ['src/index.ts'],
             budget: {
               targetContextBudget: 200_000,
-              hardContextLimit: 300_000,
+              hardContextLimit: 600_000,
               maxAgentTurns: 64,
             },
             context: 'Greenfield module with no dependencies',

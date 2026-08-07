@@ -133,9 +133,11 @@ export function isTurnBudgetExhaustedErrorCode(code: ErrorCode): boolean {
 /**
  * 判断终态失败是否携带可由 `resume` 消费的确定性恢复点。
  *
- * 前台中断、Claude 回合预算耗尽以及已启动进程的非零退出，都可能已经
- * 在 transcript 中留下可继续的工作。恢复资格只表示允许用户显式执行
- * `resume`；当前 Run 仍立即失败，绝不在原驱动循环中自动重试外部调用。
+ * 前台中断与已启动进程的非零退出，都可能已经在 transcript 中留下可继续
+ * 的工作。Claude 回合预算耗尽先由 Execution 用例在驱动循环内有界自动
+ * 续接（fork 原会话并追加一趟等额预算），追加次数用尽后才按可续接失败
+ * 终结当前 Run；除此之外，恢复资格只表示允许用户显式执行 `resume`，
+ * 当前 Run 仍立即失败，绝不在原驱动循环中自动重试外部调用。
  *
  * 通用非零退出可能发生在 transcript 尚未建立之前。此时恢复协调器会让
  * Claude 明确判定续接不可用，再按既有协议创建一次全新 Session；这比按

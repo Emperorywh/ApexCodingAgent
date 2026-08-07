@@ -9,8 +9,8 @@ import { GIT_OID_PATTERN, TASK_ID_PATTERN } from '../ids.js';
 import { GIT_RELATIVE_PATH_PATTERN } from '../paths.js';
 import type { JSONSchemaType } from 'ajv';
 
-export const TASK_TARGET_CONTEXT_TOKENS_MAX = 240_000;
-export const TASK_HARD_CONTEXT_TOKENS = 300_000;
+export const TASK_TARGET_CONTEXT_TOKENS_MAX = 480_000;
+export const TASK_HARD_CONTEXT_TOKENS = 600_000;
 export const TASK_MAX_AGENT_TURNS = 128;
 
 export type VerificationKind = 'command' | 'static_analysis' | 'manual';
@@ -35,7 +35,7 @@ export interface VerificationStep {
 /**
  * Task 预算是 Planning 与 Execution 共享的注意力边界。
  *
- * 正常目标最多使用 24 万上下文 token，30 万是不可提高的硬边界；
+ * 正常目标最多使用 48 万上下文 token，60 万是不可提高的硬边界；
  * maxAgentTurns 同时下沉为 Claude CLI 的运行时回合上限。两个 context
  * 数值字段单位均为 token，但字段名不含凭据敏感词，避免被统一脱敏边界改写。
  */

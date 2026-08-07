@@ -86,6 +86,31 @@ async function startAndInterruptDuringExecution(
   return result.run;
 }
 
+/** 回合预算耗尽的 Execution 终止场景（真实 error_max_turns ResultMessage 形态）。 */
+function turnLimitExhausted(overrides: Partial<ScenarioElement> = {}): ScenarioElement {
+  return {
+    stdoutLines: [
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: '{sessionId}',
+        model: 'fake-model',
+      },
+      {
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        session_id: '{sessionId}',
+        num_turns: 65,
+        terminal_reason: 'max_turns',
+        errors: ['Reached maximum number of turns (64)'],
+      },
+    ],
+    exitCode: 1,
+    ...overrides,
+  };
+}
+
 describe('e2e resume (§17)', () => {
   it(
     'resumes an interrupted run: reopens at the recorded point and forks the interrupted Claude session',
@@ -166,7 +191,7 @@ describe('e2e resume (§17)', () => {
   );
 
   it(
-    'turn-limit ResultMessage ends the budget tranche and resumes the same Execution context only on explicit resume',
+    'turn-limit ResultMessage automatically forks the session with a fresh budget tranche and completes without manual resume',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -176,32 +201,92 @@ describe('e2e resume (§17)', () => {
           help: COMPLETE_HELP,
           sequence: [
             { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
-            {
+            turnLimitExhausted({
               writeFiles: [
                 {
                   path: 'src/partial.ts',
                   content: 'export const partialWork = true;\n',
                 },
               ],
-              stdoutLines: [
-                {
-                  type: 'system',
-                  subtype: 'init',
-                  session_id: '{sessionId}',
-                  model: 'fake-model',
-                },
-                {
-                  type: 'result',
-                  subtype: 'error_max_turns',
-                  is_error: true,
-                  session_id: '{sessionId}',
-                  num_turns: 65,
-                  terminal_reason: 'max_turns',
-                  errors: ['Reached maximum number of turns (64)'],
-                },
-              ],
-              exitCode: 1,
-            },
+            }),
+            { stdoutLines: streamOf(executionCompleted()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+
+        const first = await harness.start();
+        expect(first.kind).toBe('completed');
+        if (first.kind !== 'completed') return;
+        expect(first.run.resumePoint).toBeNull();
+        expect(first.run.tasks['TASK-001']!.status).toBe('completed');
+
+        /**
+         * 预算耗尽不再终结 Run：Planner、自动 Plan Reviewer、被耗尽的
+         * Execution、fork 续接的 Execution、自动 Task Reviewer 与 Final
+         * Review 共六个正式 Session，全程无需人工 resume。
+         */
+        const invocations = (await harness.readRecords()).filter((record) =>
+          record.argv.includes('--session-id'),
+        );
+        expect(invocations).toHaveLength(6);
+        const sessionIdOf = (index: number): string =>
+          invocations[index]!.argv[invocations[index]!.argv.indexOf('--session-id') + 1]!;
+        const forked = invocations[3]!;
+        expect(forked.argv[forked.argv.indexOf('--resume') + 1]).toBe(sessionIdOf(2));
+        expect(forked.argv).toContain('--fork-session');
+        const forkedSessionId = sessionIdOf(3);
+        expect(forkedSessionId).not.toBe(sessionIdOf(2));
+        /*
+         * 续接会话携带同一额度的新预算 tranche 与预算耗尽收敛策略；
+         * 自动接力来源必须如实进入模型上下文。
+         */
+        expect(forked.argv[forked.argv.indexOf('--max-turns') + 1]).toBe('64');
+        expect(forked.stdin).toContain('RESUME_CAUSE: CLAUDE_TURN_LIMIT_REACHED');
+        expect(forked.stdin).toContain('必须立即返回结构化结果');
+        expect(forked.stdin).toContain('系统自动续接');
+
+        // 前台进度如实报告预算续接，而不是把长 Task 报废。
+        expect(
+          harness.outputLines.some((line) => line.includes('回合预算已耗尽')),
+        ).toBe(true);
+
+        // 被耗尽会话留下失败 Record；fork 会话完成并驱动 Task 走完独立复核。
+        const sessionRecords = await harness.listSessionRecords();
+        const executionRecords = sessionRecords.filter(
+          (record) => record.type === 'execution',
+        );
+        expect(executionRecords).toHaveLength(2);
+        expect(executionRecords[0]!.status).toBe('failed');
+        expect(executionRecords[0]!.error?.errorCode).toBe('CLAUDE_TURN_LIMIT_REACHED');
+        expect(executionRecords[1]!.status).toBe('completed');
+        expect(executionRecords[1]!.sessionId).toBe(forkedSessionId);
+
+        const episodes = first.run.tasks['TASK-001']!.executionEpisodes;
+        expect(episodes).toHaveLength(2);
+        expect(episodes[0]!.outcome).toBe('session_error');
+        expect(episodes[0]!.error?.errorCode).toBe('CLAUDE_TURN_LIMIT_REACHED');
+        expect(episodes[1]!.outcome).toBe('awaiting_review');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'automatic budget extensions are bounded: repeated turn-limit fails with a resume point consumable by explicit resume',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
+            turnLimitExhausted(),
+            turnLimitExhausted(),
+            turnLimitExhausted(),
           ],
         });
 
@@ -218,17 +303,24 @@ describe('e2e resume (§17)', () => {
           sessionId: expect.any(String),
           sessionType: 'execution',
         });
-        const exhaustedSessionId = first.run.resumePoint!.sessionId!;
 
         /**
-         * 预算耗尽本身不触发自动重试：首次驱动只包含 Planner、自动 Plan
-         * Reviewer 与失败 Execution 三个正式 Session。
+         * 首趟 + 两次有界续接共三趟 Execution 全部耗尽后才终结：两次 fork
+         * 各自续接上一趟被耗尽的会话，第三次耗尽不再自动追加预算。
          */
-        const firstInvocations = (await harness.readRecords()).filter((record) =>
+        const invocations = (await harness.readRecords()).filter((record) =>
           record.argv.includes('--session-id'),
         );
-        expect(firstInvocations).toHaveLength(3);
+        expect(invocations).toHaveLength(5);
+        const sessionIdOf = (index: number): string =>
+          invocations[index]!.argv[invocations[index]!.argv.indexOf('--session-id') + 1]!;
+        const forks = invocations.filter((record) => record.argv.includes('--resume'));
+        expect(forks).toHaveLength(2);
+        expect(forks[0]!.argv[forks[0]!.argv.indexOf('--resume') + 1]).toBe(sessionIdOf(2));
+        expect(forks[1]!.argv[forks[1]!.argv.indexOf('--resume') + 1]).toBe(sessionIdOf(3));
+        expect(first.run.resumePoint!.sessionId).toBe(sessionIdOf(4));
 
+        // 显式 resume 仍从最后一趟被耗尽的会话 fork 续接并完成 Run。
         await harness.writeScenario({
           version: FAKE_VERSION,
           help: COMPLETE_HELP,
@@ -243,22 +335,22 @@ describe('e2e resume (§17)', () => {
         expect(resumed.run.resumePoint).toBeNull();
         expect(resumed.run.tasks['TASK-001']!.status).toBe('completed');
 
-        const resumedInvocation = (await harness.readRecords()).find((record) =>
-          record.argv.includes('--resume'),
-        );
-        expect(resumedInvocation).toBeDefined();
+        const resumeInvocation = (await harness.readRecords())
+          .filter((record) => record.argv.includes('--resume'))
+          .at(-1)!;
         expect(
-          resumedInvocation!.argv[resumedInvocation!.argv.indexOf('--resume') + 1],
-        ).toBe(exhaustedSessionId);
-        expect(resumedInvocation!.argv).toContain('--fork-session');
+          resumeInvocation.argv[resumeInvocation.argv.indexOf('--resume') + 1],
+        ).toBe(sessionIdOf(4));
+        expect(resumeInvocation.argv).toContain('--fork-session');
         /**
          * 真实失败原因必须跨 reopenRun 的 lastError 清空边界继续传入模型，
          * 让预算耗尽后的接力会话优先收敛，而不是按普通中断继续扩张范围。
          */
-        expect(resumedInvocation!.stdin).toContain(
+        expect(resumeInvocation.stdin).toContain(
           'RESUME_CAUSE: CLAUDE_TURN_LIMIT_REACHED',
         );
-        expect(resumedInvocation!.stdin).toContain('必须立即返回结构化结果');
+        expect(resumeInvocation.stdin).toContain('必须立即返回结构化结果');
+        expect(resumeInvocation.stdin).toContain('显式 resume');
       } finally {
         await harness.cleanup();
       }

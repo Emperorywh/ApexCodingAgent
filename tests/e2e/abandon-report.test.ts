@@ -74,7 +74,7 @@ async function fabricateInterruptedRun(
     likelyPaths: ['src/index.ts'],
     budget: {
       targetContextBudget: 200_000,
-      hardContextLimit: 300_000,
+      hardContextLimit: 600_000,
       maxAgentTurns: 64,
     },
     context: '端到端测试任务',

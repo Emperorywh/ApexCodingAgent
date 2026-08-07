@@ -70,7 +70,7 @@ function verificationPlan(criterionIndexes: number[]): PlannedTask['verification
 
 const DEFAULT_BUDGET: PlannedTask['budget'] = {
   targetContextBudget: 200_000,
-  hardContextLimit: 300_000,
+  hardContextLimit: 600_000,
   maxAgentTurns: 64,
 };
 
@@ -346,7 +346,7 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('不得尝试恢复生成该草稿的 Planning Session');
     expect(prompt).toContain('nonGoals');
     expect(prompt).toContain('verificationPlan');
-    expect(prompt).toContain('hardContextLimit 必须为 300000');
+    expect(prompt).toContain('hardContextLimit 必须为 600000');
     expect(prompt).toContain('本会话严格只读');
     expect(prompt).toContain('PlanReviewResult');
   });
@@ -454,6 +454,7 @@ describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
     const prompt = buildExecutionResumePrompt({
       task: pendingDefinition,
       cause: 'RUN_INTERRUPTED',
+      origin: 'user_resume',
     });
     /*
      * 恢复会话会继承中断前的仓库状态，但不能因此丢失验证资源的所有权。
@@ -465,12 +466,14 @@ describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
     expect(prompt).toContain('原则上只进行两轮有针对性的修正');
     expect(prompt).toContain('RESUME_CAUSE: RUN_INTERRUPTED');
     expect(prompt).toContain('上一趟会话被前台中断');
+    expect(prompt).toContain('显式 resume');
   });
 
   it('回合预算耗尽后优先复用证据并立即收敛', () => {
     const prompt = buildExecutionResumePrompt({
       task: pendingDefinition,
       cause: 'CLAUDE_TURN_LIMIT_REACHED',
+      origin: 'user_resume',
     });
     /**
      * 回合耗尽后的续接不是普通中断：必须携带稳定原因，并明确禁止在已有
@@ -480,6 +483,23 @@ describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
     expect(prompt).toContain('已耗尽 maxAgentTurns');
     expect(prompt).toContain('必须立即返回结构化结果');
     expect(prompt).toContain('不得重复已通过的验证');
+  });
+
+  it('预算自动接力如实陈述非人工干预并保持同一收敛策略', () => {
+    const prompt = buildExecutionResumePrompt({
+      task: pendingDefinition,
+      cause: 'CLAUDE_TURN_LIMIT_REACHED',
+      origin: 'budget_extension',
+    });
+    /*
+     * 自动续接与显式 resume 共用同一预算耗尽收敛策略，但必须如实告知
+     * 模型本次续接来自系统自动接力而非人工操作。
+     */
+    expect(prompt).toContain('RESUME_CAUSE: CLAUDE_TURN_LIMIT_REACHED');
+    expect(prompt).toContain('必须立即返回结构化结果');
+    expect(prompt).toContain('系统自动续接');
+    expect(prompt).toContain('不是人工干预');
+    expect(prompt).not.toContain('显式 resume');
   });
 });
 

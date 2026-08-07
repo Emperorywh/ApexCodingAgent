@@ -216,16 +216,23 @@ ${toJson(input.task)}
 }
 
 /**
- * Execution 会话续接提示词（SPEC §17 resume）：被中断的 Claude 会话经
- * `--resume --fork-session` 恢复后，对话上下文中已包含完整基线与 Task
- * 定义，因此这里只重申断点事实与结果契约。仓库可能保留中断时的半成品
- * 改动，继续执行而不是推倒重来；完成的判定与结构化结果契约不变。
+ * Execution 会话续接提示词（SPEC §17 resume + 回合预算有界自动续接）：
+ * 被中断的 Claude 会话经 `--resume --fork-session` 恢复后，对话上下文中
+ * 已包含完整基线与 Task 定义，因此这里只重申断点事实与结果契约。仓库可能
+ * 保留中断时的半成品改动，继续执行而不是推倒重来；完成的判定与结构化结果
+ * 契约不变。
  */
 export function buildExecutionResumePrompt(input: {
   /** 当前 Task 的完整定义。 */
   readonly task: PlannedTask;
-  /** 触发本次显式 resume 的稳定错误码。 */
+  /** 触发本次续接的稳定错误码。 */
   readonly cause: ErrorCode;
+  /**
+   * 续接来源：用户显式 resume（user_resume），或回合预算耗尽后编排器的
+   * 有界自动接力（budget_extension）。两者共用同一收敛策略，但提示词必须
+   * 如实陈述是否存在人工干预事实。
+   */
+  readonly origin: 'user_resume' | 'budget_extension';
 }): string {
   /**
    * 恢复原因必须继续进入模型上下文。回合预算耗尽与人工中断需要不同的
@@ -238,7 +245,12 @@ export function buildExecutionResumePrompt(input: {
         ? '上一趟会话被前台中断。从已有工作树继续，但不要重复中断前已经完成且仍然有效的工作或验证。'
         : `上一趟会话因可续接错误 ${input.cause} 终止。先核对已有事实，再从最小缺口继续。`;
 
-  return `你是 ApexCodingAgent 当前 Task 的执行 Agent。本会话通过显式 resume 从上一趟执行断点继续。
+  const originSentence =
+    input.origin === 'budget_extension'
+      ? '上一趟会话耗尽了回合预算，系统自动续接本会话并追加了一趟等额预算；这不是人工干预，任务目标与完成判定不变。'
+      : '本会话通过显式 resume 从上一趟执行断点继续。';
+
+  return `你是 ApexCodingAgent 当前 Task 的执行 Agent。${originSentence}
 
 RESUME_CAUSE: ${input.cause}
 ${causeInstruction}

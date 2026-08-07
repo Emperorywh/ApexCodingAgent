@@ -45,7 +45,7 @@
             "likelyPaths": ["src/index.ts"],
             "budget": {
               "targetContextBudget": 200000,
-              "hardContextLimit": 300000,
+              "hardContextLimit": 600000,
               "maxAgentTurns": 64
             },
             "context": "Greenfield module with no dependencies"

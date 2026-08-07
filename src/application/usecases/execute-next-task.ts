@@ -4,11 +4,15 @@
  *
  * 单趟执行：选择 Ready Task → §6.3 会话生命周期 → 按 decision 提交业务结果。
  * 所有失败路径都先把可获得的事实（Session Record、Episode、Git 事实）落盘，
- * 再把 Task 与 Run 转 failed；进程级失败不自动重试。唯二例外：
+ * 再把 Task 与 Run 转 failed；进程级失败不自动重试。仅有三个例外：
  * 1. 进程正常结束但结构化结果未过契约校验（Schema 或 §9.4 字段规则）时，
  *    以一次有界的结果修复会话接力——修复会话只重新返回合法结果，仍不合法
  *    才按原路径转 failed，避免已完成的工作因格式瑕疵整体报废；
- * 2. resume 命令重开 Run 后的第一趟会话（resume hint）：以
+ * 2. 单趟会话耗尽 maxAgentTurns 回合预算（CLAUDE_TURN_LIMIT_REACHED）时，
+ *    以有界次数自动 fork 续接并追加一趟等额预算——预算耗尽是计划内的
+ *    tranche 边界而不是外部故障，transcript 中的工作仍然有效；追加次数
+ *    用尽才按原路径转 failed，保留恢复点交给显式 resume；
+ * 3. resume 命令重开 Run 后的第一趟会话（resume hint）：以
  *    `--resume --fork-session` 续接被中断的 Claude 会话；续接本身失败时
  *    仅在 Adapter 明确确认 transcript 不可用时，有界回退一趟全新会话
  *    （标准完整 prompt）；其他失败不自动重试。
@@ -16,7 +20,7 @@
  * SPEC SHA-256 边界（§3.2）：Task 启动前（变化则转 planning 触发新 Revision）、
  * Session 正常结束后提交结果前（变化走六步变化流程）。
  */
-import { ApexError, type ErrorCode } from '../../domain/errors.js';
+import { ApexError, isTurnBudgetExhaustedErrorCode, type ErrorCode } from '../../domain/errors.js';
 import {
   closeExecutionEpisode,
   type ExecutionEpisodeEnding,
@@ -70,6 +74,15 @@ export type ExecuteNextTaskResult =
  * 一次；连续两次不合法说明结果通道系统性失配，按原路径转 failed。
  */
 const MAX_RESULT_REPAIR_ATTEMPTS = 1;
+
+/**
+ * 回合预算耗尽后的自动续接有界次数：单趟会话耗尽 maxAgentTurns 只代表
+ * 本趟预算 tranche 用完，transcript 中已完成的工作仍然有效，因此自动
+ * fork 续接并追加一趟等额预算，而不是把长跑 Task 整体报废。有界上限
+ * 防止模型无法收敛时无人值守地无限消耗；次数用尽后按可续接失败终结
+ * Run，把恢复点交给用户显式 resume。
+ */
+const MAX_TURN_BUDGET_EXTENSIONS = 2;
 
 /** invokeUntilValidResult 的产出：合法结果三元组，或已收尾的终态结果。 */
 type SessionLoopOutcome =
@@ -426,6 +439,29 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       });
     };
 
+    /**
+     * 预算续接行：让前台看到回合预算耗尽不是终止，而是有界自动续接；
+     * 错误消息是稳定常量，进度行只携带接力序号，细节进调试日志。
+     */
+    const progressTurnBudgetExtension = (
+      handle: ActiveSessionHandle<'execution'>,
+      error: ApexError,
+      attempt: number,
+    ): void => {
+      deps.output.writeLine(
+        deps.redaction.redactText(
+          `↻ 回合预算已耗尽 · 会话 ${handle.sessionId.slice(0, 8)} · ` +
+            `正在自动续接并追加预算 ${attempt}/${MAX_TURN_BUDGET_EXTENSIONS}`,
+        ),
+      );
+      deps.logger.log('warn', 'execution.turn_budget_extended', {
+        sessionId: handle.sessionId,
+        taskId: readyTaskId,
+        attempt,
+        message: error.message,
+      });
+    };
+
     /** 修复会话提示词：附校验错误与（可解析时的）非法结果原文。 */
     const buildRepairPrompt = (error: ApexError, result: TaskExecutionResult | null): string =>
       buildExecutionResultRepairPrompt({
@@ -437,7 +473,8 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
       });
 
     /**
-     * 单趟 Execution Session + §9.4 校验；结果契约失败时有界接力修复会话。
+     * 单趟 Execution Session + §9.4 校验；结果契约失败时有界接力修复会话，
+     * 回合预算耗尽时有界 fork 续接并追加一趟等额预算。
      * §6.3 顺序对每趟会话独立成立：先持久化 activeSession 与未结束
      * Episode 再启动进程；接续会话复用 running Task（keepTaskRunning），
      * 被接替的 Episode 已先关闭为 session_error。
@@ -447,12 +484,20 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
      * 鉴权、网络、额度、普通非零退出和流失败都不自动重试。
      */
     const invokeUntilValidResult = async (
-      resumePrompt: string | null,
-      resumeFromSessionId: string | null,
+      initialResumePrompt: string | null,
+      initialResumeFromSessionId: string | null,
     ): Promise<SessionLoopOutcome> => {
       let sessionPrompt = prompt;
       let repairAttempt = 0;
+      let budgetExtension = 0;
       let sessionRun = run;
+      /**
+       * 续接提示是循环状态：首趟可来自显式 resume hint；回合预算耗尽的
+       * 自动接力在同一循环内把它改写到刚耗尽的会话上。结果修复接力是
+       * 全新会话（repairAttempt > 0 时强制不走续接）。
+       */
+      let resumePrompt = initialResumePrompt;
+      let resumeFromSessionId = initialResumeFromSessionId;
       for (;;) {
         const sessionBase = {
           type: 'execution' as const,
@@ -462,8 +507,8 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
           permissionMode: run.runSettings.executionPermissionMode,
           repositoryRoot: root,
           /*
-           * Planning 给出的 Task 回合预算在进程边界强制执行；结果修复也沿用
-           * 同一上限，避免修复分支绕开预算后造成注意力漂移。
+           * Planning 给出的 Task 回合预算在进程边界强制执行；结果修复与预算
+           * 续接会话也沿用同一上限，避免接力分支绕开预算后造成注意力漂移。
            */
           maxTurns: taskDef.budget.maxAgentTurns,
         };
@@ -477,7 +522,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
             resumePrompt !== null
               ? { sessionId: resumeFromSessionId, prompt: resumePrompt }
               : null,
-          ...(repairAttempt > 0
+          ...(repairAttempt > 0 || budgetExtension > 0
             ? { initialBeginOptions: { keepTaskRunning: true } }
             : {}),
           fallbackBeginOptions: { keepTaskRunning: true },
@@ -501,6 +546,35 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
             );
             sessionPrompt = buildRepairPrompt(apex, null);
             progressResultRepair(handle, apex, repairAttempt);
+            continue;
+          }
+          if (
+            repairAttempt === 0 &&
+            isTurnBudgetExhaustedErrorCode(apex.errorCode) &&
+            budgetExtension < MAX_TURN_BUDGET_EXTENSIONS
+          ) {
+            /*
+             * 回合预算耗尽：补失败 Record、关 Episode，fork 续接被耗尽的
+             * 会话并追加一趟等额预算。续接提示沿用 §17 resume 的预算耗尽
+             * 收敛策略（优先复用已有证据、证据齐备立即返回结构化结果）。
+             * transcript 不可用时由共享协调器回退一趟全新完整 prompt 会话，
+             * 该 Task 在本趟 execute 内不会因此报废。
+             */
+            await ensureFailedSessionRecord(deps, handle, apex);
+            budgetExtension += 1;
+            sessionRun = closeEpisodeForRelay(
+              handle,
+              apex,
+              `error: turn budget exhausted, continuing in a forked session (${apex.errorCode})`,
+            );
+            sessionPrompt = prompt;
+            resumePrompt = buildExecutionResumePrompt({
+              task: taskDef,
+              cause: apex.errorCode,
+              origin: 'budget_extension',
+            });
+            resumeFromSessionId = handle.sessionId;
+            progressTurnBudgetExtension(handle, apex, budgetExtension);
             continue;
           }
           const settled = await failWithSession(
@@ -656,7 +730,11 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
     const sessionOutcome = await invokeUntilValidResult(
       resumeHint === null
         ? null
-        : buildExecutionResumePrompt({ task: taskDef, cause: resumeHint.cause }),
+        : buildExecutionResumePrompt({
+            task: taskDef,
+            cause: resumeHint.cause,
+            origin: 'user_resume',
+          }),
       resumeHint === null ? null : resumeHint.sessionId,
     );
     if (sessionOutcome.kind === 'settled') return sessionOutcome.settled;

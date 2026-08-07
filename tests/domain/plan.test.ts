@@ -138,8 +138,8 @@ describe('TaskPlanDraft validation (§7.5)', () => {
   it('keeps the target context budget strictly below the hard limit', () => {
     const task = mkTask('TASK-001', [], {
       budget: {
-        targetContextBudget: 300_000,
-        hardContextLimit: 300_000,
+        targetContextBudget: 600_000,
+        hardContextLimit: 600_000,
         maxAgentTurns: 64,
       },
     });

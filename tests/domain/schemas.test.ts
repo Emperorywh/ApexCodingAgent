@@ -494,8 +494,8 @@ describe('custom formats and enums', () => {
       mkDraft([
         mkTask('TASK-001', [], {
           budget: {
-            targetContextBudget: 250_000,
-            hardContextLimit: 300_000,
+            targetContextBudget: 490_000,
+            hardContextLimit: 600_000,
             maxAgentTurns: 64,
           },
         }),

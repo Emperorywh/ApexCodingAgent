@@ -64,7 +64,7 @@ export function mkTask(
     likelyPaths: [],
     budget: {
       targetContextBudget: 200_000,
-      hardContextLimit: 300_000,
+      hardContextLimit: 600_000,
       maxAgentTurns: 64,
     },
     context: `Context ${id}`,

@@ -13,6 +13,26 @@ export const TASK_TARGET_CONTEXT_TOKENS_MAX = 480_000;
 export const TASK_HARD_CONTEXT_TOKENS = 600_000;
 export const TASK_MAX_AGENT_TURNS = 128;
 
+/**
+ * 2.0.25 之前版本的 hardContextLimit 政策值。
+ *
+ * 旧版本 Run 的 tasks.json、Plan Revision Snapshot、Session Record 内嵌
+ * 草稿以及 Revision 中原样保留的 completed/pending Task 都携带该历史值；
+ * 草稿 Schema 必须继续接受它，否则历史 Run 的恢复与修订会整体失效。
+ */
+export const TASK_HARD_CONTEXT_TOKENS_LEGACY = 300_000;
+
+/**
+ * 规划期可接受的 hardContextLimit 取值：全部历史政策值加当前政策值。
+ *
+ * 维护契约：上调 TASK_HARD_CONTEXT_TOKENS 时，旧值必须移入本集合并永久
+ * 保留；从集合中移除任何一个值，携带该值的历史 Run 就无法再通过草稿校验。
+ */
+export const TASK_HARD_CONTEXT_TOKENS_ACCEPTED = [
+  TASK_HARD_CONTEXT_TOKENS_LEGACY,
+  TASK_HARD_CONTEXT_TOKENS,
+] as const;
+
 export type VerificationKind = 'command' | 'static_analysis' | 'manual';
 
 /**
@@ -70,6 +90,53 @@ export interface TaskPlanDraft {
   retainedCheckpointDispositions: CheckpointDisposition[];
   tasks: PlannedTask[];
 }
+
+/**
+ * 规划期预算 Schema：约束 Planner 的结构化输出。
+ *
+ * targetContextBudget/maxAgentTurns 沿用当前政策区间（历史合法值均落在
+ * 区间内）；hardContextLimit 接受全部历史政策值——原样保留的 Task 必须
+ * 携带其旧值，而「新任务必须使用当前值」是位置相关的语义规则，JSON
+ * Schema 无法表达，由 plan.ts 的确定性校验强制执行。
+ */
+const taskBudgetSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['targetContextBudget', 'hardContextLimit', 'maxAgentTurns'],
+  properties: {
+    targetContextBudget: {
+      type: 'integer',
+      minimum: 10_000,
+      maximum: TASK_TARGET_CONTEXT_TOKENS_MAX,
+    },
+    hardContextLimit: { type: 'integer', enum: [...TASK_HARD_CONTEXT_TOKENS_ACCEPTED] },
+    maxAgentTurns: {
+      type: 'integer',
+      minimum: 8,
+      maximum: TASK_MAX_AGENT_TURNS,
+    },
+  },
+} as const;
+
+/**
+ * 持久化计划事实的预算只做完整性校验（正整数），不绑定任何政策数值。
+ *
+ * 预算上限是随模型代际调整的政策（2.0.25 曾把 hardContextLimit 从
+ * 300000 上调到 600000）；持久化 Schema 一旦用 const/maximum 绑定当期
+ * 政策，旧版本写入的合法状态就会在新版本下永久无法通过校验，resume
+ * 整体失效。篡改检测由 run.json tasksSha256 的原始字节哈希链承担，
+ * 不依赖字段取值范围。
+ */
+const persistedTaskBudgetSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['targetContextBudget', 'hardContextLimit', 'maxAgentTurns'],
+  properties: {
+    targetContextBudget: { type: 'integer', minimum: 1 },
+    hardContextLimit: { type: 'integer', minimum: 1 },
+    maxAgentTurns: { type: 'integer', minimum: 1 },
+  },
+} as const;
 
 /**
  * Schema 对象由 Ajv 执行运行时严格校验，并由领域语义校验补足跨字段规则。
@@ -155,25 +222,22 @@ export const plannedTaskSchema = {
           '仓库根目录下的 Git 相对路径；使用正斜杠，文件和目录均不得以斜杠结尾，且不得包含 . 或 .. 路径段',
       },
     },
-    budget: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['targetContextBudget', 'hardContextLimit', 'maxAgentTurns'],
-      properties: {
-        targetContextBudget: {
-          type: 'integer',
-          minimum: 10_000,
-          maximum: TASK_TARGET_CONTEXT_TOKENS_MAX,
-        },
-        hardContextLimit: { type: 'integer', const: TASK_HARD_CONTEXT_TOKENS },
-        maxAgentTurns: {
-          type: 'integer',
-          minimum: 8,
-          maximum: TASK_MAX_AGENT_TURNS,
-        },
-      },
-    },
+    budget: taskBudgetSchema,
     context: { type: 'string', minLength: 1 },
+  },
+} as const;
+
+/**
+ * tasks.json 与 Plan Revision Snapshot 嵌入的任务定义。
+ *
+ * 与规划期 plannedTaskSchema 的唯一区别是 budget 改用完整性校验：持久化
+ * 文档是历史事实，必须对历次政策调整前后的合法取值保持可读。
+ */
+export const persistedPlannedTaskSchema = {
+  ...plannedTaskSchema,
+  properties: {
+    ...plannedTaskSchema.properties,
+    budget: persistedTaskBudgetSchema,
   },
 } as const;
 

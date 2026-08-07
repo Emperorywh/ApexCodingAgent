@@ -508,6 +508,39 @@ describe('custom formats and enums', () => {
     );
   });
 
+  it('预算政策值跨版本兼容：历史 300000 可读，未知值被拒绝', () => {
+    // 2.0.25 把 hardContextLimit 从 300000 上调到 600000；旧版本 Run 的
+    // 持久化状态必须在新版本下保持可恢复（本次事故的回归锁定）。
+    const legacyBudget = {
+      targetContextBudget: 200_000,
+      hardContextLimit: 300_000,
+      maxAgentTurns: 64,
+    };
+    const legacyTask = mkTask('TASK-001', [], { budget: legacyBudget });
+    expectValid('TasksJson', { ...(VALID.TasksJson() as object), tasks: [legacyTask] });
+    expectValid('PlanRevisionSnapshot', {
+      ...(VALID.PlanRevisionSnapshot() as object),
+      tasks: [legacyTask],
+    });
+    // 规划期草稿同样接受历史值（Revision 原样保留场景），但拒绝未知取值。
+    expectValid('TaskPlanDraft', mkDraft([legacyTask]));
+    expectInvalid(
+      'TaskPlanDraft',
+      mkDraft([
+        mkTask('TASK-001', [], { budget: { ...legacyBudget, hardContextLimit: 123_456 } }),
+      ]),
+    );
+    // 持久化文档虽脱离政策数值，完整性约束仍然生效。
+    expectInvalid('TasksJson', {
+      ...(VALID.TasksJson() as object),
+      tasks: [mkTask('TASK-001', [], { budget: { ...legacyBudget, hardContextLimit: 0 } })],
+    });
+    expectInvalid('PlanRevisionSnapshot', {
+      ...(VALID.PlanRevisionSnapshot() as object),
+      tasks: [mkTask('TASK-001', [], { budget: { ...legacyBudget, maxAgentTurns: -1 } })],
+    });
+  });
+
   it('SessionRecord structuredResult accepts a matching result and rejects junk', () => {
     const record = VALID.SessionRecord() as Record<string, unknown>;
     expectValid('SessionRecord', record);

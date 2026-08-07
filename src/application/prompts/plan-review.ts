@@ -39,7 +39,7 @@ ${toJson(input.draft)}
 4. 检查每条 acceptanceCriteria 是否可观察、可判定，并被 verificationPlan 至少一个步骤覆盖。
 5. 检查 verificationPlan 的 command 是否真实存在或能由仓库事实支持；manual 步骤必须给出用户可执行的具体过程和期望证据，不得伪装为 Agent 已自动验证。
 6. 检查 likelyPaths 与 context 是否足以帮助定位但没有把文件列表误当作任务边界。
-7. 检查 budget：以 token 为单位的 targetContextBudget 不得超过 480000，hardContextLimit 必须为 600000；结合仓库规模、未知项、实现范围与验证成本，判断 Task 是否有充分把握在 target 内完成，并为返工保留余量。
+7. 检查 budget：以 token 为单位的 targetContextBudget 不得超过 480000，新增或修改的 Task hardContextLimit 必须为 600000；从旧 Revision 原样保留的 Task 允许携带历史预算值（如 hardContextLimit 300000），不得因此要求修改。结合仓库规模、未知项、实现范围与验证成本，判断 Task 是否有充分把握在 target 内完成，并为返工保留余量。
 8. maxAgentTurns 必须与任务复杂度相称；不得通过放大回合数掩盖应当拆分的多个目标。
 9. 调查工作只有在产生明确设计决策、接口契约或可消费结论时才是合法 Task。
 10. 不要按文件数或架构层机械拆分；一个具有单一行为闭环的纵向功能可以跨层。

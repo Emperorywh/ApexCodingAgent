@@ -104,7 +104,7 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - command 验证必须填写真实存在或由仓库事实支持的命令与有界 timeoutSeconds；其他验证的 command 和 timeoutSeconds 必须为 null。
 - manual 验证必须写出用户可执行的具体过程与期望证据；仓库代理说明禁止自动界面测试时，不得把开发服务器命令列为 Agent 必跑项。
 - 需要本地服务的自动验证必须规划为单一有界入口，由同一入口负责启动、就绪检查和结束，不能依赖长期后台服务。
-- 每个 Task 的 budget.hardContextLimit 固定为 600000，targetContextBudget（单位为 token）不得超过 480000，maxAgentTurns 必须在 8..128 内并与范围相称。
+- 新增或修改的 Task：budget.hardContextLimit 固定为 600000，targetContextBudget（单位为 token）不得超过 480000，maxAgentTurns 必须在 8..128 内并与范围相称；原样保留的 completed/pending Task 必须保持其既有 budget 数值不变（旧 Revision 的 hardContextLimit 可能是 300000），不得改写为新值。
 - 预算评估必须包含理解仓库、实现、验证与一次返工余量；不能靠填满硬上限容纳本应拆分的多个目标。
 - likelyPaths 只是提示，不是强制文件范围；每项必须是仓库根目录下的 Git 相对路径，使用正斜杠，文件和目录均不得以斜杠结尾，不得包含 . 或 .. 路径段。
 

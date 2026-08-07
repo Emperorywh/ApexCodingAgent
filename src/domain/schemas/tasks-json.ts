@@ -6,7 +6,7 @@
 import { RUN_ID_PATTERN, UUID_PATTERN } from '../ids.js';
 import {
   checkpointDispositionSchema,
-  plannedTaskSchema,
+  persistedPlannedTaskSchema,
   type CheckpointDisposition,
   type PlannedTask,
 } from './task-plan-draft.js';
@@ -63,6 +63,6 @@ export const tasksJsonSchema = {
       type: 'array',
       items: checkpointDispositionSchema,
     },
-    tasks: { type: 'array', items: plannedTaskSchema },
+    tasks: { type: 'array', items: persistedPlannedTaskSchema },
   },
 } as const;

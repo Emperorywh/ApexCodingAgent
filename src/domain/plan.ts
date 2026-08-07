@@ -15,11 +15,12 @@
 import { ApexError } from './errors.js';
 import { isTaskId, taskIdNumber } from './ids.js';
 import type { IntermediateCheckpoint } from './schemas/intermediate-checkpoint.js';
-import type {
-  CheckpointDisposition,
-  PlannedTask,
-  TaskPlanDraft,
-  VerificationStep,
+import {
+  TASK_HARD_CONTEXT_TOKENS,
+  type CheckpointDisposition,
+  type PlannedTask,
+  type TaskPlanDraft,
+  type VerificationStep,
 } from './schemas/task-plan-draft.js';
 import type { TaskRuntimeState } from './schemas/task-runtime-state.js';
 
@@ -262,6 +263,17 @@ export function validateTaskPlanDraft(
     if (completedIds.has(task.id) || reusablePendingIds.has(task.id)) continue;
     if (usedIds.has(task.id)) {
       throw planConflict(`task ID ${task.id} has already been used in this Run`);
+    }
+    /**
+     * 全新任务必须使用当前预算政策值。原样保留的 completed/pending Task
+     * 允许携带历史政策值（如 2.0.25 前的 hardContextLimit 300000）——
+     * 若对它们也强制当前值，会与「completed 定义必须原样重现」形成死锁，
+     * 旧 Run 的任何 Revision 都无法提交。
+     */
+    if (task.budget.hardContextLimit !== TASK_HARD_CONTEXT_TOKENS) {
+      throw planInvalid(
+        `new task ${task.id} must use the current hardContextLimit ${TASK_HARD_CONTEXT_TOKENS}`,
+      );
     }
   }
 

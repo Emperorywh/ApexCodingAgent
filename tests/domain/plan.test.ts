@@ -149,6 +149,45 @@ describe('TaskPlanDraft validation (§7.5)', () => {
     );
   });
 
+  it('requires brand-new tasks to use the current hard context limit', () => {
+    const legacyBudget = {
+      targetContextBudget: 200_000,
+      hardContextLimit: 300_000,
+      maxAgentTurns: 64,
+    };
+    expectApexError(
+      () =>
+        validateTaskPlanDraft(
+          mkDraft([mkTask('TASK-001', [], { budget: legacyBudget })]),
+          INITIAL_CONTEXT,
+        ),
+      'PLAN_INVALID',
+    );
+  });
+
+  it('allows retained completed and pending tasks to keep historical budget values', () => {
+    // 旧 Revision（2.0.25 前）的任务携带 hardContextLimit 300000；原样保留
+    // 它们不得与新任务的当前政策值要求冲突，否则旧 Run 无法提交任何 Revision。
+    const legacyBudget = {
+      targetContextBudget: 200_000,
+      hardContextLimit: 300_000,
+      maxAgentTurns: 64,
+    };
+    const completed = mkTask('TASK-001', [], { budget: legacyBudget });
+    const retainedPending = mkTask('TASK-002', ['TASK-001'], { budget: legacyBudget });
+    const fresh = mkTask('TASK-003', ['TASK-002']);
+    expect(() =>
+      validateTaskPlanDraft(
+        mkDraft([completed, retainedPending, fresh]),
+        replanContext({
+          completedTasks: [completed],
+          reusablePendingTaskIds: ['TASK-002'],
+          usedTaskIds: ['TASK-001', 'TASK-002'],
+        }),
+      ),
+    ).not.toThrow();
+  });
+
   it('rejects dispositions in the initial plan', () => {
     const draft = mkDraft(
       [mkTask('TASK-001')],

@@ -34,7 +34,9 @@ import {
 } from '../../src/application/prompts/task-review.js';
 import {
   buildPlanReviewPrompt,
+  buildPlanReviewRepairPrompt,
   buildPlanReviewResumePrompt,
+  type PlanReviewRepairPromptInput,
 } from '../../src/application/prompts/plan-review.js';
 import type { IntermediateCheckpoint } from '../../src/domain/schemas/intermediate-checkpoint.js';
 import type { PlanRevisionTrigger } from '../../src/domain/schemas/plan-revision-snapshot.js';
@@ -351,11 +353,90 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('PlanReviewResult');
   });
 
+  it('明确 decision 与 issues 耦合：approved 必须空 issues，非阻塞观察写入 summary', () => {
+    const prompt = buildPlanReviewPrompt({
+      repositoryRoot: REPOSITORY_ROOT,
+      runBranch: RUN_BRANCH,
+      specPath: SPEC_PATH,
+      specSha256: SPEC_SHA256,
+      planRevision: 2,
+      draft: {
+        summary: '候选计划',
+        assumptions: [],
+        retainedCheckpointDispositions: [],
+        tasks: [pendingDefinition],
+      },
+    });
+    expect(prompt).toContain('approved 的 assessment issues 必须为空数组');
+    expect(prompt).toContain('非阻塞性观察');
+    expect(prompt).toContain('写入 summary');
+  });
+
   it('恢复提示只续接 Reviewer 自己的上下文', () => {
     const prompt = buildPlanReviewResumePrompt();
     expect(prompt).toContain('只续接 Reviewer 自己的复核上下文');
     expect(prompt).toContain('不得恢复或引用 Planning Session');
     expect(prompt).toContain('完整 PlanReviewResult');
+    expect(prompt).toContain('approved 的 assessment 不得携带任何 issue');
+  });
+});
+
+describe('buildPlanReviewRepairPrompt（计划复核结果修复接力）', () => {
+  const invalidResultJson = JSON.stringify(
+    {
+      decision: 'approved',
+      summary: '复核通过但夹带观察',
+      taskAssessments: [{ taskId: 'TASK-002', decision: 'approved', issues: ['非阻塞性观察'] }],
+      issues: [],
+    },
+    null,
+    2,
+  );
+  const input: PlanReviewRepairPromptInput = {
+    repositoryRoot: REPOSITORY_ROOT,
+    runBranch: RUN_BRANCH,
+    specPath: SPEC_PATH,
+    specSha256: SPEC_SHA256,
+    planRevision: 2,
+    draft: {
+      summary: '候选计划',
+      assumptions: [],
+      retainedCheckpointDispositions: [],
+      tasks: [pendingDefinition],
+    },
+    validationError: 'approved task assessment TASK-002 requires an empty issues list',
+    invalidResultJson,
+  };
+
+  it('附校验错误、非法结果原文与 PLAN_CANDIDATE 完整草稿', () => {
+    const prompt = buildPlanReviewRepairPrompt(input);
+    expect(prompt).toContain('PlanReviewResult 未通过契约校验');
+    expect(prompt).toContain('approved task assessment TASK-002 requires an empty issues list');
+    expect(prompt).toContain('非阻塞性观察');
+    expect(prompt).toContain('"id": "TASK-002"');
+    expect(prompt).toContain(REPOSITORY_ROOT);
+    expect(prompt).toContain(RUN_BRANCH);
+    expect(prompt).toContain(SPEC_SHA256);
+  });
+
+  it('重申只读边界、精确覆盖与 decision/issues 耦合规则', () => {
+    const prompt = buildPlanReviewRepairPrompt(input);
+    expect(prompt).toContain('本会话严格只读');
+    expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
+    expect(prompt).toContain('按 PLAN_CANDIDATE.tasks 原顺序且不多不少');
+    expect(prompt).toContain('approved 的 assessment issues 必须为空数组');
+    expect(prompt).toContain('不要返回 Markdown');
+  });
+
+  it('要求真实阻塞性问题改为 changes_required 而非删除 issue', () => {
+    const prompt = buildPlanReviewRepairPrompt(input);
+    expect(prompt).toContain('改为 changes_required');
+  });
+
+  it('非法结果不可解析时给出占位', () => {
+    const prompt = buildPlanReviewRepairPrompt({ ...input, invalidResultJson: null });
+    expect(prompt).toContain('（无）');
+    expect(prompt).not.toContain('复核通过但夹带观察');
   });
 });
 

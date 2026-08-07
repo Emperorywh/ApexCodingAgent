@@ -32,6 +32,14 @@ export function isTaskReviewResultInvalid(error: unknown): boolean {
   return isApexError(error) && error.errorCode === 'TASK_REVIEW_RESULT_INVALID';
 }
 
+/**
+ * 判断错误是否为 Plan Review 结果契约校验失败（适配器 Schema 或领域语义
+ * 门禁）。Application 层据此决定复核结果修复接力，不直接引用错误码字面量。
+ */
+export function isPlanReviewResultInvalid(error: unknown): boolean {
+  return isApexError(error) && error.errorCode === 'PLAN_REVIEW_RESULT_INVALID';
+}
+
 function finalReviewInvalid(message: string): ApexError {
   return new ApexError({ code: 'FINAL_REVIEW_RESULT_INVALID', stage: 'final_review', message });
 }

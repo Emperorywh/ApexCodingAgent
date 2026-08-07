@@ -45,14 +45,15 @@ ${toJson(input.draft)}
 10. 不要按文件数或架构层机械拆分；一个具有单一行为闭环的纵向功能可以跨层。
 11. 全新系统不得接受 legacy、兼容、迁移、fallback 或 deprecated 工作。
 12. 每个 Task 都必须给出一条 taskAssessment，按 PLAN_CANDIDATE.tasks 原顺序且不多不少。
-13. 只有全部 Task assessment 均 approved 且不存在计划级 issues 时，整体 decision 才能为 approved。
-14. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。
+13. 每条 assessment 的 decision 必须与其 issues 严格一致：approved 的 assessment issues 必须为空数组；changes_required 的 assessment 至少要有一条具体、可执行的 issue。issues 只收录必须修改的阻塞性问题；不影响计划正确性的观察、建议或文档瑕疵一律写入 summary，不得写入任何 issues。
+14. 只有全部 Task assessment 均 approved 且计划级 issues 为空时，整体 decision 才能为 approved；计划级 issues 同样只收录阻塞性问题。
+15. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。
 
 返回 PlanReviewResult：
 - decision: "approved" | "changes_required"
-- summary: 非空复核摘要
-- taskAssessments: { taskId, decision: "approved" | "changes_required", issues: string[] }[]
-- issues: 计划级问题 string[]
+- summary: 非空复核摘要（非阻塞性观察写在这里）
+- taskAssessments: { taskId, decision: "approved" | "changes_required", issues: string[] }[]（approved 时 issues 必须为 []，changes_required 时至少一条）
+- issues: 计划级问题 string[]（整体 approved 时必须为 []）
 
 不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }
@@ -68,5 +69,53 @@ export function buildPlanReviewResumePrompt(): string {
 
 继续基于仓库、SPEC 与原 PLAN_CANDIDATE 检查 Task 单一目标、nonGoals、结构化验证覆盖和预算可完成性。不得恢复或引用 Planning Session，不得修改仓库或移动 HEAD。
 
-完成后返回完整 PlanReviewResult。只有每个 Task 都 approved 且计划级 issues 为空时才能批准。不要返回 Markdown。`;
+完成后返回完整 PlanReviewResult。只有每个 Task 都 approved 且计划级 issues 为空时才能批准；approved 的 assessment 不得携带任何 issue，非阻塞性观察写入 summary。不要返回 Markdown。`;
+}
+
+export interface PlanReviewRepairPromptInput {
+  readonly repositoryRoot: string;
+  readonly runBranch: string;
+  readonly specPath: string;
+  readonly specSha256: string;
+  readonly planRevision: number;
+  /** 被复核的完整计划草稿（taskAssessments 覆盖与顺序依据）。 */
+  readonly draft: TaskPlanDraft;
+  /** 上一次结果的契约校验错误（原样给出）。 */
+  readonly validationError: string;
+  /** 上一次非法结果的 JSON 文本；结果不可解析时为 null。 */
+  readonly invalidResultJson: string | null;
+}
+
+/**
+ * 计划复核结果修复 Session 的提示词（对齐 Task Review 结果修复）。
+ *
+ * 上一趟复核会话进程正常结束，但 PlanReviewResult 未通过契约校验；本
+ * Session 唯一职责是按校验错误重新返回合法结论，计划候选仍未被批准或
+ * 打回，严格只读边界不变。
+ */
+export function buildPlanReviewRepairPrompt(input: PlanReviewRepairPromptInput): string {
+  return `你是 ApexCodingAgent 的独立 Plan Reviewer。上一趟计划复核会话已结束，但它返回的 PlanReviewResult 未通过契约校验，计划候选仍未被批准或打回。
+
+仓库根目录：${input.repositoryRoot}
+Run Branch：${input.runBranch}
+SPEC 路径：${input.specPath}
+SPEC SHA-256：${input.specSha256}
+待提交 Plan Revision：${input.planRevision}
+
+校验错误：
+${input.validationError}
+
+上一次返回的结构化结果（JSON；不可得时为"（无）"）：
+${input.invalidResultJson ?? '（无）'}
+
+PLAN_CANDIDATE（完整草稿，JSON）：
+${toJson(input.draft)}
+
+修复要求：
+1. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行任何有副作用的操作；本 Session 唯一职责是重新返回合法的 PlanReviewResult。
+2. 每个 Task 都必须给出一条 taskAssessment，按 PLAN_CANDIDATE.tasks 原顺序且不多不少、不重复、不越界。
+3. approved 的 assessment issues 必须为空数组；changes_required 的 assessment 至少一条 issue；整体 approved 当且仅当全部 Task approved 且计划级 issues 为空。非阻塞性观察写入 summary，不得写入任何 issues。
+4. 只修正导致校验失败的字段；复核结论本身仍须基于仓库事实。不要为了让结果合法而删除真实存在的阻塞性问题——若某条 issue 确实要求修改计划，应将该 Task（或整体 decision）改为 changes_required 并保留该 issue。
+
+不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }

@@ -4,13 +4,17 @@
  * 回到下一趟 Planning。草稿与复核结果始终来自不可变 Session Record。
  */
 import { ApexError } from '../../domain/errors.js';
-import { validatePlanReviewResultSemantics } from '../../domain/results.js';
+import {
+  isPlanReviewResultInvalid,
+  validatePlanReviewResultSemantics,
+} from '../../domain/results.js';
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import { MAX_PLAN_REVIEW_ATTEMPTS, type RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import {
   buildPlanReviewPrompt,
+  buildPlanReviewRepairPrompt,
   buildPlanReviewResumePrompt,
 } from '../prompts/plan-review.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
@@ -38,6 +42,13 @@ export type ReviewPlanCandidateResult =
     }
   | { readonly kind: 'spec-changed'; readonly run: RunJson }
   | { readonly kind: 'failed'; readonly run: RunJson };
+
+/**
+ * 复核结果修复会话的有界次数（与 Execution / Task Review 结果修复同一语义）：
+ * 进程正常结束但 PlanReviewResult 未过契约校验时接力一次；连续两次不合法
+ * 说明结果通道系统性失配，按原路径转 failed。
+ */
+const MAX_RESULT_REPAIR_ATTEMPTS = 1;
 
 export function createReviewPlanCandidate(deps: UseCaseDeps): {
   execute(options?: ReviewPlanCandidateOptions): Promise<ReviewPlanCandidateResult>;
@@ -156,56 +167,118 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
       planRevision: candidate.planRevision,
       draft,
     });
-    const invocation = await invokeResumableSession(deps, {
-      run,
-      session: {
-        type: 'plan_review',
-        taskId: null,
-        planRevision: candidate.planRevision,
-        specSha256: specBefore.sha256,
-        permissionMode: 'plan',
-        repositoryRoot: root,
-      },
-      freshPrompt: prompt,
-      resume:
-        options?.resumeFromSessionId === undefined
-          ? null
-          : {
-              sessionId: options.resumeFromSessionId,
-              prompt: buildPlanReviewResumePrompt(),
-            },
-      closeResumeAttempt: (handle) => handle.run,
-    });
-    if (invocation.kind === 'failed') {
-      return failWithSession(invocation.handle, invocation.error);
-    }
-    const { handle, fact } = invocation;
 
-    try {
-      await writeCompletedSessionRecord(deps, handle, fact);
-      await deps.git.assertSessionEnd(root, sessionGitFacts(run), startFact);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
-    }
-
-    let specAfter;
-    try {
-      specAfter = await deps.git.readSpecFact(root, run.spec.path);
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
-    }
-    if (specAfter.sha256 !== specBefore.sha256) {
-      return discardCandidateForSpecChange(handle.run);
-    }
-
-    const result: PlanReviewResult = fact.structuredResult;
-    try {
-      validatePlanReviewResultSemantics(
-        result,
-        draft.tasks.map((task) => task.id),
+    /** 修复接力行：让前台看到复核结果为何被拒以及修复会话的启动。 */
+    const progressResultRepair = (
+      handle: ActiveSessionHandle<'plan_review'>,
+      error: ApexError,
+      attempt: number,
+    ): void => {
+      deps.output.writeLine(
+        deps.redaction.redactText(
+          `↻ 计划复核结果校验失败 · 会话 ${handle.sessionId.slice(0, 8)} · ` +
+            `正在启动修复会话 ${attempt}/${MAX_RESULT_REPAIR_ATTEMPTS} · ${error.message}`,
+        ),
       );
-    } catch (error) {
-      return failWithSession(handle, error as ApexError);
+      deps.logger.log('warn', 'plan_review.result_repair', {
+        sessionId: handle.sessionId,
+        attempt,
+        message: error.message,
+      });
+    };
+
+    /** 修复会话提示词：附校验错误与（可解析时的）非法结果原文。 */
+    const buildRepairPrompt = (error: ApexError, result: PlanReviewResult | null): string =>
+      buildPlanReviewRepairPrompt({
+        repositoryRoot: root,
+        runBranch: run.repository.runBranch,
+        specPath: run.spec.path,
+        specSha256: specBefore.sha256,
+        planRevision: candidate.planRevision,
+        draft,
+        validationError: error.message,
+        invalidResultJson: result === null ? null : JSON.stringify(result, null, 2),
+      });
+
+    /**
+     * 单趟复核 + 领域语义门禁；结果契约失败时以有界修复会话接力（与
+     * Execution / Task Review 结果修复同一形态）。Plan Review 没有 Episode，
+     * 接力只需清掉 activeSession 并补失败 Record。鉴权、网络、普通非零退出
+     * 和流失败都不自动重试；resume hint 仅首趟生效。
+     */
+    let sessionRun = run;
+    let sessionPrompt = prompt;
+    let repairAttempt = 0;
+    let handle: ActiveSessionHandle<'plan_review'>;
+    let result: PlanReviewResult;
+    for (;;) {
+      const invocation = await invokeResumableSession(deps, {
+        run: sessionRun,
+        session: {
+          type: 'plan_review',
+          taskId: null,
+          planRevision: candidate.planRevision,
+          specSha256: specBefore.sha256,
+          permissionMode: 'plan',
+          repositoryRoot: root,
+        },
+        freshPrompt: sessionPrompt,
+        resume:
+          repairAttempt === 0 && options?.resumeFromSessionId !== undefined
+            ? {
+                sessionId: options.resumeFromSessionId,
+                prompt: buildPlanReviewResumePrompt(),
+              }
+            : null,
+        closeResumeAttempt: (relayHandle) => relayHandle.run,
+      });
+      if (invocation.kind === 'failed') {
+        const { handle: failedHandle, error: apex } = invocation;
+        if (isPlanReviewResultInvalid(apex) && repairAttempt < MAX_RESULT_REPAIR_ATTEMPTS) {
+          // 结构 Schema 未过：补失败 Record，接力结果修复会话。
+          await ensureFailedSessionRecord(deps, failedHandle, apex);
+          repairAttempt += 1;
+          sessionRun = { ...failedHandle.run, activeSession: null };
+          sessionPrompt = buildRepairPrompt(apex, null);
+          progressResultRepair(failedHandle, apex, repairAttempt);
+          continue;
+        }
+        return failWithSession(failedHandle, apex);
+      }
+      const { handle: completedHandle, fact } = invocation;
+
+      let specAfter;
+      try {
+        await writeCompletedSessionRecord(deps, completedHandle, fact);
+        await deps.git.assertSessionEnd(root, sessionGitFacts(run), startFact);
+        specAfter = await deps.git.readSpecFact(root, run.spec.path);
+      } catch (error) {
+        return failWithSession(completedHandle, error as ApexError);
+      }
+      if (specAfter.sha256 !== specBefore.sha256) {
+        return discardCandidateForSpecChange(completedHandle.run);
+      }
+
+      const rawResult: PlanReviewResult = fact.structuredResult;
+      try {
+        validatePlanReviewResultSemantics(
+          rawResult,
+          draft.tasks.map((task) => task.id),
+        );
+      } catch (error) {
+        const apex = error as ApexError;
+        if (repairAttempt < MAX_RESULT_REPAIR_ATTEMPTS) {
+          repairAttempt += 1;
+          sessionRun = { ...completedHandle.run, activeSession: null };
+          sessionPrompt = buildRepairPrompt(apex, rawResult);
+          progressResultRepair(completedHandle, apex, repairAttempt);
+          continue;
+        }
+        return failWithSession(completedHandle, apex);
+      }
+      handle = completedHandle;
+      result = rawResult;
+      break;
     }
 
     if (result.decision === 'approved') {

@@ -18,8 +18,33 @@ import {
   planReviewApproved,
   streamOf,
   waitForRunFact,
+  type RecordedInvocation,
 } from './helpers.js';
 import { seedRepo } from '../integration/git/helpers.js';
+
+/** 从传给 Claude 的 JSON Schema 识别独立 Plan Review 调用。 */
+function isPlanReviewInvocation(record: RecordedInvocation): boolean {
+  const schemaIndex = record.argv.indexOf('--json-schema');
+  if (schemaIndex < 0) return false;
+  const schemaText = record.argv[schemaIndex + 1];
+  if (schemaText === undefined) return false;
+  const schema = JSON.parse(schemaText) as { properties?: { taskAssessments?: unknown } };
+  return schema.properties?.taskAssessments !== undefined;
+}
+
+/** 语义非法的复核结论：approved 却夹带非空 issues（结构 Schema 通过、领域门禁拒绝）。 */
+const PLAN_REVIEW_APPROVED_WITH_ISSUES = {
+  decision: 'approved',
+  summary: '计划可以提交，但结论夹带一条非阻塞性观察',
+  taskAssessments: [
+    {
+      taskId: 'TASK-001',
+      decision: 'approved',
+      issues: ['非阻塞性观察：集成测试数量叙述与仓库统计不符'],
+    },
+  ],
+  issues: [],
+} as const;
 
 const ONE_TASK_PLAN = planDraft([{ id: 'TASK-001', title: '实现聚焦功能' }]);
 const PLAN_CHANGES_REQUIRED = {
@@ -216,6 +241,103 @@ describe('e2e independent plan review', () => {
 });
 
 describe('e2e independent plan review — 边界与失败语义', () => {
+  it(
+    '复核结果未过语义校验时接力一次修复会话，修复合法后提交计划',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApprovePlanReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(PLAN_REVIEW_APPROVED_WITH_ISSUES) },
+            // 修复会话返回合法 approved。
+            { stdoutLines: streamOf(planReviewApproved(['TASK-001'])) },
+            {
+              writeFiles: [{ path: 'src/focused.ts', content: 'export const focused = true;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+
+        const result = await harness.start();
+        expect(result.kind, JSON.stringify(result)).toBe('completed');
+        if (result.kind !== 'completed') return;
+
+        // 非法结论所在会话与修复会话各一条 plan_review Record；批准来自修复会话。
+        const records = await harness.listSessionRecords();
+        expect(records.map((record) => record.type)).toEqual([
+          'planning',
+          'plan_review',
+          'plan_review',
+          'execution',
+          'task_review',
+          'final_review',
+        ]);
+        const tasks = await harness.readTasksJson();
+        expect(tasks.planReviewerSessionId).toBe(records[2]!.sessionId);
+
+        // 修复会话真实启动：第二趟复核调用使用修复提示词（含校验错误与非法
+        // 结果原文），不续接上一趟会话。
+        const reviewInvocations = (await harness.readRecords())
+          .filter((record) => record.argv.includes('--session-id'))
+          .filter(isPlanReviewInvocation);
+        expect(reviewInvocations).toHaveLength(2);
+        expect(reviewInvocations[1]!.stdin).toContain('PlanReviewResult 未通过契约校验');
+        expect(reviewInvocations[1]!.stdin).toContain(
+          'approved task assessment TASK-001 requires an empty issues list',
+        );
+        expect(reviewInvocations[1]!.stdin).toContain('非阻塞性观察');
+        expect(reviewInvocations[1]!.argv).not.toContain('--resume');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it(
+    '修复会话仍返回非法结果后以 PLAN_REVIEW_RESULT_INVALID 终止',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApprovePlanReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(PLAN_REVIEW_APPROVED_WITH_ISSUES) },
+            // 修复会话同样返回语义非法结果：耗尽接力次数后转 failed。
+            { stdoutLines: streamOf(PLAN_REVIEW_APPROVED_WITH_ISSUES) },
+          ],
+        });
+
+        const result = await harness.start();
+        expect(result.kind).toBe('failed');
+        if (result.kind !== 'failed') return;
+        expect(result.run.lastError?.errorCode).toBe('PLAN_REVIEW_RESULT_INVALID');
+        expect(result.run.planRevision).toBe(0);
+        expect(result.run.tasksSha256).toBeNull();
+        expect(result.run.planCandidate).toBeNull();
+        expect(result.run.planReviewFeedback).toBeNull();
+        expect((await harness.listSessionRecords()).map((record) => record.type)).toEqual([
+          'planning',
+          'plan_review',
+          'plan_review',
+        ]);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    120_000,
+  );
+
   it(
     '复核会话修改工作树时以稳定错误失败，候选不得提交',
     async () => {

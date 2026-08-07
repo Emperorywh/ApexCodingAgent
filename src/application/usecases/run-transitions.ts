@@ -70,6 +70,17 @@ export function toTerminalFailedRun(
           },
         };
   const preservePlanningFacts = isResumableErrorCode(error.errorCode);
+  /**
+   * Final Review 阶段的推送失败不持久化恢复点：未推送提交由 Final Review
+   * 会话自己产生，不存在可诚实归属的 Task（正常流程中它会成为 finalCommit，
+   * 无需归属），而 final_review/completed 不变式要求所有中间 Checkpoint
+   * 已由 completed Task 吸收——持久化恢复点会让 resume 的重开写入必然被
+   * 不变式拒绝。该形态保持显式不可恢复（abandon 后人工推送本地分支），
+   * 且全部 Task 候选在 Execution 阶段均已推送到远程，损失面仅限 Final
+   * Review 自身的提交。
+   */
+  const finalReviewPushFailure =
+    error.errorCode === 'GIT_PUSH_FAILED' && run.status === 'final_review';
   return {
     ...run,
     status: applyRunEvent(run.status, 'RUN_ERROR'),
@@ -83,7 +94,9 @@ export function toTerminalFailedRun(
     updatedAt: at,
     stateRevision: run.stateRevision + 1,
     resumePoint:
-      isResumableErrorCode(error.errorCode) && !isTerminalRunStatus(run.status)
+      isResumableErrorCode(error.errorCode) &&
+      !isTerminalRunStatus(run.status) &&
+      !finalReviewPushFailure
         ? {
             fromStatus: run.status,
             taskId: run.currentTaskId,

@@ -5,7 +5,7 @@
  * 已产生提交后的 Git 接管，以及前置校验失败不消耗恢复点。
  */
 import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { RunJson } from '../../src/domain/schemas/run-json.js';
 import {
@@ -919,6 +919,109 @@ describe('e2e resume (§17)', () => {
         expect(resumedInvocation!.argv[resumedInvocation!.argv.indexOf('--resume') + 1]).toBe(
           crashedSessionId,
         );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    'push failure persists a resume point; resume retries remote delivery and completes',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
+            // Execution 交付完成后远程消失：本地 Checkpoint 形成，推送失败。
+            {
+              writeFiles: [{ path: 'src/publish.ts', content: 'export const published = true;\n' }],
+              commands: [{ argv: ['git', 'remote', 'remove', 'origin'] }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+          ],
+        });
+
+        const first = await harness.start();
+        expect(first.kind).toBe('failed');
+        if (first.kind !== 'failed') return;
+        expect(first.run.lastError?.errorCode).toBe('GIT_PUSH_FAILED');
+        /**
+         * 推送失败是唯一缺口：本地 Checkpoint、Session Record 与 transcript
+         * 全部完好，终态必须持久化恢复点，而不是要求 abandon 后重跑。
+         */
+        expect(first.run.resumePoint).toEqual({
+          fromStatus: 'running',
+          taskId: 'TASK-001',
+          sessionId: expect.any(String),
+          sessionType: 'execution',
+        });
+        const deliveredSessionId = first.run.resumePoint!.sessionId!;
+        const unpublishedCheckpoint = first.run.repository.expectedHead;
+
+        // 用户修复远程配置后显式 resume（真实恢复前提：推送目标重新可用）。
+        await harness.repo.git(
+          'remote',
+          'add',
+          'origin',
+          join(dirname(harness.repo.root), 'origin.git'),
+        );
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(executionCompleted()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+
+        const resumed = await harness.resume();
+        expect(
+          resumed.kind,
+          JSON.stringify({
+            error:
+              resumed.kind === 'failed'
+                ? resumed.run.lastError
+                : resumed.kind === 'command-failed' || resumed.kind === 'startup-failed'
+                  ? {
+                      code: resumed.error.errorCode,
+                      stage: resumed.error.stage,
+                      message: resumed.error.message,
+                      toolSummary: resumed.error.toolSummary,
+                    }
+                  : null,
+            output: harness.outputLines,
+          }),
+        ).toBe('completed');
+        if (resumed.kind !== 'completed') return;
+        expect(resumed.run.resumePoint).toBeNull();
+        expect(resumed.run.tasks['TASK-001']!.status).toBe('completed');
+
+        // 恢复会话续接的是已完成交付的原会话，并如实携带推送失败原因。
+        const records = await harness.readRecords();
+        const resumedInvocation = records.find((record) => record.argv.includes('--resume'));
+        expect(resumedInvocation).toBeDefined();
+        const argv = resumedInvocation!.argv;
+        expect(argv[argv.indexOf('--resume') + 1]).toBe(deliveredSessionId);
+        expect(argv).toContain('--fork-session');
+        expect(resumedInvocation!.stdin).toContain('RESUME_CAUSE: GIT_PUSH_FAILED');
+
+        /**
+         * 续接会话没有产生新提交：候选复用首次失败时未推送的本地
+         * Checkpoint，恢复后的推送把它与后续事实一起交付到远程。
+         */
+        expect(resumed.run.tasks['TASK-001']!.finalCheckpoint).toBe(unpublishedCheckpoint);
+        const remoteRef = `refs/remotes/origin/${resumed.run.repository.runBranch}`;
+        expect(await harness.repo.git('rev-parse', remoteRef)).toBe(resumed.run.finalCommit);
+        expect(await harness.repo.git('show', `${remoteRef}:src/publish.ts`)).toContain('true');
+        expect(
+          (await harness.repo.gitRaw('merge-base', '--is-ancestor', unpublishedCheckpoint, remoteRef))
+            .code,
+        ).toBe(0);
       } finally {
         await harness.cleanup();
       }

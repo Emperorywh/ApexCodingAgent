@@ -204,6 +204,12 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
    *
    * 有实际变更时把 OID 记录为 Task 中间 Checkpoint，并同步 expectedHead；
    * Task 仍以 checkpoint_failed 终止，不能声称远程交付已经成功。
+   *
+   * 归属记为该 Task 本身（与独立复核打回的 retainCandidateCheckpoint 同一
+   * 形态）：GIT_PUSH_FAILED 是可续接失败，resume 会把 Task 重开为 pending
+   * 重新交付，running 不变式要求每个中间 Checkpoint 都有 pending/运行中
+   * Task 接管；归属同时也让重执行 Prompt 的 adoptedCheckpoints 如实呈现
+   * “本 Task 的工作已在本地提交中”。
    */
   async function failAfterCheckpoint(
     handle: ActiveSessionHandle<'execution'>,
@@ -243,7 +249,7 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
               taskId,
               planRevision: handle.planRevision,
               summary: `remote publication failed after local checkpoint for ${taskId}`,
-              ownerTaskId: null,
+              ownerTaskId: taskId,
             },
           ]
         : next.intermediateCheckpoints,

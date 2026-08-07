@@ -243,7 +243,9 @@ export function buildExecutionResumePrompt(input: {
       ? '上一趟会话已耗尽 maxAgentTurns。先利用已有实现和验证证据收敛；如果验收条件已经覆盖，必须立即返回结构化结果，不得开始任何可选检查。'
       : input.cause === 'RUN_INTERRUPTED'
         ? '上一趟会话被前台中断。从已有工作树继续，但不要重复中断前已经完成且仍然有效的工作或验证。'
-        : `上一趟会话因可续接错误 ${input.cause} 终止。先核对已有事实，再从最小缺口继续。`;
+        : input.cause === 'GIT_PUSH_FAILED'
+          ? '上一趟会话已实现并验证到可交付状态，本地 Checkpoint 已形成，仅推送到远程失败；本地提交完整保留在运行分支上。先核对 Git 历史与已有验收证据，只补齐尚未完成的最小缺口；如果验收条件已经覆盖，直接返回结构化结果，不得重复已完成的工作或验证。'
+          : `上一趟会话因可续接错误 ${input.cause} 终止。先核对已有事实，再从最小缺口继续。`;
 
   const originSentence =
     input.origin === 'budget_extension'

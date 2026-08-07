@@ -140,6 +140,18 @@ describe('error model (§15)', () => {
     expect(isResultContractErrorCode('RUN_INTERRUPTED')).toBe(false);
   });
 
+  it('keeps remote publication failure resumable while repository conflicts stay terminal', () => {
+    /**
+     * GIT_PUSH_FAILED 时本地 Checkpoint、Session Record 与 transcript 全部
+     * 完好，唯一缺口是远程交付；持久化恢复点让用户修复网络/鉴权/远程配置
+     * 后显式 resume 重试推送，而不是把已完成工作整体报废。仓库事实冲突
+     * （并发改动）不存在可续接的安全断点，必须保持不可恢复。
+     */
+    expect(isResumableErrorCode('GIT_PUSH_FAILED')).toBe(true);
+    expect(isResumableErrorCode('GIT_FACT_CONFLICT')).toBe(false);
+    expect(isResumableErrorCode('GIT_COMMAND_FAILED')).toBe(false);
+  });
+
   it('classifies only the stable Execution turn-budget error as exhausted', () => {
     /**
      * 外层恢复策略只能消费领域分类，不能自行解释 Claude 原始流；这里锁定

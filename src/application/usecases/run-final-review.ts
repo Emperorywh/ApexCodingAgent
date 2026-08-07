@@ -108,6 +108,11 @@ export function createRunFinalReview(deps: UseCaseDeps): {
    * 此时 Git HEAD 已经前移，不能再使用 Session 启动时的 repository 事实。
    * 失败 Run 将该提交作为 Final Review 中间 Checkpoint 留在 Episode 中，
    * 并同步 expectedHead；这样报告与后续诊断不会遗漏已真实存在的提交。
+   *
+   * 该提交没有可诚实归属的 Task（正常流程中它会直接成为 finalCommit），
+   * 因此 GIT_PUSH_FAILED 在此阶段由 toTerminalFailedRun 显式排除在恢复点
+   * 之外——持久化恢复点只会让 resume 的重开写入被 final_review 的归属
+   * 不变式拒绝。
    */
   async function failAfterCheckpoint(
     handle: ActiveSessionHandle<'final_review'>,

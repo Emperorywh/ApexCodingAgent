@@ -152,6 +152,67 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
     expect(terminal.resumePoint).toBeNull();
   });
 
+  it('GIT_PUSH_FAILED keeps the delivered Execution Session resumable for a push retry', () => {
+    /**
+     * 远程发布失败时本地 Checkpoint 已记录为中间 Checkpoint、Session
+     * Record 与 transcript 完好；恢复点保留已交付会话的身份，显式
+     * resume 续接该会话重新交付并重试推送。
+     */
+    const pushFailure = new ApexError({
+      code: 'GIT_PUSH_FAILED',
+      stage: 'git-push',
+      message: 'failed to push Run Branch to remote origin',
+    });
+    const failure = mkErrorRecord({
+      errorCode: 'GIT_PUSH_FAILED',
+      errorClass: 'git_error',
+      message: 'failed to push Run Branch to remote origin',
+    });
+    const run = runningRunWithSession();
+    const terminal = toTerminalFailedRun(
+      {
+        ...run,
+        tasks: {
+          'TASK-001': mkTaskState('TASK-001', 'failed', { failure }),
+        },
+      },
+      pushFailure,
+      T1,
+      redaction,
+    );
+    expect(terminal.status).toBe('failed');
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'running',
+      taskId: 'TASK-001',
+      sessionId: UUID_1,
+      sessionType: 'execution',
+    });
+  });
+
+  it('GIT_PUSH_FAILED in final review stays explicitly non-resumable', () => {
+    /**
+     * Final Review 的未推送提交由 FR 会话自己产生，没有可诚实归属的 Task；
+     * final_review 不变式要求所有中间 Checkpoint 由 completed Task 吸收，
+     * 恢复点会让 resume 的重开写入必然被拒。保持不可恢复而不是持久化一个
+     * 注定失败的恢复点。
+     */
+    const pushFailure = new ApexError({
+      code: 'GIT_PUSH_FAILED',
+      stage: 'git-push',
+      message: 'failed to push Run Branch to remote origin',
+    });
+    const reviewing = mkRun({
+      status: 'final_review',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      activeSession: { ...activeSession, type: 'final_review', taskId: null },
+    });
+    const terminal = toTerminalFailedRun(reviewing, pushFailure, T1, redaction);
+    expect(terminal.status).toBe('failed');
+    expect(terminal.lastError?.errorCode).toBe('GIT_PUSH_FAILED');
+    expect(terminal.resumePoint).toBeNull();
+  });
+
   it('RUN_INTERRUPTED in the pre-review window fails the task but keeps its candidate', () => {
     /**
      * 候选已持久化、Reviewer 尚未启动（无 activeSession）的窗口：没有可

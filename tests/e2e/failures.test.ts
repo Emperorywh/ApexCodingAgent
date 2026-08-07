@@ -394,6 +394,17 @@ describe('e2e claude failure mapping (§9.6)', () => {
         expect(result.run.intermediateCheckpoints[0]?.oid).toBe(episode.intermediateCheckpoint);
         expect(result.run.repository.expectedHead).toBe(episode.intermediateCheckpoint);
         expect(await harness.repo.git('show', 'HEAD:src/publish.ts')).toContain('false');
+        /**
+         * 本地 Checkpoint 与已交付会话事实完好，唯一缺口是远程交付：终态
+         * 必须持久化恢复点，用户修复远程后显式 resume 重试推送（恢复闭环
+         * 见 resume.test.ts）。
+         */
+        expect(result.run.resumePoint).toEqual({
+          fromStatus: 'running',
+          taskId: 'TASK-001',
+          sessionId: episode.sessionId,
+          sessionType: 'execution',
+        });
       } finally {
         await harness.cleanup();
       }

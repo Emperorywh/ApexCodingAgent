@@ -161,6 +161,17 @@ export function isResultContractErrorCode(code: ErrorCode): boolean {
  * CLI 或修正提示词——续接同一会话重新交付合法结果，而不是把已完成
  * 的规划与执行成果整体报废。
  *
+ * 远程发布失败（GIT_PUSH_FAILED）在 Execution 阶段也属于同一形态：本地
+ * Checkpoint 已形成并记录为中间 Checkpoint、expectedHead 已同步、Session
+ * Record 与 transcript 完好，唯一缺口是远程交付。推送失败多由网络、鉴权
+ * 或远程配置引起，驱动循环内自动重试毫无意义；持久化恢复点让用户修复
+ * 外部条件后显式 resume，续接已交付会话重新收敛并重试推送，已完成的
+ * 全部工作随之到达远程。Final Review 阶段的推送失败是例外：未推送提交
+ * 由 Final Review 会话自己产生，没有可诚实归属的 Task，重开写入必然被
+ * final_review 不变式拒绝，因此由 toTerminalFailedRun 显式排除、不持久化
+ * 恢复点。仓库事实冲突（GIT_FACT_CONFLICT 等）则意味着并发改动或事实
+ * 漂移，不存在可续接的安全断点，保持不可恢复。
+ *
  * 通用非零退出可能发生在 transcript 尚未建立之前。此时恢复协调器会让
  * Claude 明确判定续接不可用，再按既有协议创建一次全新 Session；这比按
  * 易变的退出码猜测“鉴权失败”或“进程中断”更稳定，也不会丢失已完成工作。
@@ -170,7 +181,8 @@ export function isResumableErrorCode(code: ErrorCode): boolean {
     code === 'RUN_INTERRUPTED' ||
     isTurnBudgetExhaustedErrorCode(code) ||
     code === 'CLAUDE_EXIT_NONZERO' ||
-    isResultContractErrorCode(code)
+    isResultContractErrorCode(code) ||
+    code === 'GIT_PUSH_FAILED'
   );
 }
 

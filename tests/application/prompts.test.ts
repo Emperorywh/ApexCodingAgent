@@ -591,6 +591,24 @@ describe('buildExecutionResumePrompt（Execution 断点续接）', () => {
     expect(prompt).toContain('不是人工干预');
     expect(prompt).not.toContain('显式 resume');
   });
+
+  it('推送失败的恢复提示如实陈述本地 Checkpoint 已保留并要求直接收敛', () => {
+    const prompt = buildExecutionResumePrompt({
+      task: pendingDefinition,
+      cause: 'GIT_PUSH_FAILED',
+      origin: 'user_resume',
+    });
+    /*
+     * 推送失败时实现与验证证据都已在 transcript 与本地提交中齐备；续接
+     * 会话的唯一缺口是重新交付结果以重试推送，必须明确禁止重复工作。
+     */
+    expect(prompt).toContain('RESUME_CAUSE: GIT_PUSH_FAILED');
+    expect(prompt).toContain('推送到远程失败');
+    expect(prompt).toContain('本地提交完整保留');
+    expect(prompt).toContain('不要重复已完成的工作');
+    expect(prompt).not.toContain('被前台中断');
+    expect(prompt).not.toContain('已耗尽 maxAgentTurns');
+  });
 });
 
 describe('buildExecutionResultRepairPrompt（结果修复接力）', () => {
@@ -826,6 +844,18 @@ describe('buildFinalReviewResumePrompt（Final Review 断点续接）', () => {
     expect(prompt).toContain('未通过契约校验');
     expect(prompt).not.toContain('被前台中断');
     expect(prompt).toContain('重新返回合法结果');
+    expect(prompt).toContain('FinalReviewResult');
+  });
+
+  it('推送失败的恢复提示如实陈述本地 Checkpoint 已保留', () => {
+    const prompt = buildFinalReviewResumePrompt({ cause: 'GIT_PUSH_FAILED' });
+    /**
+     * Final Review 的复核结论与本地 Checkpoint 在推送失败前已形成；续接
+     * 会话基于已有复核事实重新表达结论即可触发重试推送，不能推倒重来。
+     */
+    expect(prompt).toContain('推送到远程失败');
+    expect(prompt).toContain('本地提交完整保留');
+    expect(prompt).not.toContain('被前台中断');
     expect(prompt).toContain('FinalReviewResult');
   });
 });

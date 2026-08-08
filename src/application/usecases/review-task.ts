@@ -60,17 +60,24 @@ export interface ReviewTaskOptions {
 const MAX_RESULT_REPAIR_ATTEMPTS = 1;
 
 /**
- * 同一 Task 连续被独立复核打回的上限：达到上限说明 Execution 与
- * Reviewer 在当前计划边界内无法收敛，按
- * TASK_REVIEW_REWORK_LIMIT_EXCEEDED 终止 Run，避免无界返工循环。
+ * 同一 Task 在同一 Plan Revision 内连续被独立复核打回的上限：达到上限说明
+ * Execution 与 Reviewer 在当前计划边界内无法收敛，升级为 Replan 让 Planner
+ * 重新划分范围或调整验收标准，而不是终止 Run 阻塞整个开发流程。
  */
 const MAX_CONSECUTIVE_CHANGES_REQUIRED = 3;
 
-/** 末尾连续 changes_required Episode 数：返工循环是否收敛的度量。 */
-function countTrailingChangesRequired(episodes: readonly TaskReviewEpisode[]): number {
+/**
+ * 当前 Plan Revision 内末尾连续 changes_required Episode 数：返工循环是否
+ * 收敛的度量。Replan 后旧 Revision 的打回不计入，新计划获得完整的返工机会。
+ */
+function countTrailingChangesRequired(
+  episodes: readonly TaskReviewEpisode[],
+  currentPlanRevision: number,
+): number {
   let count = 0;
   for (let index = episodes.length - 1; index >= 0; index -= 1) {
-    if (episodes[index]!.outcome !== 'changes_required') break;
+    const episode = episodes[index]!;
+    if (episode.outcome !== 'changes_required' || episode.planRevision !== currentPlanRevision) break;
     count += 1;
   }
   return count;
@@ -539,47 +546,56 @@ export function createReviewTask(deps: UseCaseDeps): {
       );
       const rejectedTask = next.tasks[taskId]!;
       /**
-       * 连续打回上限：Execution 与 Reviewer 无法在当前计划边界内收敛时
-       * 终止 Run（最后一次打回 Episode 已照常关闭），候选 Checkpoint 作为
-       * 中间事实保留供报告审计，避免无界返工循环。
+       * 连续打回上限：Execution 与 Reviewer 在当前计划边界内无法收敛时
+       * 升级为 Replan（最后一次打回 Episode 已照常关闭），由 Planner 重新
+       * 划分范围或调整验收标准；候选 Checkpoint 作为中间事实保留供报告
+       * 审计。Run 不因此终止，返工循环不再阻塞整个开发流程。
        */
       const consecutiveRejections = countTrailingChangesRequired(
         rejectedTask.taskReviewEpisodes,
+        next.planRevision,
       );
       if (consecutiveRejections >= MAX_CONSECUTIVE_CHANGES_REQUIRED) {
-        const exhausted = new ApexError({
-          code: 'TASK_REVIEW_REWORK_LIMIT_EXCEEDED',
-          stage: 'task_review',
-          message:
-            `independent review requested changes ${consecutiveRejections} times in a row ` +
-            `for ${taskId}; the rework loop is not converging`,
-          taskId,
-        });
-        assertTaskTransition(rejectedTask.status, 'failed', 'reported_failure');
-        const failedNext: RunJson = {
+        assertTaskTransition(rejectedTask.status, 'pending', 'replan_required');
+        next = {
           ...next,
+          status: applyRunEvent(next.status, 'REPLAN_REQUESTED'),
           currentTaskId: null,
           activeSession: null,
           tasks: {
             ...next.tasks,
             [taskId]: {
               ...rejectedTask,
-              status: 'failed',
+              status: 'pending',
               candidateResult: null,
               candidateCheckpoint: null,
-              failure: toErrorRecord(exhausted, now(), deps.redaction),
             },
           },
           intermediateCheckpoints: retainCandidateCheckpoint(
             next,
             taskId,
             executionEpisode.sessionId,
-            task.candidateCheckpoint!,
-            `Independent review rework limit exhausted for ${taskId}`,
+            task.candidateCheckpoint,
+            `Independent review rework limit reached for ${taskId}; escalating to replan`,
             null,
           ),
+          stateRevision: next.stateRevision + 1,
+          updatedAt: now(),
         };
-        return failTerminal(failedNext, exhausted);
+        await deps.stateStore.writeRun(next);
+        return {
+          kind: 'replan-needed',
+          run: next,
+          trigger: {
+            type: 'task_review_replan',
+            reason:
+              `独立复核连续 ${consecutiveRejections} 次打回 ${taskId}，当前计划边界内无法收敛。` +
+              `最近一轮复核摘要：${result.summary}；` +
+              `未满足项与问题：${result.issues.join('；') || '（复核未列出具体 issue）'}。` +
+              '请重新评估该 Task 的范围、验收标准或拆分方式，必要时拆分为更小的 Task 或调整 verificationPlan。',
+            sourceSessionId: handle.sessionId,
+          },
+        };
       }
       assertTaskTransition(rejectedTask.status, 'pending', 'review_changes_required');
       next = {

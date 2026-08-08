@@ -77,8 +77,9 @@ export const ERROR_CODE_TO_CLASS = {
    */
   PLAN_REVIEW_REWORK_LIMIT_EXCEEDED: 'plan_error',
   /*
-   * 独立复核连续打回同一 Task 达到上限：编排器拒绝无界返工循环，
-   * 按 plan_error 终止 Run，保留全部 Episode 事实供报告与人工接管。
+   * 历史错误码：独立复核连续打回同一 Task 达到上限。现行为是升级为
+   * Replan（当前计划边界内无法收敛时由 Planner 重新划分），Run 不再因此
+   * 终止；此码保留在注册表中以兼容历史 Run 状态与报告。
    */
   TASK_REVIEW_REWORK_LIMIT_EXCEEDED: 'plan_error',
   // git_error

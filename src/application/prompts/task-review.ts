@@ -50,7 +50,7 @@ ${VERIFICATION_POLICY}
 5. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。运行测试前先确认其产物已被 .gitignore 覆盖；若仍产生未被忽略的新文件，必须在返回结果前清理干净——会话前后的 Git 快照对任何工作树、索引或未跟踪文件差异都会判定为越权写入并终止整个 Run。
 6. 全部验收条件均 satisfied、不存在 failed test 且 issues 为空时，返回 approved。
 7. 当前 Task 边界内可以修复的问题，返回 changes_required，并在 issues 中逐条给出准确、可执行的问题；至少存在一项 not_satisfied、failed test 或 issue。
-8. 只有仓库事实、架构前置条件、需求变化或实际范围证明预算不成立时，才返回 replan_required 和非空 replanReason。
+8. 只有仓库事实、架构前置条件、需求变化、实际范围证明预算不成立，或验收验证依赖当前环境缺失的能力（如 Docker、外部服务）而无法取得证据时，才返回 replan_required 和非空 replanReason；环境阻塞必须在 replanReason 中写明缺失能力与受影响条目。
 9. 不得因为候选结果声称 completed 就降低证据标准；不确定或证据不足时不能批准。
 
 返回 TaskReviewResult 结构化结果：

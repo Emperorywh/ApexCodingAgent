@@ -78,8 +78,8 @@ ${VERIFICATION_POLICY}
 11. budget 是本 Task 的注意力契约：在 targetContextBudget（单位为 token）内收敛，并受 maxAgentTurns 运行时硬限制；如果范围明显无法在预算内完成，尽早返回 replan_required 要求拆分，不要等到耗尽上下文。
 12. 对每一项 acceptanceCriteria 按原索引返回一条 acceptanceEvidence，说明 satisfied 或 not_satisfied 及可观察证据。
 13. 只有全部 acceptanceCriteria 均 satisfied 且不存在 failed test 时才能返回 completed。
-14. 如果仓库事实、架构前置条件、需求变化或预算评估使当前计划不再正确，返回 replan_required 和非空原因，不要伪造完成。
-15. 无法完成且不需要重新规划时返回 failed，并保留准确诊断。
+14. 如果仓库事实、架构前置条件、需求变化或预算评估使当前计划不再正确，返回 replan_required 和非空原因，不要伪造完成。验收标准或 verificationPlan 依赖当前环境缺失的能力（如 Docker、外部服务、网络访问）而无法验证时，同样属于计划不再正确：返回 replan_required，在 replanReason 中写明缺失能力、受影响的验收条目与调整建议，不得返回 failed。
+15. 仅在实现层面确实无法完成、且计划本身无需调整时返回 failed，并保留准确诊断；环境能力缺失造成的验证阻塞不按 failed 处理（见第 14 条）。
 
 返回 TaskExecutionResult 结构化结果。不要返回 Markdown，不要在结构化结果之外输出解释。`;
 

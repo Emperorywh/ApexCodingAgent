@@ -71,7 +71,7 @@ ${VERIFICATION_POLICY}
 7. 不得修改、暂存、提交或删除 .apex-coding-agent。
 8. 不执行 remote push、生产部署、付款、生产数据变更或破坏其他分支。
 9. 只有全部 completed Task 均已复核、没有 failed test、没有未处理规格缺口时才能返回 completed。
-10. 发现仍需独立编码任务、架构调整或需求变化时返回 replan_required，并给出非空原因。
+10. 发现仍需独立编码任务、架构调整、需求变化，或验收验证依赖当前环境缺失的能力（如 Docker、外部服务）而无法完成时，返回 replan_required，并给出非空原因。
 11. reviewedTaskIds 必须无重复；completed 时必须精确列出当前计划的全部 completed Task ID。
 
 返回 FinalReviewResult 结构化结果。不要返回 Markdown，不要在结构化结果之外输出解释。`;

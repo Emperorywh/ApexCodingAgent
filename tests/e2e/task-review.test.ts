@@ -852,7 +852,7 @@ describe('e2e independent task review', () => {
   );
 
   it(
-    '同一 Task 连续三次 changes_required 后以 TASK_REVIEW_REWORK_LIMIT_EXCEEDED 终止',
+    '同一 Task 连续三次 changes_required 后升级为 Replan 而非终止 Run',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -878,42 +878,75 @@ describe('e2e independent task review', () => {
               stdoutLines: streamOf(executionCompleted()),
             },
             { stdoutLines: streamOf(CHANGES_REQUIRED) },
+            // 第三次连续打回触发 Replan 升级：Revision 2 接管全部三个候选 Checkpoint。
+            {
+              stdoutLines: streamOf(
+                planDraft([{ id: 'TASK-001', title: '重新划分后的功能实现' }], {
+                  summary: '返工不收敛触发的修订计划',
+                  dispositions: [0, 1, 2].map((index) => ({
+                    checkpointOid: `{intermediateCheckpointOid${index}}`,
+                    ownerTaskId: 'TASK-001',
+                    rationale: '继续采用复核打回前的候选变更',
+                  })),
+                }),
+              ),
+            },
+            {
+              writeFiles: [{ path: 'src/feature.ts', content: 'export const value = 3;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            { stdoutLines: streamOf(taskReviewApproved()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
           ],
         });
 
         const result = await harness.start();
-        expect(result.kind).toBe('failed');
-        if (result.kind !== 'failed') return;
+        expect(result.kind).toBe('completed');
+        if (result.kind !== 'completed') return;
+        const run = result.run;
 
-        expect(result.run.lastError?.errorCode).toBe('TASK_REVIEW_REWORK_LIMIT_EXCEEDED');
-        const task = result.run.tasks['TASK-001']!;
-        expect(task.status).toBe('failed');
-        expect(task.failure?.errorCode).toBe('TASK_REVIEW_REWORK_LIMIT_EXCEEDED');
-        // 候选字段清空：failed Task 不再携带可被误认为待批准的候选。
+        // Revision 2 由返工不收敛升级触发，而非人工或 Execution 自报。
+        expect(run.planRevision).toBe(2);
+        const snapshot2 = await harness.readPlanSnapshot(2);
+        expect(snapshot2.trigger.type).toBe('task_review_replan');
+        expect(snapshot2.trigger.reason).toContain('连续 3 次打回 TASK-001');
+
+        const task = run.tasks['TASK-001']!;
+        expect(task.status).toBe('completed');
+        // Run 未终止、Task 未失败：不收敛事实只体现在 Episode 与触发原因中。
+        expect(task.failure).toBeNull();
         expect(task.candidateResult).toBeNull();
         expect(task.candidateCheckpoint).toBeNull();
-        // 三次复核全部打回，三次 Execution 都只到候选。
         expect(task.taskReviewEpisodes.map((episode) => episode.outcome)).toEqual([
           'changes_required',
           'changes_required',
           'changes_required',
+          'approved',
         ]);
+        expect(snapshot2.trigger.sourceSessionId).toBe(task.taskReviewEpisodes[2]!.sessionId);
         expect(task.executionEpisodes.map((episode) => episode.outcome)).toEqual([
           'awaiting_review',
           'awaiting_review',
           'awaiting_review',
+          'awaiting_review',
         ]);
-        // 三个候选 Checkpoint 全部保留在 intermediateCheckpoints 供审计。
-        const candidateOids = task.taskReviewEpisodes.map((episode) => episode.candidateCheckpoint);
+        // 三个候选 Checkpoint 全部保留为中间事实并被修订计划的同一 Task 接管。
+        const candidateOids = task.taskReviewEpisodes
+          .slice(0, 3)
+          .map((episode) => episode.candidateCheckpoint);
         expect(new Set(candidateOids).size).toBe(3);
-        expect(result.run.intermediateCheckpoints.map((checkpoint) => checkpoint.oid)).toEqual(
+        expect(run.intermediateCheckpoints.map((checkpoint) => checkpoint.oid)).toEqual(
           expect.arrayContaining(candidateOids),
         );
-        // 返工终止后不再启动任何新会话（序列未耗尽到 final review）。
+        for (const oid of candidateOids) {
+          const retained = run.intermediateCheckpoints.find((checkpoint) => checkpoint.oid === oid);
+          expect(retained?.ownerTaskId).toBe('TASK-001');
+        }
+        // 升级后新 Revision 内的执行与复核正常进行：共 4 次复核会话。
         const reviewInvocations = (await harness.readRecords())
           .filter((record) => record.argv.includes('--session-id'))
           .filter(isTaskReviewInvocation);
-        expect(reviewInvocations).toHaveLength(3);
+        expect(reviewInvocations).toHaveLength(4);
       } finally {
         await harness.cleanup();
       }

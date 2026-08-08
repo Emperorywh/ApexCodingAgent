@@ -235,22 +235,27 @@ function applyRepoActions() {
 function emitSessionStdout() {
   const sessionId = sessionIdArgument();
   // 端到端场景占位符：{firstIntermediateCheckpointOid} 读取当前仓库
-  // run.json 的第一个中间 Checkpoint OID（replan 接管场景使用）。
-  let firstCheckpointOid = '';
+  // run.json 的第一个中间 Checkpoint OID（replan 接管场景使用）；
+  // {intermediateCheckpointOid<N>} 读取第 N 个（多次打回保留多个候选时使用）。
+  let checkpointOids = [];
   try {
     const runJson = JSON.parse(
       readFileSync(`${process.cwd()}/.apex-coding-agent/run.json`, 'utf8'),
     );
-    firstCheckpointOid = runJson.intermediateCheckpoints?.[0]?.oid ?? '';
+    checkpointOids = (runJson.intermediateCheckpoints ?? []).map((checkpoint) => checkpoint.oid);
   } catch {
-    firstCheckpointOid = '';
+    checkpointOids = [];
   }
+  const firstCheckpointOid = checkpointOids[0] ?? '';
   for (const line of scenario.stdoutLines ?? []) {
-    const text = (typeof line === 'string' ? line : JSON.stringify(line))
+    let text = (typeof line === 'string' ? line : JSON.stringify(line))
       .split('{sessionId}')
       .join(sessionId ?? '')
       .split('{firstIntermediateCheckpointOid}')
       .join(firstCheckpointOid);
+    text = text.replace(/\{intermediateCheckpointOid(\d+)\}/g, (_, index) =>
+      checkpointOids[Number(index)] ?? '',
+    );
     process.stdout.write(text + '\n');
   }
   for (const name of scenario.printEnv ?? []) {

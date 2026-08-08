@@ -88,6 +88,7 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - 无法判断的信息记录为 assumption，不要发明业务需求。
 - 调查任务必须产生具体结论或设计决策。
 - Replan 时返回完整新计划，不要返回局部补丁。
+- Replan 原因暴露环境能力或外部约束（如 Docker 不可用、网络受限）时，必须审查所有 pending Task 的 acceptanceCriteria 与 verificationPlan 中依赖同一能力的条目，在本次 Revision 中一并调整（如拆分为本地可验证部分与独立 CI 门禁 Task），不得只修复触发 Replan 的 Task。
 - Replan 时原样保留所有 completed Task 的 ID 和完整定义。
 - Replan 时可以修改 pending Task。
 - 省略旧 pending Task 表示将其标记为 skipped。

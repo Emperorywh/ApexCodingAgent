@@ -104,6 +104,44 @@ describe('TaskPlanDraft validation (§7.5)', () => {
     );
   });
 
+  it('reports every uncovered acceptance criterion in one deterministic failure', () => {
+    /**
+     * Planner 修正会话必须一次收到整份草稿的覆盖缺口，不能按 Task 顺序逐个
+     * 打回并反复要求模型重发完整计划。其他结构规则仍由既有断言独立覆盖。
+     */
+    const missingCoverage = (id: string, dependsOn: string[] = []) =>
+      mkTask(id, dependsOn, {
+        acceptanceCriteria: ['条件一', '条件二', '条件三'],
+        verificationPlan: [
+          {
+            id: `VERIFY-${id.slice(-3)}`,
+            kind: 'command',
+            criterionIndexes: [0],
+            procedure: '运行单元测试',
+            expectedEvidence: '命令通过',
+            command: 'npm test',
+            timeoutSeconds: 900,
+          },
+        ],
+      });
+    const error = expectApexError(
+      () =>
+        validateTaskPlanDraft(
+          mkDraft([
+            missingCoverage('TASK-001'),
+            missingCoverage('TASK-002', ['TASK-001']),
+          ]),
+          INITIAL_CONTEXT,
+        ),
+      'PLAN_INVALID',
+    );
+
+    expect(error.message).toContain('task TASK-001 acceptance criterion 1');
+    expect(error.message).toContain('task TASK-001 acceptance criterion 2');
+    expect(error.message).toContain('task TASK-002 acceptance criterion 1');
+    expect(error.message).toContain('task TASK-002 acceptance criterion 2');
+  });
+
   it('rejects duplicate verification IDs and kind/command coupling violations', () => {
     const duplicate = mkTask('TASK-001', [], {
       verificationPlan: [

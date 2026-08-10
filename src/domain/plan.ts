@@ -86,7 +86,7 @@ export function plannedTaskEquals(a: PlannedTask, b: PlannedTask): boolean {
  * JSON Schema 负责基础形状；这里集中维护验收条件覆盖、验证方式字段耦合
  * 和预算单调性，避免 Planner、Reviewer 与执行器各自解释同一契约。
  */
-function assertTaskExecutionContract(task: PlannedTask): void {
+function assertTaskExecutionContract(task: PlannedTask): readonly number[] {
   const verificationIds = new Set<string>();
   const coveredCriteria = new Set<number>();
   for (const step of task.verificationPlan) {
@@ -111,18 +111,19 @@ function assertTaskExecutionContract(task: PlannedTask): void {
       );
     }
   }
-  for (let index = 0; index < task.acceptanceCriteria.length; index += 1) {
-    if (!coveredCriteria.has(index)) {
-      throw planInvalid(
-        `task ${task.id} acceptance criterion ${index} has no verification step`,
-      );
-    }
-  }
   if (task.budget.targetContextBudget >= task.budget.hardContextLimit) {
     throw planInvalid(
       `task ${task.id} target context budget must stay below its hard context limit`,
     );
   }
+
+  /**
+   * 覆盖缺口本身彼此独立，调用方需要在完成全部 Task 的结构校验后统一报告。
+   * 这里返回稳定的 criterion index 列表，不在领域层拼装跨 Task 的隐式状态。
+   */
+  return task.acceptanceCriteria
+    .map((_, index) => index)
+    .filter((index) => !coveredCriteria.has(index));
 }
 
 export interface PlanDraftValidationContext {
@@ -259,6 +260,7 @@ export function validateTaskPlanDraft(
     throw planInvalid(`plan has ${pendingCount} pending tasks, limit is ${MAX_PENDING_TASKS}`);
   }
 
+  const uncoveredCriteria: string[] = [];
   for (const task of tasks) {
     if (!isTaskId(task.id)) {
       throw planInvalid(`invalid task ID format: ${task.id}`);
@@ -267,7 +269,19 @@ export function validateTaskPlanDraft(
     if (numeric === null || numeric > MAX_TASK_ID_NUMBER) {
       throw planInvalid(`task ID number out of range: ${task.id}`);
     }
-    assertTaskExecutionContract(task);
+    for (const criterionIndex of assertTaskExecutionContract(task)) {
+      uncoveredCriteria.push(
+        `task ${task.id} acceptance criterion ${criterionIndex} has no verification step`,
+      );
+    }
+  }
+
+  /**
+   * 一次返回整份草稿的全部覆盖缺口，让 Planner 可以在同一修正轮内处理完毕。
+   * 其他结构错误仍保持立即失败，因为后续检查依赖其局部结构已经可信。
+   */
+  if (uncoveredCriteria.length > 0) {
+    throw planInvalid(uncoveredCriteria.join('; '));
   }
 
   assertGraphShape(tasks);

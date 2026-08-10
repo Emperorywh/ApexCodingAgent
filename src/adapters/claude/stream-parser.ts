@@ -27,6 +27,7 @@ import {
   claudeStreamFailed,
   claudeTurnLimitReached,
   summarizeStderr,
+  type ClaudeTerminalFailureFact,
   type ClaudeProcessFacts,
 } from './errors.js';
 
@@ -38,6 +39,7 @@ const RESULT_SCHEMA_BY_SESSION_TYPE = {
   final_review: 'FinalReviewResult',
 } as const;
 const EVENT_SUMMARY_LIMIT = 200;
+const TERMINAL_DIAGNOSTIC_LIMIT = 2_000;
 
 interface StreamParseFailure {
   readonly lineNumber: number;
@@ -51,6 +53,9 @@ export interface CollectedClaudeStream {
   readonly terminalEventCount: number;
   /** 唯一终止事件的 subtype；重复事件时仅保留首个值且不得据此特殊分类。 */
   readonly terminalSubtype: string | null;
+  readonly terminalIsError: boolean;
+  readonly terminalReason: string | null;
+  readonly terminalResult: string | null;
   readonly terminalHasStructuredOutput: boolean;
   readonly structuredOutput: unknown;
   readonly model: string | null;
@@ -299,6 +304,9 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   let sessionIdConflict = false;
   let terminalEventCount = 0;
   let terminalSubtype: string | null = null;
+  let terminalIsError = false;
+  let terminalReason: string | null = null;
+  let terminalResult: string | null = null;
   let terminalHasStructuredOutput = false;
   let structuredOutput: unknown;
   let model: string | null = null;
@@ -342,6 +350,27 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
       terminalEventCount += 1;
       if (terminalEventCount === 1) {
         terminalSubtype = typeof event['subtype'] === 'string' ? event['subtype'] : null;
+        terminalIsError = event['is_error'] === true;
+        /**
+         * Claude Code 会把 Provider API 超时写入唯一 result 事件，而 stderr 为空。
+         * 这里只保留有界公开字段，完整原始事件仍由 Session 日志独立持久化。
+         */
+        if (terminalIsError) {
+          terminalReason =
+            typeof event['terminal_reason'] === 'string'
+              ? stripVTControlCharacters(event['terminal_reason']).slice(
+                  0,
+                  TERMINAL_DIAGNOSTIC_LIMIT,
+                )
+              : null;
+          terminalResult =
+            typeof event['result'] === 'string'
+              ? stripVTControlCharacters(event['result']).slice(
+                  0,
+                  TERMINAL_DIAGNOSTIC_LIMIT,
+                )
+              : null;
+        }
         if ('structured_output' in event) {
           terminalHasStructuredOutput = true;
           structuredOutput = event['structured_output'];
@@ -432,6 +461,9 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
           sessionIdConflict,
           terminalEventCount,
           terminalSubtype,
+          terminalIsError,
+          terminalReason,
+          terminalResult,
           terminalHasStructuredOutput,
           structuredOutput,
           model,
@@ -495,9 +527,23 @@ export function evaluateCollectedStreamOutcome<T extends SessionType>(
         },
       );
     }
+    /**
+     * 只有唯一且 Session ID 一致的正式失败事件可以补充非零退出诊断。
+     * 重复或冲突事件仍退回纯进程事实，避免用不可信 stdout 污染错误记录。
+     */
+    const terminalFailure: ClaudeTerminalFailureFact | undefined =
+      input.stream.terminalEventCount === 1 &&
+      !input.stream.sessionIdConflict &&
+      input.stream.terminalIsError
+        ? {
+            reason: input.stream.terminalReason,
+            result: input.stream.terminalResult,
+          }
+        : undefined;
     throw claudeExitNonZero(input.sessionType, input.exitCode, input.stderr, input.redact, {
       sessionId: input.sessionId,
       claudeVersion: input.claudeVersion,
+      ...(terminalFailure === undefined ? {} : { terminalFailure }),
     });
   }
   if (input.stream.sessionIdConflict) {

@@ -1,0 +1,41 @@
+{
+  "description": "A real Claude api_error ResultMessage keeps the stdout timeout diagnosis while retaining the stable non-zero error code",
+  "sessionType": "planning",
+  "exitCode": 1,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "fixture-model"
+    },
+    {
+      "type": "assistant",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "message": {
+        "content": [
+          {
+            "type": "text",
+            "text": "API Error: The operation timed out."
+          }
+        ]
+      },
+      "is_api_error_message": true
+    },
+    {
+      "is_error": true,
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "terminal_reason": "api_error",
+      "subtype": "success",
+      "result": "API Error: The operation timed out.",
+      "type": "result"
+    }
+  ],
+  "expect": {
+    "kind": "error",
+    "errorCode": "CLAUDE_EXIT_NONZERO",
+    "messageIncludes": "api_error: API Error: The operation timed out.",
+    "toolSummaryIncludes": "terminal_reason: api_error"
+  }
+}

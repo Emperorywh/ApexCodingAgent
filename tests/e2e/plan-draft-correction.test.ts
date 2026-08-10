@@ -4,9 +4,9 @@
  * 真实运行中（尤其非 Anthropic 模型）Planner 可能返回跨字段语义不合法、
  * 但 Schema 合法的草稿——例如验收条件缺少验证步骤覆盖。这类缺陷只能由
  * 会话后的确定性校验（SPEC §7.5）检出。这里锁定修正回路语义：
- * 校验结论续接回原 Planner 会话定向修正、轮次有界、resume 不可用时
- * 回退为携带被拒草稿与校验结论的全新会话；耗尽后的终态失败持久化
- * 可续接恢复点，显式 resume 携校验结论继续定向修正。
+ * 校验结论与被拒草稿进入轻量独立会话定向修正、轮次有界；耗尽后的终态
+ * 失败持久化可续接恢复点，显式 resume 携校验结论继续定向修正。真实
+ * api_error 场景同时锁定 stdout 诊断保留与用户显式恢复语义。
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -51,7 +51,7 @@ async function businessInvocations(harness: E2EHarness): Promise<RecordedInvocat
 
 describe('e2e planning draft correction loop', () => {
   it(
-    '草稿缺验收覆盖时续接原 Planner 会话定向修正，修正稿进入独立复核',
+    '草稿缺验收覆盖时创建轻量独立会话定向修正，修正稿进入独立复核',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -87,19 +87,21 @@ describe('e2e planning draft correction loop', () => {
         expect(records[0]!.status).toBe('completed');
         expect(records[1]!.status).toBe('completed');
 
-        // 修正会话以 --resume --fork-session 续接被拒草稿所在的会话，
-        // 提示词只携带精确校验结论。
+        /**
+         * 修正会话不继承原 Planner transcript，只携带被拒草稿与精确校验结论。
+         * 这让局部结构修复的上下文规模不再随仓库探索过程增长。
+         */
         const invocations = await businessInvocations(harness);
         const correction = invocations[1]!;
-        expect(correction.argv).toContain('--fork-session');
-        const resumeIndex = correction.argv.indexOf('--resume');
-        expect(resumeIndex).toBeGreaterThanOrEqual(0);
-        expect(correction.argv[resumeIndex + 1]).toBe(records[0]!.sessionId);
+        expect(correction.argv).not.toContain('--resume');
+        expect(correction.argv).not.toContain('--fork-session');
+        expect(correction.stdin).toContain('计划草稿修正器');
+        expect(correction.stdin).toContain('REJECTED_DRAFT');
         expect(correction.stdin).toContain('VALIDATION_ERROR');
         expect(correction.stdin).toContain(COVERAGE_ERROR);
 
         // 前台告知修正事实；提交的计划来自修正会话。
-        expect(harness.outputLines.join('\n')).toContain('续接 Planner 定向修正（第 1/2 轮）');
+        expect(harness.outputLines.join('\n')).toContain('启动轻量 Planner 定向修正（第 1/2 轮）');
         const tasks = await harness.readTasksJson();
         expect(tasks.plannerSessionId).toBe(records[1]!.sessionId);
         expect(result.run.planCandidate).toBeNull();
@@ -134,7 +136,7 @@ describe('e2e planning draft correction loop', () => {
         expect(result.run.planRevision).toBe(0);
         expect(result.run.planCandidate).toBeNull();
 
-        // 首轮 + 两轮修正，共三趟 Planning；修正轮次各自续接上一趟会话。
+        // 首轮 + 两轮修正，共三趟 Planning；每个修正轮次都使用独立轻量上下文。
         const records = await harness.listSessionRecords();
         expect(records.map((record) => record.type)).toEqual([
           'planning',
@@ -143,16 +145,14 @@ describe('e2e planning draft correction loop', () => {
         ]);
         const invocations = await businessInvocations(harness);
         expect(invocations).toHaveLength(3);
-        expect(invocations[1]!.argv[invocations[1]!.argv.indexOf('--resume') + 1]).toBe(
-          records[0]!.sessionId,
-        );
-        expect(invocations[2]!.argv[invocations[2]!.argv.indexOf('--resume') + 1]).toBe(
-          records[1]!.sessionId,
-        );
+        expect(invocations[1]!.argv).not.toContain('--resume');
+        expect(invocations[2]!.argv).not.toContain('--resume');
+        expect(invocations[1]!.stdin).toContain('REJECTED_DRAFT');
+        expect(invocations[2]!.stdin).toContain('REJECTED_DRAFT');
 
         const progress = harness.outputLines.join('\n');
-        expect(progress).toContain('续接 Planner 定向修正（第 1/2 轮）');
-        expect(progress).toContain('续接 Planner 定向修正（第 2/2 轮）');
+        expect(progress).toContain('启动轻量 Planner 定向修正（第 1/2 轮）');
+        expect(progress).toContain('启动轻量 Planner 定向修正（第 2/2 轮）');
       } finally {
         await harness.cleanup();
       }
@@ -238,9 +238,9 @@ describe('e2e planning draft correction loop', () => {
     '终态恢复的 transcript 不可用时，全新 Planner 仍收到被拒草稿与校验结论',
     async () => {
       /**
-       * 与进程内 correction fallback 不同，本场景先让 Run 终态失败，再由
-       * 用户显式 resume。外部 transcript 丢失时，本地不可变 Session Record
-       * 必须为全新 Planner 恢复定向修正事实。
+       * 本场景先让 Run 因确定性校验终态失败，再由用户显式 resume。外部
+       * transcript 丢失时，本地不可变 Session Record 必须为全新 Planner
+       * 恢复被拒草稿和定向校验事实。
        */
       const harness = await createE2EHarness();
       try {
@@ -289,7 +289,7 @@ describe('e2e planning draft correction loop', () => {
   );
 
   it(
-    '修正续接不可用时回退为携带被拒草稿与校验结论的全新会话',
+    '轻量修正遇到真实 api_error 时保留超时诊断，并由用户显式 resume 续接',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -299,8 +299,64 @@ describe('e2e planning draft correction loop', () => {
           help: COMPLETE_HELP,
           sequence: [
             { stdoutLines: streamOf(planDraftMissingCoverage()) },
-            // 续接失败（模拟 transcript 不存在）：触发有界回退。
-            { exitCode: 1, stderrText: 'No conversation found for session ID' },
+            {
+              exitCode: 1,
+              stdoutLines: [
+                {
+                  type: 'system',
+                  subtype: 'init',
+                  session_id: '{sessionId}',
+                  model: 'fake-timeout-model',
+                },
+                {
+                  type: 'assistant',
+                  session_id: '{sessionId}',
+                  message: {
+                    content: [{ type: 'text', text: 'API Error: The operation timed out.' }],
+                  },
+                  is_api_error_message: true,
+                },
+                {
+                  type: 'result',
+                  subtype: 'success',
+                  session_id: '{sessionId}',
+                  is_error: true,
+                  terminal_reason: 'api_error',
+                  result: 'API Error: The operation timed out.',
+                },
+              ],
+            },
+          ],
+        });
+
+        const failed = await harness.start();
+        expect(failed.kind).toBe('failed');
+        if (failed.kind !== 'failed') return;
+        expect(failed.run.lastError?.errorCode).toBe('CLAUDE_EXIT_NONZERO');
+        expect(failed.run.lastError?.message).toContain('after reporting api_error');
+        expect(failed.run.lastError?.message).toContain('The operation timed out');
+        expect(failed.run.lastError?.toolSummary).toContain('terminal_reason: api_error');
+
+        /**
+         * 超时发生在独立修正会话中；它必须留下可续接恢复点，同时原始被拒草稿
+         * 仍以 completed Session Record 保留，失败会话不伪造结构化结果。
+         */
+        const planningRecords = (await harness.listSessionRecords()).filter(
+          (record) => record.type === 'planning',
+        );
+        expect(planningRecords.map((record) => record.status)).toEqual(['completed', 'failed']);
+        const failedCorrection = planningRecords[1]!;
+        expect(failed.run.resumePoint?.sessionId).toBe(failedCorrection.sessionId);
+        expect(failedCorrection.structuredResult).toBeNull();
+
+        const beforeResumeInvocations = await businessInvocations(harness);
+        expect(beforeResumeInvocations[1]!.argv).not.toContain('--resume');
+        expect(beforeResumeInvocations[1]!.stdin).toContain('REJECTED_DRAFT');
+
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
             { stdoutLines: streamOf(VALID_PLAN) },
             {
               writeFiles: [{ path: 'src/focused.ts', content: 'export const focused = true;\n' }],
@@ -309,41 +365,24 @@ describe('e2e planning draft correction loop', () => {
             { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
           ],
         });
+        const resumed = await harness.resume();
+        expect(resumed.kind, JSON.stringify(resumed)).toBe('completed');
 
-        const result = await harness.start();
-        expect(result.kind, JSON.stringify(result)).toBe('completed');
-        if (result.kind !== 'completed') return;
-
-        // 回退事实前台可见；续接失败的会话以 failed Record 落盘。
-        const progress = harness.outputLines.join('\n');
-        expect(progress).toContain('CLAUDE_RESUME_UNAVAILABLE');
-        expect(progress).toContain('将使用完整提示创建新会话');
-        const planningRecords = (await harness.listSessionRecords()).filter(
-          (record) => record.type === 'planning',
-        );
-        expect(planningRecords.map((record) => record.status)).toEqual([
-          'completed',
-          'failed',
-          'completed',
-        ]);
-        expect(planningRecords[1]!.error?.errorCode).toBe('CLAUDE_RESUME_UNAVAILABLE');
-
-        // 全新修正会话不带 --resume，提示词在完整规划基线之上追加
-        // 被拒草稿与确定性校验结论。
-        const invocations = await businessInvocations(harness);
-        const fallback = invocations[2]!;
-        expect(fallback.argv).not.toContain('--resume');
-        expect(fallback.stdin).toContain('你是 ApexCodingAgent 的规划器');
-        expect(fallback.stdin).toContain('PLAN_DRAFT_CORRECTION');
-        expect(fallback.stdin).toContain('REJECTED_DRAFT');
-        expect(fallback.stdin).toContain(COVERAGE_ERROR);
-
-        const tasks = await harness.readTasksJson();
-        expect(tasks.plannerSessionId).toBe(planningRecords[2]!.sessionId);
+        /**
+         * 外部失败不在原驱动内自动重试；用户显式 resume 后续接失败修正会话，
+         * 复用其中已携带的被拒草稿和校验结论并完成结构化交付。
+         */
+        const resumedInvocations = (await businessInvocations(harness)).slice(2);
+        const correctionResume = resumedInvocations[0]!;
+        expect(correctionResume.argv).toContain('--resume');
+        expect(
+          correctionResume.argv[correctionResume.argv.indexOf('--resume') + 1],
+        ).toBe(failedCorrection.sessionId);
+        expect(correctionResume.stdin).toContain('从原对话断点继续');
       } finally {
         await harness.cleanup();
       }
     },
-    120_000,
+    180_000,
   );
 });

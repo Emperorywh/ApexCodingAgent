@@ -13,9 +13,9 @@
  * Run 转 failed；外部失败不自动重试、不降级。
  *
  * 唯一的例外是草稿确定性校验打回（PLAN_INVALID / PLAN_REVISION_CONFLICT）：
- * 校验结论精确且可由模型定向修正，因此续接刚完成的 Planner 会话（原
- * transcript 保留完整 SPEC 与仓库分析），把校验错误作为反馈交还模型，
- * 最多修正 MAX_PLAN_DRAFT_CORRECTIONS 轮；仍不通过才按终态失败收尾。
+ * 校验结论精确且可由模型定向修正，因此以被拒草稿和完整错误列表创建轻量
+ * 独立会话，最多修正 MAX_PLAN_DRAFT_CORRECTIONS 轮；仍不通过才按终态失败
+ * 收尾。用户显式 resume 的持久化断点语义不受该进程内上下文优化影响。
  * 该回路与独立 Plan Review 的语义打回反馈回路同级，不修复草稿本身
  * （SPEC §7.5 仍原样拒绝），只是不把可修正的模型疏漏升级为整 Run 终止。
  */
@@ -27,8 +27,8 @@ import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 import {
-  buildPlanningCorrectionAppendix,
   buildPlanningCorrectionPrompt,
+  buildPlanningCorrectionSessionPrompt,
   buildPlanningPrompt,
   buildPlanningResumePrompt,
   type SkippedTaskSummary,
@@ -283,10 +283,10 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
 
     /*
      * 确定性校验修正回路：首轮消费 resume 命令传入的一次性续接提示；草稿
-     * 被确定性校验（SPEC §7.5）打回时改为续接刚完成的 Planner 会话——原
-     * transcript 保留完整 SPEC 与仓库分析，模型凭精确校验结论定向修正，
-     * 而不是丢弃整趟规划。每轮会话重新执行 §8.3 前置不变量，只读边界与
-     * SPEC 复核语义与首轮完全一致；轮次有界，耗尽后按终态失败收尾。
+     * 被确定性校验（SPEC §7.5）打回时，改用携带被拒草稿与完整校验结论的
+     * 轻量独立会话。它不继承包含 SPEC 全文、工具输出和长思考的 transcript，
+     * 避免一次局部结构修正再次承载整趟仓库探索上下文。每轮会话仍重新执行
+     * §8.3 前置不变量；轮次有界，耗尽后按终态失败收尾。
      *
      * resume 重开的入口提示按失败原因区分：进程内的修正回路耗尽后，用户
      * 显式 resume 续接的是同一个已交付非法草稿的会话，直接把持久化的
@@ -332,10 +332,10 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
     let freshPrompt =
       resumeCorrectionMessage === null || resumeCorrectionDraft === null
         ? prompt
-        : `${prompt}\n\n${buildPlanningCorrectionAppendix(
+        : buildPlanningCorrectionSessionPrompt(
             resumeCorrectionDraft,
             resumeCorrectionMessage,
-          )}`;
+          );
     let sessionRun = run;
     let corrections = 0;
 
@@ -447,16 +447,15 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
           deps.output.writeLine(
             deps.redaction.redactText(
               `↻ 计划草稿未通过确定性校验 · ${error.errorCode} · ` +
-                `续接 Planner 定向修正（第 ${corrections}/${MAX_PLAN_DRAFT_CORRECTIONS} 轮）· ${safeMessage}`,
+                `启动轻量 Planner 定向修正（第 ${corrections}/${MAX_PLAN_DRAFT_CORRECTIONS} 轮）· ${safeMessage}`,
             ),
           );
-          resumeHint = {
-            sessionId: handle.sessionId,
-            prompt: buildPlanningCorrectionPrompt(safeMessage),
-          };
-          // resume 不可用时的全新会话没有原 transcript，必须随完整规划
-          // 提示重新注入被拒草稿与校验结论。
-          freshPrompt = `${prompt}\n\n${buildPlanningCorrectionAppendix(draft, safeMessage)}`;
+          /**
+           * 进程内修正始终从被拒草稿构造独立上下文，不再尝试续接超大的原会话。
+           * 用户显式 resume 的断点能力仍由入口 resumeHint 保留，两种语义互不耦合。
+           */
+          resumeHint = null;
+          freshPrompt = buildPlanningCorrectionSessionPrompt(draft, safeMessage);
           sessionRun = handle.run;
           continue;
         }

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPlanningCorrectionAppendix,
   buildPlanningCorrectionPrompt,
+  buildPlanningCorrectionSessionPrompt,
   buildPlanningPrompt,
   buildPlanningResumePrompt,
   type CompletedTaskSummary,
@@ -327,7 +328,7 @@ describe('buildPlanningCorrectionPrompt（确定性校验打回后的续接修�
   });
 });
 
-describe('buildPlanningCorrectionAppendix（resume 不可用后的全新会话附录）', () => {
+describe('buildPlanningCorrectionAppendix（全新修正会话附录）', () => {
   it('重新注入被拒草稿与校验结论，格式与 PLAN_REVIEW_FEEDBACK 呼应', () => {
     const appendix = buildPlanningCorrectionAppendix(
       {
@@ -345,6 +346,31 @@ describe('buildPlanningCorrectionAppendix（resume 不可用后的全新会话�
     expect(appendix).toContain('VALIDATION_ERROR');
     expect(appendix).toContain('task TASK-002 acceptance criterion 0 has no verification step');
     expect(appendix).toContain('完整的新 TaskPlanDraft');
+  });
+});
+
+describe('buildPlanningCorrectionSessionPrompt（轻量独立修正会话）', () => {
+  it('只携带被拒草稿和完整错误，不重新注入仓库探索上下文', () => {
+    /**
+     * 真实事故中的 Planner transcript 已包含 SPEC 全文、命令输出和长思考。
+     * 独立修正提示必须以被拒草稿作为权威输入，避免局部结构修复继承超大上下文。
+     */
+    const prompt = buildPlanningCorrectionSessionPrompt(
+      {
+        summary: '需要补齐验证覆盖',
+        assumptions: [],
+        retainedCheckpointDispositions: [],
+        tasks: [pendingDefinition],
+      },
+      'task TASK-002 acceptance criterion 0 has no verification step',
+    );
+
+    expect(prompt).toContain('计划草稿修正器');
+    expect(prompt).toContain('REJECTED_DRAFT');
+    expect(prompt).toContain('VALIDATION_ERROR');
+    expect(prompt).toContain('不重新探索仓库');
+    expect(prompt).toContain('完整的新 TaskPlanDraft');
+    expect(prompt).not.toContain(REPOSITORY_ROOT);
   });
 });
 

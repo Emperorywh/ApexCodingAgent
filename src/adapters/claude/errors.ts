@@ -1,8 +1,9 @@
 /**
  * Claude CLI 外部失败到稳定错误码的唯一映射点。其他模块不得解释进程
  * 结果、原始流事件或能力探测输出；Provider、鉴权、网络、代理和额度
- * 失败统一收敛为 CLAUDE_EXIT_NONZERO。只有 ResultMessage 明确给出的
- * 回合上限与续接尚未开始时的 transcript 缺失诊断使用专用错误码。
+ * 失败统一收敛为 CLAUDE_EXIT_NONZERO。唯一可信 ResultMessage 携带的
+ * terminal_reason/result 只用于补全脱敏诊断，不改变稳定错误码；只有明确
+ * 给出的回合上限与续接尚未开始时的 transcript 缺失使用专用错误码。
  */
 import type { ApexErrorInit } from '../../domain/errors.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
@@ -10,11 +11,21 @@ import { ClaudeInvocationError } from '../../application/ports/ClaudeRuntimePort
 
 /** stderr 诊断摘要的最大字符数，与 Git 适配器保持同一边界。 */
 const SUMMARY_LIMIT = 2_000;
+const MESSAGE_DETAIL_LIMIT = 300;
 
 /** 失败调用附带的进程事实，供 Session Record 持久化。 */
 export interface ClaudeProcessFacts {
   readonly processExitCode: number | null;
   readonly claudeVersion: string | null;
+}
+
+/**
+ * 唯一、Session ID 一致且明确标记 is_error 的 ResultMessage 失败事实。
+ * Adapter 只传递公开流协议字段，不从模型文本猜测 Provider、网络或鉴权类别。
+ */
+export interface ClaudeTerminalFailureFact {
+  readonly reason: string | null;
+  readonly result: string | null;
 }
 
 interface InvocationErrorOptions {
@@ -53,6 +64,40 @@ export function summarizeStderr(
   return redact(trimmed).slice(0, SUMMARY_LIMIT);
 }
 
+/**
+ * 合并 stdout 终止事件与 stderr 的失败诊断，并在离开 Adapter 前统一脱敏。
+ * stdout 是 Claude Code 2.1.x 报告 api_error 的实际通道，不能因 stderr 为空
+ * 而把可行动的超时事实丢弃。
+ */
+function summarizeInvocationFailure(
+  stderr: string,
+  terminalFailure: ClaudeTerminalFailureFact | undefined,
+  redact: (text: string) => string,
+): string | null {
+  if (terminalFailure === undefined) return summarizeStderr(stderr, redact);
+  const parts = [
+    terminalFailure.reason === null
+      ? null
+      : `terminal_reason: ${terminalFailure.reason}`,
+    terminalFailure.result,
+    stderr.trim() === '' ? null : stderr,
+  ].filter((part): part is string => part !== null && part.trim() !== '');
+  return summarizeStderr(parts.join('\n'), redact);
+}
+
+/**
+ * ErrorRecord.message 与 CLI 失败摘要必须保持单行且有界。
+ * 原始终止结果仍以较长的 toolSummary 保存，便于报告与日志排障。
+ */
+function boundedMessageValue(
+  value: string | null | undefined,
+  redact: (text: string) => string,
+): string | null {
+  if (value === undefined || value === null) return null;
+  const oneLine = redact(value).replace(/\s+/g, ' ').trim();
+  return oneLine === '' ? null : oneLine.slice(0, MESSAGE_DETAIL_LIMIT);
+}
+
 /** 可执行文件未能启动，此时数字退出码必须记录为 null。 */
 export function claudeStartFailed(
   stage: SessionType,
@@ -76,15 +121,23 @@ export function claudeExitNonZero(
   exitCode: number | null,
   stderr: string,
   redact: (text: string) => string,
-  options: { readonly sessionId?: string; readonly claudeVersion?: string | null },
+  options: {
+    readonly sessionId?: string;
+    readonly claudeVersion?: string | null;
+    readonly terminalFailure?: ClaudeTerminalFailureFact;
+  },
 ): ClaudeInvocationError {
-  const message =
+  const baseMessage =
     exitCode === null
       ? 'claude process was terminated without an exit code (signal)'
       : `claude exited with code ${exitCode}`;
+  const detail = boundedMessageValue(options.terminalFailure?.result, redact);
+  const reason = boundedMessageValue(options.terminalFailure?.reason, redact);
+  const terminalContext = reason === null ? '' : ` after reporting ${reason}`;
+  const message = `${baseMessage}${terminalContext}${detail === null ? '' : `: ${detail}`}`;
   return invocationError('CLAUDE_EXIT_NONZERO', message, {
     stage,
-    toolSummary: summarizeStderr(stderr, redact),
+    toolSummary: summarizeInvocationFailure(stderr, options.terminalFailure, redact),
     ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
     facts: { processExitCode: exitCode, claudeVersion: options.claudeVersion ?? null },
   });

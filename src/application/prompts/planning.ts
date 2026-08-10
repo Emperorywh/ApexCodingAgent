@@ -290,10 +290,10 @@ ${error}
 }
 
 /**
- * 修正轮次无法续接原会话时的全新会话附录。
+ * 全新修正会话共用的被拒草稿与校验结论附录。
  *
- * 全新会话没有原 transcript，必须随完整规划提示重新提供被拒草稿与
- * 确定性校验结论；小节格式与 PLAN_REVIEW_FEEDBACK 保持一致。
+ * 进程内轻量修正直接使用该事实；用户显式 resume 的 transcript 不可用时，
+ * 同一事实也作为安全回退输入。小节格式与 PLAN_REVIEW_FEEDBACK 保持一致。
  */
 export function buildPlanningCorrectionAppendix(
   rejectedDraft: TaskPlanDraft,
@@ -309,5 +309,29 @@ export function buildPlanningCorrectionAppendix(
     error,
     '',
     '必须针对该校验结论修正后返回一份完整的新 TaskPlanDraft；不要返回局部补丁，也不要只解释原方案。',
+  ].join('\n');
+}
+
+/**
+ * 为进程内确定性修正构建独立、轻量的 Planning 提示词。
+ *
+ * 被拒草稿已经包含模型完成仓库分析后的全部计划结论；结构校验错误也由系统
+ * 精确给出。修正会话只需要保留草稿中不相关字段并处理列出的缺口，无需再次
+ * 继承包含 SPEC 全文、工具输出和长思考的 Planner transcript。
+ */
+export function buildPlanningCorrectionSessionPrompt(
+  rejectedDraft: TaskPlanDraft,
+  error: string,
+): string {
+  return [
+    '你是 ApexCodingAgent 的计划草稿修正器。当前会话只修正一份已经完成仓库分析、但未通过确定性校验的 TaskPlanDraft。',
+    '',
+    '修正规则：',
+    '1. 逐条处理 VALIDATION_ERROR 中列出的全部问题；一条结论可能同时列出多个独立覆盖缺口。',
+    '2. 除修复这些错误必需的最小字段外，保持 REJECTED_DRAFT 的任务边界、依赖、预算、Checkpoint disposition 与其他字段不变。',
+    '3. 不重新探索仓库，不执行工具，不重新制定方案；被拒草稿是本次修正的权威输入。',
+    '4. 返回一份完整的新 TaskPlanDraft，不是局部补丁；不要返回 Markdown，也不要在结构化结果之外输出解释。',
+    '',
+    buildPlanningCorrectionAppendix(rejectedDraft, error),
   ].join('\n');
 }

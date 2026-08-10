@@ -308,10 +308,10 @@ describe('e2e replan_required', () => {
         if (result.kind !== 'failed') return;
         expect(result.run.lastError?.errorCode).toBe('PLAN_REVISION_CONFLICT');
         expect(result.run.tasks['TASK-002']!.status).toBe('skipped');
-        expect(harness.outputLines.join('\n')).toContain('续接 Planner 定向修正（第 2/2 轮）');
+        expect(harness.outputLines.join('\n')).toContain('启动轻量 Planner 定向修正（第 2/2 轮）');
         /*
          * 两个已提交 Revision 各有独立 Plan Review；非法第三版在确定性
-         * 校验处失败。业务会话：3 趟正式 Planning + 2 趟修正续接 +
+         * 校验处失败。业务会话：3 趟正式 Planning + 2 趟轻量修正 +
          * 2 趟 Plan Review + 2 趟 Execution。
          */
         const records = await harness.readRecords();

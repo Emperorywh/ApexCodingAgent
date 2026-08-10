@@ -22,6 +22,7 @@ interface FixtureExpectation {
   readonly model?: string | null;
   readonly provider?: string | null;
   readonly errorCode?: ErrorCode;
+  readonly messageIncludes?: string;
   readonly toolSummaryIncludes?: string;
   readonly toolSummaryExcludes?: string;
 }
@@ -95,6 +96,9 @@ describe('stream-json golden fixtures (SPEC §7.2)', () => {
       expect(error.processExitCode).toBe(fixture.exitCode);
       expect(error.claudeVersion).toBe('1.2.3 (fixture)');
       expect(error.sessionId).toBe(UUID_1);
+      if (expectation.messageIncludes !== undefined) {
+        expect(error.message).toContain(expectation.messageIncludes);
+      }
       if (expectation.toolSummaryIncludes !== undefined) {
         expect(error.toolSummary).toContain(expectation.toolSummaryIncludes);
       }
@@ -259,6 +263,46 @@ describe('stream-json inline edge cases', () => {
     const invocationError = thrown as ClaudeInvocationError;
     expect(invocationError.errorCode).toBe('CLAUDE_RESULT_INVALID');
     expect(invocationError.toolSummary).toContain('[REDACTED]');
+    expect(invocationError.toolSummary).not.toContain(token);
+  });
+
+  it('redacts terminal failure text before it enters the error message and tool summary', () => {
+    /**
+     * api_error 的诊断来自 stdout result 事件，安全边界必须与 stderr 完全一致。
+     * 即使 Provider 把凭据片段拼进失败正文，也不能进入 CLI 或持久化状态。
+     */
+    const token = 'sk-ant-abcdef1234567890ABCDEF_xyz';
+    const stdout = [
+      { type: 'system', subtype: 'init', session_id: UUID_1 },
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: UUID_1,
+        is_error: true,
+        terminal_reason: 'api_error',
+        result: `API Error: Authorization: Bearer ${token}`,
+      },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+
+    let thrown: unknown;
+    try {
+      evaluateStreamOutcome({
+        ...baseInput,
+        stdout,
+        redact: (text) => redactor.redactText(text),
+        exitCode: 1,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ClaudeInvocationError);
+    const invocationError = thrown as ClaudeInvocationError;
+    expect(invocationError.message).toContain('[REDACTED]');
+    expect(invocationError.toolSummary).toContain('[REDACTED]');
+    expect(invocationError.message).not.toContain(token);
     expect(invocationError.toolSummary).not.toContain(token);
   });
 

@@ -191,6 +191,7 @@ export function closeTaskReviewEpisodeAsSessionError(
     outcome: 'session_error',
     summary: redactedSummary(error, redaction),
     tests: [],
+    verificationEvidence: [],
     acceptanceEvidence: [],
     issues: [],
     error: toErrorRecord(error, at, redaction),

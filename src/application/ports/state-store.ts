@@ -79,6 +79,12 @@ export interface StateStorePort {
   writePlanSnapshot(snapshot: PlanRevisionSnapshot): Promise<void>;
 
   readSessionRecord(sessionId: string): Promise<SessionRecord | null>;
+  /**
+   * 读取当前状态目录内全部已提交 Session Record，按文件名确定性排序。
+   * 临时文件与非 Session 文件不属于已提交事实，必须忽略；每个返回记录
+   * 仍执行与单条读取完全相同的 Schema 和领域校验。
+   */
+  listSessionRecords(): Promise<readonly SessionRecord[]>;
   /** Writes the immutable `sessions/<sessionId>.json`; fails when it exists. */
   writeSessionRecord(record: SessionRecord): Promise<void>;
 

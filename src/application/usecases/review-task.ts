@@ -124,6 +124,7 @@ export function createReviewTask(deps: UseCaseDeps): {
         outcome: 'session_error',
         summary: deps.redaction.redactText(error.message) || error.errorCode,
         tests: [],
+        verificationEvidence: [],
         acceptanceEvidence: [],
         issues: [],
         error: toErrorRecord(error, now(), deps.redaction),
@@ -209,6 +210,9 @@ export function createReviewTask(deps: UseCaseDeps): {
             outcome,
             summary: deps.redaction.redactText(result.summary) || outcome,
             tests: deps.redaction.redactStructured(result.tests),
+            verificationEvidence: deps.redaction.redactStructured(
+              result.verificationEvidence,
+            ),
             acceptanceEvidence: deps.redaction.redactStructured(result.acceptanceEvidence),
             issues: deps.redaction.redactStructured(result.issues),
             error: null,
@@ -335,6 +339,7 @@ export function createReviewTask(deps: UseCaseDeps): {
                 outcome: 'session_error',
                 summary: deps.redaction.redactText(error.message) || error.errorCode,
                 tests: [],
+                verificationEvidence: [],
                 acceptanceEvidence: [],
                 issues: [],
                 error: toErrorRecord(error, now(), deps.redaction),
@@ -591,7 +596,11 @@ export function createReviewTask(deps: UseCaseDeps): {
             reason:
               `独立复核连续 ${consecutiveRejections} 次打回 ${taskId}，当前计划边界内无法收敛。` +
               `最近一轮复核摘要：${result.summary}；` +
-              `未满足项与问题：${result.issues.join('；') || '（复核未列出具体 issue）'}。` +
+              `未满足项与问题：${
+                result.issues
+                  .map((issue) => `${issue.id} ${issue.summary}；要求：${issue.requiredChange}`)
+                  .join('；') || '（复核未列出具体 issue）'
+              }。` +
               '请重新评估该 Task 的范围、验收标准或拆分方式，必要时拆分为更小的 Task 或调整 verificationPlan。',
             sourceSessionId: handle.sessionId,
           },

@@ -176,6 +176,15 @@ export function isResultContractErrorCode(code: ErrorCode): boolean {
  * 通用非零退出可能发生在 transcript 尚未建立之前。此时恢复协调器会让
  * Claude 明确判定续接不可用，再按既有协议创建一次全新 Session；这比按
  * 易变的退出码猜测“鉴权失败”或“进程中断”更稳定，也不会丢失已完成工作。
+ *
+ * 草稿确定性校验失败（PLAN_INVALID / PLAN_REVISION_CONFLICT）同样必须
+ * 可续接：进程内的定向修正回路耗尽只说明当前模型多轮仍未能给出合法
+ * 草稿，而 Run 状态未被草稿触碰、刚完成的 Planner transcript 完好。
+ * 持久化恢复点（sessionType=planning）让用户可以显式 resume——例如先
+ * 升级 CLI 或切换模型——续接该会话并携精确校验结论继续修正，而不是
+ * 把已完成的全部 Task 连同 Run 一起报废。Revision 上限
+ * （PLAN_REVISION_LIMIT_EXCEEDED）与状态损坏不属于模型可修正事实，
+ * 保持不可恢复。
  */
 export function isResumableErrorCode(code: ErrorCode): boolean {
   return (
@@ -183,7 +192,9 @@ export function isResumableErrorCode(code: ErrorCode): boolean {
     isTurnBudgetExhaustedErrorCode(code) ||
     code === 'CLAUDE_EXIT_NONZERO' ||
     isResultContractErrorCode(code) ||
-    code === 'GIT_PUSH_FAILED'
+    code === 'GIT_PUSH_FAILED' ||
+    code === 'PLAN_INVALID' ||
+    code === 'PLAN_REVISION_CONFLICT'
   );
 }
 

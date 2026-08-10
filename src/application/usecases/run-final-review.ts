@@ -43,6 +43,7 @@ import {
 } from './run-transitions.js';
 import { toErrorRecord } from './error-record.js';
 import { readCompletePlanRevisionHistory } from './plan-revision-history.js';
+import { readPlanReviewReportHistory } from './plan-review-report-history.js';
 import { invokeResumableSession } from './resumable-session.js';
 import { publishCheckpoint } from './publish-checkpoint.js';
 
@@ -541,8 +542,10 @@ export function createRunFinalReview(deps: UseCaseDeps): {
       updatedAt: now(),
     };
     let planRevisions;
+    let planReviewHistory;
     try {
       planRevisions = await readCompletePlanRevisionHistory(deps.stateStore, run);
+      planReviewHistory = await readPlanReviewReportHistory(deps.stateStore, run.runId);
     } catch (error) {
       return failTerminal(withEpisode, error as ApexError);
     }
@@ -557,6 +560,7 @@ export function createRunFinalReview(deps: UseCaseDeps): {
         run: candidate,
         tasks,
         planRevisions,
+        planReviewHistory,
         git: {
           currentBranch: gitFact.head.branch,
           headOid: gitFact.head.oid,

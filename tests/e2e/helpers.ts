@@ -42,6 +42,7 @@ import type { RunJson } from '../../src/domain/schemas/run-json.js';
 import type { TasksJson } from '../../src/domain/schemas/tasks-json.js';
 import type { SessionRecord } from '../../src/domain/schemas/session-record.js';
 import type { PlanRevisionSnapshot } from '../../src/domain/schemas/plan-revision-snapshot.js';
+import { PLAN_REVIEW_DIMENSIONS } from '../../src/domain/schemas/review-evidence.js';
 import { COMPLETE_HELP, FAKE_VERSION } from '../integration/claude/helpers.js';
 import { createTempRepo, type TempRepo } from '../integration/git/helpers.js';
 
@@ -53,6 +54,38 @@ export { COMPLETE_HELP, FAKE_VERSION };
 
 /** e2e 注入的 ApexCodingAgent 版本横幅值（生产路径由 bootstrap 从 package.json 读取）。 */
 export const E2E_AGENT_VERSION = '0.0.0-e2e';
+
+/**
+ * 生成逐维度 Plan Review 证据；调用方可以指定一个不满足维度，
+ * 用于证明领域门禁确实依据结构化审核事实作出结论。
+ */
+export function planReviewChecks(failedDimension: string | null = null): Record<string, unknown>[] {
+  return PLAN_REVIEW_DIMENSIONS.map((dimension) => ({
+    dimension,
+    status: dimension === failedDimension ? 'not_satisfied' : 'satisfied',
+    evidence:
+      dimension === failedDimension
+        ? `${dimension} 存在阻塞缺口`
+        : `${dimension} 已由 SPEC、候选计划和仓库事实交叉确认`,
+  }));
+}
+
+/**
+ * 生成可被返工执行直接消费的问题对象；默认值保持 E2E 场景紧凑，
+ * overrides 仅用于表达当前场景真正关心的证据差异。
+ */
+export function reviewIssue(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'ISSUE-001',
+    category: 'correctness',
+    summary: '候选结果仍有阻塞问题',
+    evidence: '仓库事实与预期结果不一致',
+    requiredChange: '修复实现并提供通过的独立验证证据',
+    affectedPaths: [],
+    criterionIndexes: [],
+    ...overrides,
+  };
+}
 
 /** 序列场景元素（tests/fake-claude/claude.mjs 的契约镜像）。 */
 export interface ScenarioElement {
@@ -526,6 +559,7 @@ export function planReviewApproved(
     taskAssessments: taskIds.map((taskId) => ({
       taskId,
       decision: 'approved',
+      checks: planReviewChecks(),
       issues: [],
     })),
     issues: [],
@@ -563,6 +597,9 @@ export function taskReviewApproved(
     decision: 'approved',
     summary: '独立复核通过',
     tests: [{ command: 'npm test', result: 'passed' }],
+    verificationEvidence: [
+      { verificationId: 'VERIFY-001', status: 'passed', evidence: 'npm test 独立执行通过' },
+    ],
     acceptanceEvidence: Array.from({ length: criteriaCount }, (_, index) => ({
       criterionIndex: index,
       status: 'satisfied',

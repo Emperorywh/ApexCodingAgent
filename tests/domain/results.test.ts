@@ -14,10 +14,19 @@ import {
 } from '../../src/domain/results.js';
 import type { FinalReviewResult } from '../../src/domain/schemas/final-review-result.js';
 import type { PlanReviewResult } from '../../src/domain/schemas/plan-review-result.js';
+import type { PlannedTask } from '../../src/domain/schemas/task-plan-draft.js';
 import type { TaskReviewResult } from '../../src/domain/schemas/task-review-result.js';
-import { expectApexError, mkResult, mkTask } from './fixtures.js';
+import {
+  expectApexError,
+  mkPlanReviewChecks,
+  mkResult,
+  mkReviewIssue,
+  mkTask,
+  mkVerificationEvidence,
+} from './fixtures.js';
 
 const TASK = mkTask('TASK-001'); // two acceptance criteria: indexes 0 and 1
+const PLAN_TASKS = [TASK, mkTask('TASK-002')];
 
 function mkFinalReview(overrides: Partial<FinalReviewResult> = {}): FinalReviewResult {
   return {
@@ -41,8 +50,8 @@ function mkPlanReview(overrides: Partial<PlanReviewResult> = {}): PlanReviewResu
     decision: 'approved',
     summary: '独立计划复核通过',
     taskAssessments: [
-      { taskId: 'TASK-001', decision: 'approved', issues: [] },
-      { taskId: 'TASK-002', decision: 'approved', issues: [] },
+      { taskId: 'TASK-001', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
+      { taskId: 'TASK-002', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
     ],
     issues: [],
     ...overrides,
@@ -58,6 +67,7 @@ function mkTaskReview(overrides: Partial<TaskReviewResult> = {}): TaskReviewResu
     decision: 'approved',
     summary: '独立复核通过',
     tests: [{ command: 'npm test', result: 'passed' }],
+    verificationEvidence: [mkVerificationEvidence()],
     acceptanceEvidence: [
       { criterionIndex: 0, status: 'satisfied', evidence: '证据 0' },
       { criterionIndex: 1, status: 'satisfied', evidence: '证据 1' },
@@ -206,7 +216,77 @@ describe('TaskReviewResult 独立完成门禁', () => {
       'TASK_REVIEW_RESULT_INVALID',
     );
     expectApexError(
-      () => validateTaskReviewResultSemantics(mkTaskReview({ issues: ['仍有缺陷'] }), TASK),
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({ issues: [mkReviewIssue()] }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+  });
+
+  it('要求 verificationPlan 精确覆盖且命令结果一致', () => {
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({ verificationEvidence: [] }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          mkTaskReview({
+            verificationEvidence: [mkVerificationEvidence({ status: 'failed' })],
+          }),
+          TASK,
+        ),
+      'TASK_REVIEW_RESULT_INVALID',
+    );
+  });
+
+  it('manual 验证必须诚实 not_run，且不会阻止其他证据完整的批准', () => {
+    const manualTask: PlannedTask = {
+      ...TASK,
+      verificationPlan: [
+        {
+          id: 'VERIFY-001',
+          kind: 'manual',
+          criterionIndexes: [0, 1],
+          procedure: '由用户检查交互结果',
+          expectedEvidence: '用户确认界面行为符合验收标准',
+          command: null,
+          timeoutSeconds: null,
+        },
+      ],
+    };
+    const manualReview = mkTaskReview({
+      tests: [],
+      verificationEvidence: [
+        {
+          verificationId: 'VERIFY-001',
+          status: 'not_run',
+          evidence: '该步骤按计划保留给用户手动验证',
+        },
+      ],
+    });
+    expect(() => validateTaskReviewResultSemantics(manualReview, manualTask)).not.toThrow();
+    expectApexError(
+      () =>
+        validateTaskReviewResultSemantics(
+          {
+            ...manualReview,
+            verificationEvidence: [
+              {
+                verificationId: 'VERIFY-001',
+                status: 'passed',
+                evidence: '自动 Reviewer 不得代替用户确认',
+              },
+            ],
+          },
+          manualTask,
+        ),
       'TASK_REVIEW_RESULT_INVALID',
     );
   });
@@ -250,7 +330,7 @@ describe('TaskReviewResult 独立完成门禁', () => {
     );
     expect(() =>
       validateTaskReviewResultSemantics(
-        mkTaskReview({ decision: 'changes_required', issues: ['缺少边界测试'] }),
+        mkTaskReview({ decision: 'changes_required', issues: [mkReviewIssue()] }),
         TASK,
       ),
     ).not.toThrow();
@@ -370,20 +450,34 @@ describe('FinalReviewResult semantics (§14.1)', () => {
 });
 
 describe('PlanReviewResult semantic gate', () => {
-  const TASK_IDS = ['TASK-001', 'TASK-002'];
-
   it('accepts only exact ordered Task coverage for approved', () => {
-    expect(() => validatePlanReviewResultSemantics(mkPlanReview(), TASK_IDS)).not.toThrow();
+    expect(() => validatePlanReviewResultSemantics(mkPlanReview(), PLAN_TASKS)).not.toThrow();
     expectApexError(
       () =>
         validatePlanReviewResultSemantics(
           mkPlanReview({
             taskAssessments: [
-              { taskId: 'TASK-002', decision: 'approved', issues: [] },
-              { taskId: 'TASK-001', decision: 'approved', issues: [] },
+              { taskId: 'TASK-002', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
+              { taskId: 'TASK-001', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
             ],
           }),
-          TASK_IDS,
+          PLAN_TASKS,
+        ),
+      'PLAN_REVIEW_RESULT_INVALID',
+    );
+  });
+
+  it('要求每个 Task 对固定审核维度逐项举证', () => {
+    expectApexError(
+      () =>
+        validatePlanReviewResultSemantics(
+          mkPlanReview({
+            taskAssessments: [
+              { taskId: 'TASK-001', decision: 'approved', checks: [], issues: [] },
+              { taskId: 'TASK-002', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
+            ],
+          }),
+          PLAN_TASKS,
         ),
       'PLAN_REVIEW_RESULT_INVALID',
     );
@@ -393,8 +487,10 @@ describe('PlanReviewResult semantic gate', () => {
     expectApexError(
       () =>
         validatePlanReviewResultSemantics(
-          mkPlanReview({ issues: ['仍有计划级问题'] }),
-          TASK_IDS,
+          mkPlanReview({
+            issues: [mkReviewIssue({ category: 'architecture', criterionIndexes: [] })],
+          }),
+          PLAN_TASKS,
         ),
       'PLAN_REVIEW_RESULT_INVALID',
     );
@@ -403,13 +499,76 @@ describe('PlanReviewResult semantic gate', () => {
         mkPlanReview({
           decision: 'changes_required',
           taskAssessments: [
-            { taskId: 'TASK-001', decision: 'changes_required', issues: ['需要拆分'] },
-            { taskId: 'TASK-002', decision: 'approved', issues: [] },
+            {
+              taskId: 'TASK-001',
+              decision: 'changes_required',
+              checks: mkPlanReviewChecks({
+                scope_cohesion: {
+                  dimension: 'scope_cohesion',
+                  status: 'not_satisfied',
+                  evidence: 'Task 同时包含两个独立闭环',
+                },
+              }),
+              issues: [mkReviewIssue({ category: 'task_scope' })],
+            },
+            { taskId: 'TASK-002', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
           ],
         }),
-        TASK_IDS,
+        PLAN_TASKS,
       ),
     ).not.toThrow();
+  });
+
+  it('changes_required 同时要求失败维度和结构化 ReviewIssue', () => {
+    /**
+     * 固定维度证据与返工目标不能互相替代：只有失败 check 时缺少明确
+     * requiredChange，只有 issue 时又与七个维度全部 satisfied 相矛盾。
+     */
+    const failedChecks = mkPlanReviewChecks({
+      scope_cohesion: {
+        dimension: 'scope_cohesion',
+        status: 'not_satisfied',
+        evidence: 'Task 同时包含两个独立闭环',
+      },
+    });
+    expectApexError(
+      () =>
+        validatePlanReviewResultSemantics(
+          mkPlanReview({
+            decision: 'changes_required',
+            taskAssessments: [
+              {
+                taskId: 'TASK-001',
+                decision: 'changes_required',
+                checks: failedChecks,
+                issues: [],
+              },
+              { taskId: 'TASK-002', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
+            ],
+          }),
+          PLAN_TASKS,
+        ),
+      'PLAN_REVIEW_RESULT_INVALID',
+    );
+    expectApexError(
+      () =>
+        validatePlanReviewResultSemantics(
+          mkPlanReview({
+            decision: 'changes_required',
+            taskAssessments: [
+              {
+                taskId: 'TASK-001',
+                decision: 'changes_required',
+                checks: mkPlanReviewChecks(),
+                issues: [mkReviewIssue({ category: 'task_scope' })],
+              },
+              { taskId: 'TASK-002', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
+            ],
+          }),
+          PLAN_TASKS,
+        ),
+      'PLAN_REVIEW_RESULT_INVALID',
+    );
   });
 });
 

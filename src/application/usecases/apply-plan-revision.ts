@@ -17,6 +17,7 @@ import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TaskRuntimeState } from '../../domain/schemas/task-runtime-state.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
+import type { CompletedTaskSummary } from '../prompts/planning.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
 
 export interface ApplyPlanRevisionInput {
@@ -32,12 +33,33 @@ export interface ApplyPlanRevisionInput {
 }
 
 /** 未被 completed Task 吸收的中间 Checkpoint：owner 为 null 或 owner 非 completed。 */
-function unabsorbedCheckpoints(run: RunJson): IntermediateCheckpoint[] {
+export function unabsorbedCheckpoints(run: RunJson): IntermediateCheckpoint[] {
   return run.intermediateCheckpoints.filter((checkpoint) => {
     if (checkpoint.ownerTaskId === null) return true;
     const owner = run.tasks[checkpoint.ownerTaskId];
     return owner === undefined || owner.status !== 'completed';
   });
+}
+
+/**
+ * completed Task 的权威摘要（定义来自现行计划，结果事实来自 run.json）。
+ *
+ * Planning 与 Plan Review 提示词共用同一推导，保证「哪些工作已完成」
+ * 在两个独立会话中是一致的系统事实，而不是各自重新解释状态。
+ */
+export function completedTaskSummaries(
+  run: RunJson,
+  tasks: TasksJson | null,
+): CompletedTaskSummary[] {
+  if (tasks === null) return [];
+  const definitionById = new Map(tasks.tasks.map((task) => [task.id, task]));
+  return Object.values(run.tasks)
+    .filter((state) => state.status === 'completed')
+    .map((state) => ({
+      definition: definitionById.get(state.taskId)!,
+      resultSummary: state.completedResult!.summary,
+      finalCheckpoint: state.finalCheckpoint!,
+    }));
 }
 
 /**

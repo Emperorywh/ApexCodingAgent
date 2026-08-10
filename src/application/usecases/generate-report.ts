@@ -12,6 +12,7 @@ import type { GitPort } from '../ports/GitPort.js';
 import type { ReporterPort } from '../ports/ReporterPort.js';
 import type { StateStorePort } from '../ports/state-store.js';
 import { readCompletePlanRevisionHistory } from './plan-revision-history.js';
+import { readPlanReviewReportHistory } from './plan-review-report-history.js';
 
 export interface GenerateReportDeps {
   readonly stateStore: StateStorePort;
@@ -69,9 +70,11 @@ export function createGenerateReport(deps: GenerateReportDeps): {
     }
 
     let planRevisions;
+    let planReviewHistory;
     let finalReviewResult: FinalReviewResult | null;
     try {
       planRevisions = await readCompletePlanRevisionHistory(deps.stateStore, run);
+      planReviewHistory = await readPlanReviewReportHistory(deps.stateStore, run.runId);
 
       // Final Review 的 tests 只存在于其不可变 Session Record 结构化结果中。
       finalReviewResult = null;
@@ -111,6 +114,7 @@ export function createGenerateReport(deps: GenerateReportDeps): {
         run,
         tasks,
         planRevisions,
+        planReviewHistory,
         git: {
           currentBranch: gitFact.head.branch,
           headOid: gitFact.head.oid,

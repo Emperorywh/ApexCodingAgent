@@ -530,6 +530,7 @@ describe('Active Session rules (§11.3/§6.6)', () => {
       outcome: null,
       summary: null,
       tests: [],
+      verificationEvidence: [],
       acceptanceEvidence: [],
       issues: [],
       error: null,

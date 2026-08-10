@@ -138,6 +138,56 @@ describe('toTerminalFailedRun resumePoint (§2.4/§17)', () => {
     });
   });
 
+  it('PLAN_REVISION_CONFLICT keeps the completed Planner Session resumable with feedback facts', () => {
+    /**
+     * 草稿确定性校验修正回路耗尽：Planner 会话进程正常结束（Record 已
+     * 完成）、Run 状态未被草稿触碰。恢复点保留该会话身份，显式 resume
+     * 续接它并携精确校验结论继续定向修正；上一轮独立复核反馈也必须
+     * 保留，供重开的 Planning 重新消费。
+     */
+    const conflict = new ApexError({
+      code: 'PLAN_REVISION_CONFLICT',
+      stage: 'planning',
+      message: 'unabsorbed intermediate checkpoint abc has no disposition',
+    });
+    const planning = mkRun({
+      status: 'planning',
+      planRevision: 1,
+      tasksSha256: SHA256_A,
+      activeSession: { ...activeSession, type: 'planning', taskId: null },
+      planReviewFeedback: {
+        planRevision: 2,
+        plannerSessionId: UUID_1,
+        reviewerSessionId: UUID_2,
+        reviewAttempt: 1,
+      },
+    });
+    const terminal = toTerminalFailedRun(planning, conflict, T1, redaction);
+    expect(terminal.status).toBe('failed');
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'planning',
+      taskId: null,
+      sessionId: UUID_1,
+      sessionType: 'planning',
+    });
+    expect(terminal.planReviewFeedback).not.toBeNull();
+  });
+
+  it('PLAN_INVALID without a started session records a session-less planning resume point', () => {
+    const invalid = new ApexError({
+      code: 'PLAN_INVALID',
+      stage: 'planning',
+      message: 'task TASK-001 acceptance criterion 1 has no verification step',
+    });
+    const terminal = toTerminalFailedRun(mkRun({ status: 'planning' }), invalid, T1, redaction);
+    expect(terminal.resumePoint).toEqual({
+      fromStatus: 'planning',
+      taskId: null,
+      sessionId: null,
+      sessionType: null,
+    });
+  });
+
   it('non-session failures never carry a resume point', () => {
     const gitFailure = new ApexError({
       code: 'GIT_COMMAND_FAILED',

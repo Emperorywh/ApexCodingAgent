@@ -10,6 +10,12 @@ import {
   type AcceptanceEvidence,
   type TestReport,
 } from './task-execution-result.js';
+import {
+  reviewIssueSchema,
+  verificationEvidenceSchema,
+  type ReviewIssue,
+  type VerificationEvidence,
+} from './review-evidence.js';
 
 export type TaskReviewDecision = 'approved' | 'changes_required' | 'replan_required';
 
@@ -17,8 +23,9 @@ export interface TaskReviewResult {
   readonly decision: TaskReviewDecision;
   readonly summary: string;
   readonly tests: TestReport[];
+  readonly verificationEvidence: readonly VerificationEvidence[];
   readonly acceptanceEvidence: AcceptanceEvidence[];
-  readonly issues: string[];
+  readonly issues: readonly ReviewIssue[];
   readonly replanReason: string | null;
 }
 
@@ -35,6 +42,7 @@ export const taskReviewResultSchema = {
     'decision',
     'summary',
     'tests',
+    'verificationEvidence',
     'acceptanceEvidence',
     'issues',
     'replanReason',
@@ -46,8 +54,9 @@ export const taskReviewResultSchema = {
     },
     summary: { type: 'string', minLength: 1 },
     tests: { type: 'array', items: testReportSchema },
+    verificationEvidence: { type: 'array', items: verificationEvidenceSchema },
     acceptanceEvidence: { type: 'array', items: acceptanceEvidenceSchema },
-    issues: { type: 'array', items: { type: 'string', minLength: 1 } },
+    issues: { type: 'array', items: reviewIssueSchema },
     replanReason: { type: ['string', 'null'], minLength: 1 },
   },
 } as const;

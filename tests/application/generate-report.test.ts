@@ -9,7 +9,14 @@ import { createGenerateReport } from '../../src/application/usecases/generate-re
 import type { StateStorePort } from '../../src/application/ports/state-store.js';
 import type { GitPort } from '../../src/application/ports/GitPort.js';
 import type { ReporterPort } from '../../src/application/ports/ReporterPort.js';
-import { mkErrorRecord, mkRun, SHA256_A, T1 } from '../domain/fixtures.js';
+import {
+  mkErrorRecord,
+  mkRun,
+  SHA256_A,
+  T1,
+  UUID_2,
+} from '../domain/fixtures.js';
+import { mkSessionRecord } from '../adapters/fixtures.js';
 
 describe('GenerateReport consistent snapshot', () => {
   it('只读取一次一致性快照，不再分别读取 run.json 与 tasks.json', async () => {
@@ -25,12 +32,26 @@ describe('GenerateReport consistent snapshot', () => {
     const readTasks = vi.fn(() => {
       throw new Error('readTasks must not be called');
     });
+    const planReviewRecord = mkSessionRecord({
+      sessionId: UUID_2,
+      type: 'plan_review',
+      taskId: null,
+      runId: run.runId,
+      structuredResult: {
+        decision: 'approved',
+        summary: '计划独立复核通过',
+        taskAssessments: [],
+        issues: [],
+      },
+      logPath: `logs/${UUID_2}.log`,
+    });
     const stateStore = {
       readConsistentSnapshot,
       readRun,
       readTasks,
       readPlanSnapshot: vi.fn(),
       readSessionRecord: vi.fn(),
+      listSessionRecords: vi.fn(async () => [planReviewRecord]),
     } as unknown as StateStorePort;
     const git = {
       readSpecFact: vi.fn(async () => ({ path: run.spec.path, sha256: SHA256_A })),
@@ -50,5 +71,16 @@ describe('GenerateReport consistent snapshot', () => {
     expect(readConsistentSnapshot).toHaveBeenCalledTimes(1);
     expect(readRun).not.toHaveBeenCalled();
     expect(readTasks).not.toHaveBeenCalled();
+    expect(reporter.generateReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planReviewHistory: [
+          expect.objectContaining({
+            sessionId: UUID_2,
+            status: 'completed',
+            result: planReviewRecord.structuredResult,
+          }),
+        ],
+      }),
+    );
   });
 });

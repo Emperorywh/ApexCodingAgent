@@ -12,6 +12,12 @@ import {
   type AcceptanceEvidence,
   type TestReport,
 } from './task-execution-result.js';
+import {
+  reviewIssueSchema,
+  verificationEvidenceSchema,
+  type ReviewIssue,
+  type VerificationEvidence,
+} from './review-evidence.js';
 
 export type TaskReviewEpisodeOutcome =
   | 'approved'
@@ -41,8 +47,9 @@ export interface TaskReviewEpisode {
   readonly outcome: TaskReviewEpisodeOutcome | null;
   readonly summary: string | null;
   readonly tests: TestReport[];
+  readonly verificationEvidence: readonly VerificationEvidence[];
   readonly acceptanceEvidence: AcceptanceEvidence[];
-  readonly issues: string[];
+  readonly issues: readonly ReviewIssue[];
   readonly error: ErrorRecord | null;
 }
 
@@ -68,6 +75,7 @@ export const taskReviewEpisodeSchema = {
     'outcome',
     'summary',
     'tests',
+    'verificationEvidence',
     'acceptanceEvidence',
     'issues',
     'error',
@@ -90,8 +98,9 @@ export const taskReviewEpisodeSchema = {
     },
     summary: { type: ['string', 'null'], minLength: 1 },
     tests: { type: 'array', items: testReportSchema },
+    verificationEvidence: { type: 'array', items: verificationEvidenceSchema },
     acceptanceEvidence: { type: 'array', items: acceptanceEvidenceSchema },
-    issues: { type: 'array', items: { type: 'string', minLength: 1 } },
+    issues: { type: 'array', items: reviewIssueSchema },
     error: { anyOf: [{ type: 'null' }, errorRecordSchema] },
   },
 } as const;

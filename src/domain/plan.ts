@@ -5,12 +5,21 @@
  * Error-code policy:
  * - `PLAN_INVALID` — problems internal to the draft itself;
  * - `PLAN_REVISION_CONFLICT` — conflicts between the draft and current Run
- *   state (running task present, completed task rewritten, ID reuse,
- *   checkpoint disposition problems);
+ *   state (running task present, ID reuse, checkpoint disposition problems);
  * - `PLAN_REVISION_LIMIT_EXCEEDED` — a 51st revision is requested.
  *
  * Invalid drafts are rejected as-is: no structural repair, no field removal,
  * no dependency guessing, no reordering (SPEC §7.5).
+ *
+ * Completed-task projection: a revision draft expresses only the plan's
+ * future (retained/modified pending tasks and brand-new tasks). Completed
+ * task definitions are immutable Run facts; the draft never needs to—and
+ * should not—repeat them. Any completed-task entries still present in the
+ * draft are discarded and the canonical definitions are projected verbatim
+ * into the merged plan. Requiring the model to re-emit them verbatim made
+ * every revision draft grow with completed history and turned pure echo
+ * fidelity (truncated or paraphrased copies) into revision-blocking
+ * conflicts, without adding any semantic information.
  */
 import { ApexError } from './errors.js';
 import { isTaskId, taskIdNumber } from './ids.js';
@@ -119,7 +128,7 @@ function assertTaskExecutionContract(task: PlannedTask): void {
 export interface PlanDraftValidationContext {
   /** Revision number this draft would become (1 for the initial plan). */
   readonly nextPlanRevision: number;
-  /** Definitions of completed tasks; must reappear verbatim in the draft. */
+  /** Canonical definitions of completed tasks; projected verbatim into the plan. */
   readonly completedTasks: readonly PlannedTask[];
   /** Old pending task IDs; drafts may keep these IDs with modified definitions. */
   readonly reusablePendingTaskIds: readonly string[];
@@ -127,6 +136,21 @@ export interface PlanDraftValidationContext {
   readonly usedTaskIds: readonly string[];
   /** OIDs of intermediate checkpoints not yet absorbed by a completed task. */
   readonly unabsorbedCheckpointOids: readonly string[];
+}
+
+/**
+ * 草稿的有效任务视图：权威 completed 定义在前，草稿的非 completed 任务在后。
+ *
+ * 草稿中携带的 completed 条目被整体丢弃（无论是否逐字节一致），有效性
+ * 校验与合并都只基于这个投射后的视图；completed 任务的 dependsOn 目标
+ * 按构造必然也是 completed，因此并集图与旧「完整草稿」语义等价。
+ */
+function effectiveTasks(
+  draft: TaskPlanDraft,
+  completedTasks: readonly PlannedTask[],
+): PlannedTask[] {
+  const completedIds = new Set(completedTasks.map((task) => task.id));
+  return [...completedTasks, ...draft.tasks.filter((task) => !completedIds.has(task.id))];
 }
 
 function assertGraphShape(tasks: readonly PlannedTask[]): void {
@@ -204,9 +228,10 @@ function assertGraphShape(tasks: readonly PlannedTask[]): void {
 }
 
 /**
- * Deterministic TaskPlanDraft validation (SPEC §7.5). Assumes the draft
- * already passed the TaskPlanDraft schema. Throws ApexError on the first
- * violated rule.
+ * Deterministic TaskPlanDraft validation (SPEC §7.5). Completed tasks are
+ * projected onto the draft first (see {@link effectiveTasks}); the merged
+ * view must already satisfy the TaskPlanDraft schema. Throws ApexError on
+ * the first violated rule.
  */
 export function validateTaskPlanDraft(
   draft: TaskPlanDraft,
@@ -219,20 +244,22 @@ export function validateTaskPlanDraft(
       message: `plan revision ${context.nextPlanRevision} exceeds limit ${MAX_PLAN_REVISIONS}`,
     });
   }
-  if (draft.tasks.length === 0) {
-    throw planInvalid('plan must contain at least one task');
-  }
 
   const completedIds = new Set(context.completedTasks.map((task) => task.id));
   const reusablePendingIds = new Set(context.reusablePendingTaskIds);
   const usedIds = new Set(context.usedTaskIds);
+  const tasks = effectiveTasks(draft, context.completedTasks);
 
-  const pendingCount = draft.tasks.filter((task) => !completedIds.has(task.id)).length;
+  if (tasks.length === 0) {
+    throw planInvalid('plan must contain at least one task');
+  }
+
+  const pendingCount = tasks.filter((task) => !completedIds.has(task.id)).length;
   if (pendingCount > MAX_PENDING_TASKS) {
     throw planInvalid(`plan has ${pendingCount} pending tasks, limit is ${MAX_PENDING_TASKS}`);
   }
 
-  for (const task of draft.tasks) {
+  for (const task of tasks) {
     if (!isTaskId(task.id)) {
       throw planInvalid(`invalid task ID format: ${task.id}`);
     }
@@ -243,23 +270,11 @@ export function validateTaskPlanDraft(
     assertTaskExecutionContract(task);
   }
 
-  assertGraphShape(draft.tasks);
-
-  // Completed task protection: every completed definition must reappear verbatim.
-  const draftById = new Map(draft.tasks.map((task) => [task.id, task]));
-  for (const completedTask of context.completedTasks) {
-    const draftTask = draftById.get(completedTask.id);
-    if (!draftTask) {
-      throw planConflict(`completed task ${completedTask.id} is missing from the new plan`);
-    }
-    if (!plannedTaskEquals(draftTask, completedTask)) {
-      throw planConflict(`completed task ${completedTask.id} was modified by the new plan`);
-    }
-  }
+  assertGraphShape(tasks);
 
   // Task ID permanence: reused IDs must be completed or old pending; anything
   // else must be brand-new (skipped IDs are never reusable).
-  for (const task of draft.tasks) {
+  for (const task of tasks) {
     if (completedIds.has(task.id) || reusablePendingIds.has(task.id)) continue;
     if (usedIds.has(task.id)) {
       throw planConflict(`task ID ${task.id} has already been used in this Run`);
@@ -267,7 +282,7 @@ export function validateTaskPlanDraft(
     /**
      * 全新任务必须使用当前预算政策值。原样保留的 completed/pending Task
      * 允许携带历史政策值（如 2.0.25 前的 hardContextLimit 300000）——
-     * 若对它们也强制当前值，会与「completed 定义必须原样重现」形成死锁，
+     * 若对它们也强制当前值，会与「completed 定义不可变」形成死锁，
      * 旧 Run 的任何 Revision 都无法提交。
      */
     if (task.budget.hardContextLimit !== TASK_HARD_CONTEXT_TOKENS) {
@@ -285,6 +300,7 @@ export function validateTaskPlanDraft(
     }
     return;
   }
+  const draftById = new Map(tasks.map((task) => [task.id, task]));
   const seenOids = new Set<string>();
   for (const disposition of draft.retainedCheckpointDispositions) {
     if (!unabsorbed.has(disposition.checkpointOid)) {
@@ -318,6 +334,10 @@ export function validateTaskPlanDraft(
 }
 
 export interface PlanMergeInput {
+  /**
+   * Planner 结构化草稿。只应包含非 completed 任务（保留/修改的 pending
+   * 与新增）；携带的 completed 条目一律被丢弃，由权威定义投射替代。
+   */
   readonly draft: TaskPlanDraft;
   /** 0 when no revision has been committed yet. */
   readonly currentPlanRevision: number;
@@ -332,8 +352,16 @@ export interface PlanMergeInput {
 export interface PlanMergeResult {
   /** The revision number this merge commits (`currentPlanRevision + 1`). */
   readonly planRevision: number;
-  /** Full task list of the new plan (the draft's tasks). */
+  /**
+   * Full task list of the new plan: canonical completed definitions in
+   * previous-plan order, then the draft's non-completed tasks in draft order.
+   */
   readonly tasks: PlannedTask[];
+  /**
+   * The draft's own contribution (retained/modified pending + brand-new
+   * tasks, draft order) — the candidate the independent Plan Review assesses.
+   */
+  readonly candidateTasks: PlannedTask[];
   /** Old pending tasks kept in the new plan (definition may have changed). */
   readonly retainedPendingTaskIds: string[];
   /** Subset of retained pending tasks whose definition changed. */
@@ -352,6 +380,10 @@ export interface PlanMergeResult {
  * Deterministic Plan Revision merge (SPEC §6.5). Covers the decision steps
  * 1–8; the persistence steps 9–11 (snapshot, tasks.json, run.json replacement)
  * are performed by the Application layer from this result.
+ *
+ * Completed tasks are never taken from the draft: their canonical
+ * definitions (current plan order) are projected verbatim, and any
+ * completed-task entries in the draft are discarded before validation.
  */
 export function mergePlanRevision(input: PlanMergeInput): PlanMergeResult {
   const nextPlanRevision = input.currentPlanRevision + 1;
@@ -364,39 +396,49 @@ export function mergePlanRevision(input: PlanMergeInput): PlanMergeResult {
   }
 
   const currentById = new Map(input.currentTasks.map((task) => [task.id, task]));
+  for (const state of Object.values(input.taskStates)) {
+    if (
+      (state.status === 'completed' || state.status === 'pending') &&
+      !currentById.has(state.taskId)
+    ) {
+      throw new ApexError({
+        code: 'STATE_VALIDATION_FAILED',
+        stage: PLAN_STAGE,
+        message: `task ${state.taskId} has runtime state but no plan definition`,
+      });
+    }
+  }
+  // 权威 completed 定义与旧 pending ID 都按现行计划顺序取出。
   const completedTasks: PlannedTask[] = [];
   const oldPendingTaskIds: string[] = [];
-  for (const state of Object.values(input.taskStates)) {
-    if (state.status === 'completed' || state.status === 'pending') {
-      const definition = currentById.get(state.taskId);
-      if (!definition) {
-        throw new ApexError({
-          code: 'STATE_VALIDATION_FAILED',
-          stage: PLAN_STAGE,
-          message: `task ${state.taskId} has runtime state but no plan definition`,
-        });
-      }
-      if (state.status === 'completed') {
-        completedTasks.push(definition);
-      } else {
-        oldPendingTaskIds.push(state.taskId);
-      }
+  for (const task of input.currentTasks) {
+    const status = input.taskStates[task.id]?.status;
+    if (status === 'completed') {
+      completedTasks.push(task);
+    } else if (status === 'pending') {
+      oldPendingTaskIds.push(task.id);
     }
   }
 
-  // §6.5 steps 1, 3, 7, 8: schema/ID/dependency/cycle + completed protection +
-  // disposition validation + reuse rejection.
-  validateTaskPlanDraft(input.draft, {
-    nextPlanRevision,
-    completedTasks,
-    reusablePendingTaskIds: oldPendingTaskIds,
-    usedTaskIds: Object.keys(input.taskStates),
-    unabsorbedCheckpointOids: input.unabsorbedCheckpoints.map((checkpoint) => checkpoint.oid),
-  });
+  // §6.5 steps 1, 3, 7, 8: schema/ID/dependency/cycle（含 dependsOn completed
+  // 的引用）+ disposition validation + reuse rejection，全部作用于投射后的
+  // 有效计划视图。
+  const mergedTasks = effectiveTasks(input.draft, completedTasks);
+  validateTaskPlanDraft(
+    { ...input.draft, tasks: mergedTasks },
+    {
+      nextPlanRevision,
+      completedTasks,
+      reusablePendingTaskIds: oldPendingTaskIds,
+      usedTaskIds: Object.keys(input.taskStates),
+      unabsorbedCheckpointOids: input.unabsorbedCheckpoints.map((checkpoint) => checkpoint.oid),
+    },
+  );
 
   // §6.5 steps 4–6: classify old pending and new tasks.
-  const draftById = new Map(input.draft.tasks.map((task) => [task.id, task]));
   const completedIds = new Set(completedTasks.map((task) => task.id));
+  const candidateTasks = mergedTasks.filter((task) => !completedIds.has(task.id));
+  const draftById = new Map(candidateTasks.map((task) => [task.id, task]));
   const retainedPendingTaskIds: string[] = [];
   const updatedPendingTaskIds: string[] = [];
   const skippedTaskIds: string[] = [];
@@ -413,13 +455,14 @@ export function mergePlanRevision(input: PlanMergeInput): PlanMergeResult {
     }
   }
   const oldPendingIds = new Set(oldPendingTaskIds);
-  const newTaskIds = input.draft.tasks
-    .filter((task) => !completedIds.has(task.id) && !oldPendingIds.has(task.id))
+  const newTaskIds = candidateTasks
+    .filter((task) => !oldPendingIds.has(task.id))
     .map((task) => task.id);
 
   return {
     planRevision: nextPlanRevision,
-    tasks: [...input.draft.tasks],
+    tasks: mergedTasks,
+    candidateTasks,
     retainedPendingTaskIds,
     updatedPendingTaskIds,
     newTaskIds,

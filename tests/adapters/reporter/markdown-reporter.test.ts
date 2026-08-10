@@ -19,12 +19,16 @@ import type {
 } from '../../../src/application/ports/ReporterPort.js';
 import type { RunJson } from '../../../src/domain/schemas/run-json.js';
 import type { TaskExecutionEpisode } from '../../../src/domain/schemas/task-execution-episode.js';
+import type { TaskReviewEpisode } from '../../../src/domain/schemas/task-review-episode.js';
 import {
   mkErrorRecord,
+  mkPlanReviewChecks,
+  mkReviewIssue,
   mkResult,
   mkRun,
   mkTask,
   mkTaskState,
+  mkVerificationEvidence,
   OID_B,
   OID_C,
   OID_D,
@@ -155,6 +159,7 @@ function mkCompletedInput(): GenerateReportInput {
     run: mkCompletedRun(),
     tasks: mkTasks(2),
     planRevisions: [mkSnapshot(1), mkSnapshot(2)],
+    planReviewHistory: [],
     git: { currentBranch: RUN_BRANCH, headOid: OID_FINAL, statusEntries: [] },
     finalReviewResult: {
       decision: 'completed',
@@ -192,7 +197,61 @@ function mkFailedInput(): GenerateReportInput {
     headOid: OID_B,
     statusEntries: [' M src/index.ts', '?? scratch.txt'],
   };
-  return { run, tasks: mkTasks(1, plan), planRevisions: [mkSnapshot(1, plan)], git, finalReviewResult: null };
+  return {
+    run,
+    tasks: mkTasks(1, plan),
+    planRevisions: [mkSnapshot(1, plan)],
+    planReviewHistory: [],
+    git,
+    finalReviewResult: null,
+  };
+}
+
+/**
+ * 构造可被 completed、skipped 与未完成报告共同消费的打回 Episode。
+ * 结构化验证、验收证据和 ReviewIssue 使用不同文本，便于精确断言每个字段
+ * 都进入最终 Markdown，而不是只命中摘要中的偶然重复词。
+ */
+function mkRejectedReviewEpisode(
+  taskId: string,
+  overrides: Partial<TaskReviewEpisode> = {},
+): TaskReviewEpisode {
+  return {
+    sessionId: UUID_2,
+    taskId,
+    executionSessionId: UUID_1,
+    candidateCheckpoint: OID_TASK_1,
+    planRevision: 1,
+    specSha256Before: SHA256_A,
+    specSha256After: SHA256_A,
+    startedAt: T0,
+    endedAt: T1,
+    outcome: 'changes_required',
+    summary: '独立复核要求返工',
+    tests: [{ command: 'npm test', result: 'failed' }],
+    verificationEvidence: [
+      mkVerificationEvidence({
+        status: 'failed',
+        evidence: 'VERIFY-001 的独立命令返回失败',
+      }),
+    ],
+    acceptanceEvidence: [
+      {
+        criterionIndex: 0,
+        status: 'not_satisfied',
+        evidence: '验收标准 1 缺少可观察行为',
+      },
+    ],
+    issues: [
+      mkReviewIssue({
+        summary: '缺少核心行为',
+        evidence: 'src/index.ts 未实现验收标准 1',
+        requiredChange: '实现核心行为并让 npm test 通过',
+      }),
+    ],
+    error: null,
+    ...overrides,
+  };
 }
 
 describe('completed Run report (SPEC §14.4)', () => {
@@ -251,6 +310,73 @@ describe('completed Run report (SPEC §14.4)', () => {
     expect(markdown).toContain('- outcome：approved');
     expect(markdown).toContain('- 独立测试：`npm test` → passed');
     expect(markdown).toContain('- 独立验收证据：验收标准 1：satisfied');
+  });
+
+  it('preserves Plan Review attempts and skipped Task review evidence', async () => {
+    /**
+     * TASK-003 先被独立复核打回，随后在 Revision 2 中被省略。最终状态虽为
+     * skipped，验证步骤、问题证据和修复目标仍必须进入完成报告。
+     */
+    const input = mkCompletedInput();
+    input.run.tasks['TASK-003'] = mkTaskState('TASK-003', 'skipped', {
+      executionEpisodes: [
+        mkEpisode({ taskId: 'TASK-003', outcome: 'awaiting_review' }),
+      ],
+      taskReviewEpisodes: [mkRejectedReviewEpisode('TASK-003')],
+    });
+    const checks = mkPlanReviewChecks({
+      scope_cohesion: {
+        dimension: 'scope_cohesion',
+        status: 'not_satisfied',
+        evidence: 'Task 同时包含两个独立交付闭环',
+      },
+    });
+
+    await reporter.generateReport({
+      ...input,
+      planReviewHistory: [
+        {
+          sessionId: UUID_1,
+          planRevision: 1,
+          startedAt: T0,
+          endedAt: T1,
+          status: 'completed',
+          result: {
+            decision: 'changes_required',
+            summary: '计划需要拆分',
+            taskAssessments: [
+              {
+                taskId: 'TASK-003',
+                decision: 'changes_required',
+                checks,
+                issues: [
+                  mkReviewIssue({
+                    category: 'task_scope',
+                    summary: 'Task 范围不内聚',
+                    evidence: 'objective 包含两个可独立验收目标',
+                    requiredChange: '拆分为两个依赖明确的 Task',
+                  }),
+                ],
+              },
+            ],
+            issues: [],
+          },
+          error: null,
+        },
+      ],
+    });
+
+    const markdown = fs.readText(REPORT_PATH);
+    expect(markdown).toContain('## Plan Review 审核历史');
+    expect(markdown).toContain('scope_cohesion：not_satisfied — Task 同时包含两个独立交付闭环');
+    expect(markdown).toContain('证据：objective 包含两个可独立验收目标');
+    expect(markdown).toContain('必须达到：拆分为两个依赖明确的 Task');
+    expect(markdown).toContain('### `TASK-003`（skipped）');
+    expect(markdown).toContain('计划验证：`VERIFY-001` → failed — VERIFY-001 的独立命令返回失败');
+    expect(markdown).toContain('证据：src/index.ts 未实现验收标准 1');
+    expect(markdown).toContain('必须达到：实现核心行为并让 npm test 通过');
+    expect(markdown).toContain('影响路径：src/index.ts');
+    expect(markdown).toContain('关联验收标准：1');
   });
 
   it('covers intermediate checkpoints with their adopting task', async () => {
@@ -321,6 +447,23 @@ describe('failed/abandoned Run report (SPEC §14.4)', () => {
     expect(markdown).toContain('### 已完成\n\n- `TASK-001`：Title TASK-001');
     expect(markdown).toContain('### 失败\n\n- `TASK-002`：Title TASK-002');
     expect(markdown).toContain('### 未执行\n\n- `TASK-003`：Title TASK-003（pending）');
+  });
+
+  it('preserves Task Review evidence when the Run is unfinished', async () => {
+    const input = mkFailedInput();
+    input.run.tasks['TASK-002'] = {
+      ...input.run.tasks['TASK-002']!,
+      executionEpisodes: [mkEpisode({ taskId: 'TASK-002' })],
+      taskReviewEpisodes: [mkRejectedReviewEpisode('TASK-002')],
+    };
+
+    await reporter.generateReport(input);
+    const markdown = fs.readText(REPORT_PATH);
+    expect(markdown).toContain('## Task Review 审核历史');
+    expect(markdown).toContain('### `TASK-002`：Title TASK-002（failed）');
+    expect(markdown).toContain('计划验证：`VERIFY-001` → failed');
+    expect(markdown).toContain('发现问题 ISSUE-001（correctness）：缺少核心行为');
+    expect(markdown).toContain('必须达到：实现核心行为并让 npm test 通过');
   });
 
   it('labels expectedHead as the last confirmed checkpoint and shows the git status', async () => {

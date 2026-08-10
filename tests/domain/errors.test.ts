@@ -140,6 +140,20 @@ describe('error model (§15)', () => {
     expect(isResultContractErrorCode('RUN_INTERRUPTED')).toBe(false);
   });
 
+  it('keeps plan draft validation failures resumable for explicit resume', () => {
+    /**
+     * 进程内修正回路耗尽只说明当前模型多轮仍未给出合法草稿；Run 状态未被
+     * 草稿触碰、刚完成的 Planner transcript 完好。持久化恢复点让用户可以
+     * 显式 resume（例如先升级 CLI 或切换模型），续接同一会话携精确校验
+     * 结论继续修正，而不是报废已完成的全部 Task。Revision 上限与状态损坏
+     * 不是模型可修正事实，保持不可恢复。
+     */
+    expect(isResumableErrorCode('PLAN_INVALID')).toBe(true);
+    expect(isResumableErrorCode('PLAN_REVISION_CONFLICT')).toBe(true);
+    expect(isResumableErrorCode('PLAN_REVISION_LIMIT_EXCEEDED')).toBe(false);
+    expect(isResumableErrorCode('STATE_VALIDATION_FAILED')).toBe(false);
+  });
+
   it('keeps remote publication failure resumable while repository conflicts stay terminal', () => {
     /**
      * GIT_PUSH_FAILED 时本地 Checkpoint、Session Record 与 transcript 全部

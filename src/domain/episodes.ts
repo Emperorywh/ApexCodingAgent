@@ -24,6 +24,10 @@ import type {
 import type { AcceptanceEvidence } from './schemas/task-execution-result.js';
 import type { TestReport } from './schemas/task-execution-result.js';
 import type {
+  ReviewIssue,
+  VerificationEvidence,
+} from './schemas/review-evidence.js';
+import type {
   TaskReviewEpisode,
   TaskReviewEpisodeOutcome,
 } from './schemas/task-review-episode.js';
@@ -168,6 +172,7 @@ export function createTaskReviewEpisode(
     outcome: null,
     summary: null,
     tests: [],
+    verificationEvidence: [],
     acceptanceEvidence: [],
     issues: [],
     error: null,
@@ -182,8 +187,9 @@ export interface TaskReviewEpisodeEnding {
   readonly outcome: TaskReviewEpisodeOutcome;
   readonly summary: string;
   readonly tests: TestReport[];
+  readonly verificationEvidence: readonly VerificationEvidence[];
   readonly acceptanceEvidence: AcceptanceEvidence[];
-  readonly issues: string[];
+  readonly issues: readonly ReviewIssue[];
   readonly error: ErrorRecord | null;
 }
 
@@ -221,6 +227,7 @@ export function closeTaskReviewEpisode(
     episode.outcome !== null ||
     episode.summary !== null ||
     episode.tests.length > 0 ||
+    episode.verificationEvidence.length > 0 ||
     episode.acceptanceEvidence.length > 0 ||
     episode.issues.length > 0 ||
     episode.error !== null
@@ -236,6 +243,7 @@ export function closeTaskReviewEpisode(
     outcome: ending.outcome,
     summary: ending.summary,
     tests: [...ending.tests],
+    verificationEvidence: [...ending.verificationEvidence],
     acceptanceEvidence: [...ending.acceptanceEvidence],
     issues: [...ending.issues],
     error: ending.error,

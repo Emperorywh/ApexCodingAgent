@@ -31,6 +31,7 @@ import {
   UUID_1,
   UUID_2,
   UUID_3,
+  mkReviewIssue,
 } from './fixtures.js';
 
 function mkUnendedExecution(sessionId = UUID_1): TaskExecutionEpisode {
@@ -219,6 +220,9 @@ describe('Task Review Episode (§11.3)', () => {
       outcome: 'approved',
       summary: '独立复核通过',
       tests: [{ command: 'npm test', result: 'passed' }],
+      verificationEvidence: [
+        { verificationId: 'VERIFY-001', status: 'passed', evidence: 'npm test 通过' },
+      ],
       acceptanceEvidence: [
         { criterionIndex: 0, status: 'satisfied', evidence: 'evidence' },
       ],
@@ -240,6 +244,7 @@ describe('Task Review Episode (§11.3)', () => {
       outcome: null,
       summary: null,
       tests: [],
+      verificationEvidence: [],
       acceptanceEvidence: [],
       issues: [],
       error: null,
@@ -341,7 +346,7 @@ describe('Task Review Episode (§11.3)', () => {
         closeTaskReviewEpisode(
           episodes,
           UUID_2,
-          mkReviewEnding({ issues: ['还有未修复的问题'] }),
+          mkReviewEnding({ issues: [mkReviewIssue()] }),
         ),
       'STATE_VALIDATION_FAILED',
     );

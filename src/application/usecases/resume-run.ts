@@ -289,9 +289,12 @@ export function createResumeRun(deps: RunCommandDeps): {
     /**
      * 终态 failed Run 从 lastError 取得真实原因；仍处于活动态的孤儿 Run
      * 尚无终态错误，接管语义确定为 RUN_INTERRUPTED。该事实必须在
-     * reopenRun 清空 lastError 之前保存并显式下传。
+     * reopenRun 清空 lastError 之前保存并显式下传。message 同样来自
+     * 持久化的已脱敏 ErrorRecord：Planning 草稿校验失败恢复时，续接
+     * 提示需要把精确的校验结论交还原 Planner 会话。
      */
     let resumeCause = run.lastError?.errorCode ?? 'RUN_INTERRUPTED';
+    const resumeMessage = run.lastError?.message ?? null;
     if (classification.requiresOrphanReconciliation) {
       /**
        * 免 --force 接管完全依赖"崩溃离场"判定；判定之后经历了能力探测与
@@ -369,7 +372,7 @@ export function createResumeRun(deps: RunCommandDeps): {
     });
 
     const driver = createRunDriver(bound, {
-      resume: { point: classification.point, cause: resumeCause },
+      resume: { point: classification.point, cause: resumeCause, message: resumeMessage },
     });
     try {
       const terminal = await driver.driveToTerminal();

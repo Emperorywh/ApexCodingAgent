@@ -11,6 +11,10 @@ import type { PlanReviewResult } from './schemas/plan-review-result.js';
 import type { TaskExecutionResult } from './schemas/task-execution-result.js';
 import type { TaskReviewResult } from './schemas/task-review-result.js';
 import type { PlannedTask } from './schemas/task-plan-draft.js';
+import {
+  PLAN_REVIEW_DIMENSIONS,
+  type ReviewIssue,
+} from './schemas/review-evidence.js';
 
 function resultInvalid(message: string): ApexError {
   return new ApexError({ code: 'CLAUDE_RESULT_INVALID', stage: 'execution', message });
@@ -60,6 +64,37 @@ function taskReviewInvalid(message: string): ApexError {
     stage: 'task_review',
     message,
   });
+}
+
+/**
+ * 审核问题的跨字段门禁。
+ *
+ * Schema 已保证字段非空与路径安全；这里补充结果内 ID 唯一性和验收索引
+ * 边界。计划级问题没有单一 Task 上下文，因此不得携带验收索引。
+ */
+function validateReviewIssues(
+  issues: readonly ReviewIssue[],
+  context: string,
+  criterionCount: number | null,
+  seenIssueIds: Set<string>,
+  invalid: (message: string) => ApexError,
+): void {
+  for (const issue of issues) {
+    if (seenIssueIds.has(issue.id)) {
+      throw invalid(`review issue ID ${issue.id} is duplicated`);
+    }
+    seenIssueIds.add(issue.id);
+    if (criterionCount === null && issue.criterionIndexes.length > 0) {
+      throw invalid(`${context} issue ${issue.id} must keep criterionIndexes empty`);
+    }
+    for (const index of issue.criterionIndexes) {
+      if (criterionCount === null || index < 0 || index >= criterionCount) {
+        throw invalid(
+          `${context} issue ${issue.id} criterionIndex ${index} is outside the Task acceptance criteria`,
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -166,6 +201,14 @@ export function validateTaskReviewResultSemantics(
   }
 
   const criterionCount = task.acceptanceCriteria.length;
+  const seenIssueIds = new Set<string>();
+  validateReviewIssues(
+    result.issues,
+    `task ${task.id}`,
+    criterionCount,
+    seenIssueIds,
+    taskReviewInvalid,
+  );
   const covered = new Set<number>();
   for (const evidence of result.acceptanceEvidence) {
     const index = evidence.criterionIndex;
@@ -188,16 +231,62 @@ export function validateTaskReviewResultSemantics(
     );
   }
 
+  /**
+   * verificationPlan 是 Planning 已批准的验收执行契约，Reviewer 必须按原
+   * 顺序逐项交付证据。command 步骤同时要与 tests 中的真实命令结果一一
+   * 对应；manual 步骤只能诚实记录 not_run，不能伪造自动通过。
+   */
+  if (result.verificationEvidence.length !== task.verificationPlan.length) {
+    throw taskReviewInvalid(
+      `verificationEvidence must cover all ${task.verificationPlan.length} verification steps exactly once`,
+    );
+  }
+  for (const [index, step] of task.verificationPlan.entries()) {
+    const evidence = result.verificationEvidence[index];
+    if (evidence?.verificationId !== step.id) {
+      throw taskReviewInvalid(
+        `verificationEvidence at index ${index} must reference ${step.id}`,
+      );
+    }
+    if (step.kind === 'manual' && evidence.status !== 'not_run') {
+      throw taskReviewInvalid(
+        `manual verification ${step.id} must be reported as not_run by the automated Reviewer`,
+      );
+    }
+    if (step.kind === 'command') {
+      const matchingTests = result.tests.filter((test) => test.command === step.command);
+      if (matchingTests.length !== 1) {
+        throw taskReviewInvalid(
+          `command verification ${step.id} requires exactly one matching test report for ${step.command}`,
+        );
+      }
+      if (matchingTests[0]!.result !== evidence.status) {
+        throw taskReviewInvalid(
+          `command verification ${step.id} status must match its test report`,
+        );
+      }
+    }
+  }
+
   const hasUnsatisfied = result.acceptanceEvidence.some(
     (evidence) => evidence.status === 'not_satisfied',
   );
   const hasFailedTest = result.tests.some((test) => test.result === 'failed');
+  const hasBlockedAutomaticVerification = task.verificationPlan.some(
+    (step, index) =>
+      step.kind !== 'manual' && result.verificationEvidence[index]?.status !== 'passed',
+  );
   if (result.decision === 'approved') {
     if (hasUnsatisfied) {
       throw taskReviewInvalid('approved requires every acceptance criterion satisfied');
     }
     if (hasFailedTest) {
       throw taskReviewInvalid('approved cannot contain a failed test');
+    }
+    if (hasBlockedAutomaticVerification) {
+      throw taskReviewInvalid(
+        'approved requires every command/static_analysis verification to pass',
+      );
     }
     if (result.issues.length > 0) {
       throw taskReviewInvalid('approved requires an empty issues list');
@@ -207,6 +296,7 @@ export function validateTaskReviewResultSemantics(
     result.decision === 'changes_required' &&
     !hasUnsatisfied &&
     !hasFailedTest &&
+    !hasBlockedAutomaticVerification &&
     result.issues.length === 0
   ) {
     throw taskReviewInvalid(
@@ -223,10 +313,13 @@ export function validateTaskReviewResultSemantics(
  */
 export function validatePlanReviewResultSemantics(
   result: PlanReviewResult,
-  taskIds: readonly string[],
+  tasks: readonly PlannedTask[],
 ): void {
+  const taskIds = tasks.map((task) => task.id);
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
   const expected = new Set(taskIds);
   const seen = new Set<string>();
+  const seenIssueIds = new Set<string>();
   for (const [index, assessment] of result.taskAssessments.entries()) {
     if (!expected.has(assessment.taskId)) {
       throw planReviewInvalid(`task assessment references unknown task ${assessment.taskId}`);
@@ -240,21 +333,67 @@ export function validatePlanReviewResultSemantics(
       );
     }
     seen.add(assessment.taskId);
-    if (assessment.decision === 'approved' && assessment.issues.length > 0) {
+    const task = taskById.get(assessment.taskId)!;
+    validateReviewIssues(
+      assessment.issues,
+      `task ${assessment.taskId}`,
+      task.acceptanceCriteria.length,
+      seenIssueIds,
+      planReviewInvalid,
+    );
+    if (assessment.checks.length !== PLAN_REVIEW_DIMENSIONS.length) {
       throw planReviewInvalid(
-        `approved task assessment ${assessment.taskId} requires an empty issues list`,
+        `task assessment ${assessment.taskId} must cover all ${PLAN_REVIEW_DIMENSIONS.length} review dimensions`,
       );
     }
-    if (assessment.decision === 'changes_required' && assessment.issues.length === 0) {
+    for (const [checkIndex, dimension] of PLAN_REVIEW_DIMENSIONS.entries()) {
+      if (assessment.checks[checkIndex]?.dimension !== dimension) {
+        throw planReviewInvalid(
+          `task assessment ${assessment.taskId} check ${checkIndex} must cover ${dimension}`,
+        );
+      }
+    }
+    const hasFailedCheck = assessment.checks.some(
+      (check) => check.status === 'not_satisfied',
+    );
+    if (
+      assessment.decision === 'approved' &&
+      (assessment.issues.length > 0 || hasFailedCheck)
+    ) {
       throw planReviewInvalid(
-        `changes_required task assessment ${assessment.taskId} requires at least one issue`,
+        `approved task assessment ${assessment.taskId} requires every check satisfied and no issues`,
       );
+    }
+    if (assessment.decision === 'changes_required') {
+      /**
+       * 失败维度与结构化问题承担不同职责，必须同时存在：check 提供固定
+       * 质量维度上的否定证据，ReviewIssue 则给下一轮 Planner 明确的修复
+       * 目标、影响路径与验收关联。允许二选一会重新退化为模糊打回。
+       */
+      if (!hasFailedCheck) {
+        throw planReviewInvalid(
+          `changes_required task assessment ${assessment.taskId} requires at least one failed check`,
+        );
+      }
+      if (assessment.issues.length === 0) {
+        throw planReviewInvalid(
+          `changes_required task assessment ${assessment.taskId} requires at least one structured issue`,
+        );
+      }
     }
   }
   if (seen.size !== expected.size) {
     const missing = taskIds.filter((taskId) => !seen.has(taskId));
     throw planReviewInvalid(`task assessments are missing: ${missing.join(', ')}`);
   }
+
+  validateReviewIssues(
+    result.issues,
+    'plan-level',
+    null,
+    seenIssueIds,
+    planReviewInvalid,
+  );
 
   const hasRejectedTask = result.taskAssessments.some(
     (assessment) => assessment.decision === 'changes_required',

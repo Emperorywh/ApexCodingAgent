@@ -11,6 +11,10 @@ import { isTurnBudgetExhaustedErrorCode, type ErrorCode } from '../../domain/err
 import type { IntermediateCheckpoint } from '../../domain/schemas/intermediate-checkpoint.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
 import type {
+  ReviewIssue,
+  VerificationEvidence,
+} from '../../domain/schemas/review-evidence.js';
+import type {
   AcceptanceEvidence,
   TestReport,
 } from '../../domain/schemas/task-execution-result.js';
@@ -25,8 +29,9 @@ import { VERIFICATION_POLICY } from './verification-policy.js';
  */
 export interface TaskReviewFeedback {
   readonly summary: string;
-  readonly issues: readonly string[];
+  readonly issues: readonly ReviewIssue[];
   readonly failedTests: readonly TestReport[];
+  readonly blockedVerifications: readonly VerificationEvidence[];
   readonly unsatisfiedEvidence: readonly AcceptanceEvidence[];
 }
 
@@ -122,8 +127,19 @@ function formatReviewFeedback(feedback: TaskReviewFeedback | null): string[] {
   for (const test of feedback.failedTests) {
     lines.push(`- 失败测试：${test.command}`);
   }
+  for (const verification of feedback.blockedVerifications) {
+    lines.push(
+      `- 未通过验证 ${verification.verificationId}（${verification.status}）：${verification.evidence}`,
+    );
+  }
   for (const issue of feedback.issues) {
-    lines.push(`- 待修复问题：${issue}`);
+    lines.push(
+      `- ${issue.id} [${issue.category}] ${issue.summary}\n` +
+        `  证据：${issue.evidence}\n` +
+        `  必须达到：${issue.requiredChange}\n` +
+        `  影响路径：${issue.affectedPaths.join('、') || '（无已确认路径）'}\n` +
+        `  验收索引：${issue.criterionIndexes.join('、') || '（无）'}`,
+    );
   }
   return lines;
 }

@@ -250,6 +250,26 @@ describe('immutable plan snapshots and session records', () => {
     );
   });
 
+  it('lists committed session records deterministically and ignores temporary files', async () => {
+    /**
+     * 报告审计只消费完成原子发布的 UUID.json。模拟遗留临时文件，证明
+     * 列表读取既不会把它当作 Session Record，也不会绕过单条读取校验。
+     */
+    const first = mkSessionRecord();
+    const second = mkSessionRecord({
+      sessionId: UUID_2,
+      logPath: `logs/${UUID_2}.log`,
+    });
+    await store.writeSessionRecord(second);
+    await store.writeSessionRecord(first);
+    fs.files.set(
+      `${STATE_DIR}/sessions/.ignored.json.tmp-deadbeef`,
+      new TextEncoder().encode('{}'),
+    );
+
+    expect(await store.listSessionRecords()).toEqual([first, second]);
+  });
+
   it('rejects rule-violating session records before any write', async () => {
     // A completed session must have error null (SPEC §11.4).
     const record = mkSessionRecord({ error: mkErrorRecord() });

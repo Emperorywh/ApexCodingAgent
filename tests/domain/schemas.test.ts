@@ -13,7 +13,14 @@ import {
   validate,
   type SchemaName,
 } from '../../src/domain/schemas/index.js';
-import { mkDraft, mkResult, mkRun, mkTask } from './fixtures.js';
+import {
+  mkDraft,
+  mkPlanReviewChecks,
+  mkResult,
+  mkRun,
+  mkTask,
+  mkVerificationEvidence,
+} from './fixtures.js';
 import {
   OID_B,
   OID_C,
@@ -39,7 +46,9 @@ const VALID: Record<SchemaName, () => unknown> = {
   PlanReviewResult: () => ({
     decision: 'approved',
     summary: '独立计划复核通过',
-    taskAssessments: [{ taskId: 'TASK-001', decision: 'approved', issues: [] }],
+    taskAssessments: [
+      { taskId: 'TASK-001', decision: 'approved', checks: mkPlanReviewChecks(), issues: [] },
+    ],
     issues: [],
   }),
   TaskExecutionResult: () => mkResult(),
@@ -47,6 +56,7 @@ const VALID: Record<SchemaName, () => unknown> = {
     decision: 'approved',
     summary: '独立复核通过',
     tests: [{ command: 'npm test', result: 'passed' }],
+    verificationEvidence: [mkVerificationEvidence()],
     acceptanceEvidence: mkResult().acceptanceEvidence,
     issues: [],
     replanReason: null,
@@ -109,6 +119,7 @@ const VALID: Record<SchemaName, () => unknown> = {
     outcome: null,
     summary: null,
     tests: [],
+    verificationEvidence: [],
     acceptanceEvidence: [],
     issues: [],
     error: null,

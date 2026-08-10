@@ -154,6 +154,82 @@ describe('e2e replan_required', () => {
   );
 
   it(
+    'completed task echoed with a paraphrased definition commits with the canonical one',
+    async () => {
+      /**
+       * 狗咬尾回归：19 个 completed Task 的真实 Run 中，弱模型无法逐字复述
+       * 全部不可变定义（context 被凭记忆改写），旧契约因此把整个 Run 卡死
+       * 在 PLAN_REVISION_CONFLICT。新契约把 completed 条目视为噪声，合并
+       * 一律投射 tasks.json 的权威定义，Revision 正常提交。
+       */
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }, { id: 'TASK-002', dependsOn: ['TASK-001'] }])) },
+            // TASK-001 完成（自动独立复核批准）。
+            {
+              writeFiles: [{ path: 'src/feature-a.ts', content: 'export const a = 1;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            // TASK-002 请求 replan（无仓库变更 → 无中间 Checkpoint）。
+            { stdoutLines: streamOf(REPLAN_RESULT) },
+            // Revision 2：completed 的 TASK-001 被改写（复述失真），TASK-002
+            // 保留并修改——草稿不含 disposition（无未吸收 Checkpoint，合法）。
+            {
+              stdoutLines: streamOf(
+                planDraft(
+                  [
+                    { id: 'TASK-001', title: '模型凭记忆改写的标题' },
+                    { id: 'TASK-002', title: '修订后的功能 B', dependsOn: ['TASK-001'] },
+                  ],
+                  { summary: '修订计划' },
+                ),
+              ),
+            },
+            {
+              writeFiles: [{ path: 'src/feature-b.ts', content: 'export const b = 2;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001', 'TASK-002'])) },
+          ],
+        });
+
+        const result = await harness.start();
+        expect(result.kind, JSON.stringify(result)).toBe('completed');
+        if (result.kind !== 'completed') return;
+        const run = result.run;
+
+        // Revision 2 正常提交；completed 定义以权威版本为准，未被草稿改写。
+        expect(run.planRevision).toBe(2);
+        expect(run.tasks['TASK-001']!.status).toBe('completed');
+        expect(run.tasks['TASK-001']!.executionEpisodes).toHaveLength(1);
+        const tasks = await harness.readTasksJson();
+        expect(tasks.tasks.find((task) => task.id === 'TASK-001')!.title).toBe('实现 TASK-001');
+        expect(tasks.tasks.find((task) => task.id === 'TASK-002')!.title).toBe('修订后的功能 B');
+
+        // 独立复核只评估候选（非 completed）任务。
+        const reviews = (await harness.listSessionRecords()).filter(
+          (record) => record.type === 'plan_review',
+        );
+        expect(reviews).toHaveLength(2);
+        const secondReview = reviews[1]!.structuredResult as {
+          readonly taskAssessments: readonly { readonly taskId: string }[];
+        };
+        expect(secondReview.taskAssessments.map((assessment) => assessment.taskId)).toEqual([
+          'TASK-002',
+        ]);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
     'omitted pending task becomes skipped and its ID cannot be reused; missing disposition rejects the revision',
     async () => {
       const harness = await createE2EHarness();

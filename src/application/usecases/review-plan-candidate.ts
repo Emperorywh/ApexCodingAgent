@@ -18,7 +18,11 @@ import {
   buildPlanReviewResumePrompt,
 } from '../prompts/plan-review.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
-import { applyPlanRevision, preparePlanRevisionMerge } from './apply-plan-revision.js';
+import {
+  applyPlanRevision,
+  completedTaskSummaries,
+  preparePlanRevisionMerge,
+} from './apply-plan-revision.js';
 import {
   ensureFailedSessionRecord,
   sessionGitFacts,
@@ -134,9 +138,16 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
     const candidate = run.planCandidate;
     const tasks = await deps.stateStore.readTasks();
     let draft: TaskPlanDraft;
+    /**
+     * Reviewer 只评估草稿表达的未来计划（保留/修改的 pending 与新增
+     * Task）；completed Task 由合并按权威定义投射，不作为候选内容。
+     * candidateDraft 同时是 taskAssessments 精确覆盖的基准。
+     */
+    let candidateDraft: TaskPlanDraft;
     try {
       draft = await readCandidateDraft(run);
-      preparePlanRevisionMerge(run, tasks, draft);
+      const merge = preparePlanRevisionMerge(run, tasks, draft);
+      candidateDraft = { ...draft, tasks: merge.candidateTasks };
     } catch (error) {
       return failTerminal(run, error as ApexError);
     }
@@ -167,7 +178,8 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
       specPath: run.spec.path,
       specSha256: specBefore.sha256,
       planRevision: candidate.planRevision,
-      draft,
+      draft: candidateDraft,
+      completedTasks: completedTaskSummaries(run, tasks),
     });
 
     /** 修复接力行：让前台看到复核结果为何被拒以及修复会话的启动。 */
@@ -197,7 +209,7 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
         specPath: run.spec.path,
         specSha256: specBefore.sha256,
         planRevision: candidate.planRevision,
-        draft,
+        draft: candidateDraft,
         validationError: error.message,
         invalidResultJson: result === null ? null : JSON.stringify(result, null, 2),
       });
@@ -267,7 +279,7 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
       try {
         validatePlanReviewResultSemantics(
           rawResult,
-          draft.tasks.map((task) => task.id),
+          candidateDraft.tasks,
         );
       } catch (error) {
         const apex = error as ApexError;

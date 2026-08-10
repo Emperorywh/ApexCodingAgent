@@ -49,7 +49,9 @@ export interface RunDriverOptions {
   /**
    * resume 命令重开 Run 时传入的完整恢复上下文（SPEC §17 resume）。
    * point 决定调度位置，cause 保留重开前的失败语义，避免续接提示把回合
-   * 耗尽、前台中断和普通非零退出错误地合并成同一种恢复策略：
+   * 耗尽、前台中断和普通非零退出错误地合并成同一种恢复策略；message 是
+   * 持久化的已脱敏失败详情，Planning 草稿校验失败恢复时随 cause 交给
+   * Planner 做定向修正：
    * - fromStatus 为 planning：首个 Revision 保持 initial，已有 Revision
    *   时首个 Planning 使用 run_resumed；存在 Session ID 时续接原对话；
    * - fromStatus 为 running 且 taskId/sessionId 非空：按 sessionType 只续接
@@ -60,6 +62,8 @@ export interface RunDriverOptions {
   readonly resume?: {
     readonly point: ResumePoint;
     readonly cause: ErrorCode;
+    /** 重开前 lastError 的已脱敏消息；仅 Planning 草稿校验失败恢复使用。 */
+    readonly message: string | null;
   };
 }
 
@@ -237,7 +241,13 @@ export function createRunDriver(deps: UseCaseDeps, options?: RunDriverOptions): 
               trigger,
               planningResumeSessionId === null
                 ? undefined
-                : { resumeFromSessionId: planningResumeSessionId },
+                : {
+                    resumeFromSessionId: planningResumeSessionId,
+                    ...(resumeContext === null ? {} : { resumeCause: resumeContext.cause }),
+                    ...(resumeContext === null || resumeContext.message === null
+                      ? {}
+                      : { resumeErrorMessage: resumeContext.message }),
+                  },
             );
             planningResumeSessionId = null;
             planningResumePending = false;

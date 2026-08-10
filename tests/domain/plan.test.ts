@@ -1,6 +1,6 @@
 /**
  * TaskPlanDraft semantic validation (§7.5) and Plan Revision merge (§6.5):
- * duplicate IDs, missing dependencies, cycles, completed-task protection,
+ * duplicate IDs, missing dependencies, cycles, completed-task projection,
  * permanent ID uniqueness, pending modification and skipped merge, the
  * 50-revision limit and checkpoint disposition rules.
  */
@@ -196,27 +196,29 @@ describe('TaskPlanDraft validation (§7.5)', () => {
     expectApexError(() => validateTaskPlanDraft(draft, INITIAL_CONTEXT), 'PLAN_INVALID');
   });
 
-  it('protects completed tasks: verbatim definition required', () => {
+  it('projects completed tasks: draft entries are ignored, canonical definitions win', () => {
+    /**
+     * completed 定义是不可变 Run 事实，草稿不再承担逐字复述义务：缺失或
+     * 被改写的 completed 条目都不再是冲突，校验始终在「权威 completed +
+     * 草稿非 completed」的投射视图上进行。依赖 completed ID 的新任务合法。
+     */
     const completed = mkTask('TASK-001');
     const context = replanContext({
       completedTasks: [completed],
       usedTaskIds: ['TASK-001'],
     });
-    // Missing from the draft.
-    expectApexError(
-      () => validateTaskPlanDraft(mkDraft([mkTask('TASK-002')]), context),
-      'PLAN_REVISION_CONFLICT',
-    );
-    // Modified definition.
-    expectApexError(
-      () =>
-        validateTaskPlanDraft(
-          mkDraft([mkTask('TASK-001', [], { objective: 'rewritten' }), mkTask('TASK-002')]),
-          context,
-        ),
-      'PLAN_REVISION_CONFLICT',
-    );
-    // Verbatim copy passes.
+    // 草稿完全不包含 completed Task：新任务 dependsOn completed ID 合法。
+    expect(() =>
+      validateTaskPlanDraft(mkDraft([mkTask('TASK-002', ['TASK-001'])]), context),
+    ).not.toThrow();
+    // 草稿携带被改写的 completed 条目：被忽略，不再构成冲突。
+    expect(() =>
+      validateTaskPlanDraft(
+        mkDraft([mkTask('TASK-001', [], { objective: 'rewritten' }), mkTask('TASK-002')]),
+        context,
+      ),
+    ).not.toThrow();
+    // 草稿携带逐字一致的 completed 条目：同样容忍。
     expect(() =>
       validateTaskPlanDraft(mkDraft([mkTask('TASK-001'), mkTask('TASK-002')]), context),
     ).not.toThrow();
@@ -386,6 +388,47 @@ describe('Plan Revision merge (§6.5)', () => {
     expect(result.skippedTaskIds).toEqual(['TASK-003']);
     expect(result.newTaskIds).toEqual(['TASK-004']);
     expect(result.tasks.map((task) => task.id)).toEqual(['TASK-001', 'TASK-002', 'TASK-004']);
+    // 复核候选只含草稿自己表达的非 completed 任务。
+    expect(result.candidateTasks.map((task) => task.id)).toEqual(['TASK-002', 'TASK-004']);
+  });
+
+  it('projects canonical completed definitions regardless of the draft', () => {
+    /**
+     * 狗咬尾运行中观察到的真实失效形态：长历史 Run 的 Planner（尤其弱
+     * 模型）无法在单次结构化输出里逐字复述全部 completed 定义——省略、
+     * 截断或凭记忆改写 context 都曾把 Revision 卡死在确定性校验上。
+     * 合并一律以 tasks.json 的权威定义为准，草稿里的 completed 条目只是
+     * 被丢弃的噪声。
+     */
+    const taskOne = mkTask('TASK-001', [], { context: '权威上下文定义' });
+    const base = {
+      currentPlanRevision: 1,
+      currentTasks: [taskOne, mkTask('TASK-002', ['TASK-001'])],
+      taskStates: {
+        'TASK-001': mkTaskState('TASK-001', 'completed'),
+        'TASK-002': mkTaskState('TASK-002', 'pending'),
+      },
+      unabsorbedCheckpoints: [],
+    } as const;
+    // 草稿完全省略 completed。
+    const omitted = mergePlanRevision({
+      ...base,
+      draft: mkDraft([mkTask('TASK-002', ['TASK-001'])]),
+    });
+    expect(omitted.tasks.map((task) => task.id)).toEqual(['TASK-001', 'TASK-002']);
+    expect(omitted.tasks[0]).toEqual(taskOne);
+    // 草稿改写 completed（复述失真）：权威定义胜出，不打回、不阻塞。
+    const paraphrased = mergePlanRevision({
+      ...base,
+      draft: mkDraft([
+        mkTask('TASK-001', [], { context: '模型凭记忆改写的摘要' }),
+        mkTask('TASK-002', ['TASK-001']),
+      ]),
+    });
+    expect(paraphrased.tasks[0]).toEqual(taskOne);
+    expect(paraphrased.candidateTasks.map((task) => task.id)).toEqual(['TASK-002']);
+    expect(paraphrased.retainedPendingTaskIds).toEqual(['TASK-002']);
+    expect(paraphrased.updatedPendingTaskIds).toEqual([]);
   });
 
   it('keeps retained-but-unchanged pending tasks out of the updated list', () => {

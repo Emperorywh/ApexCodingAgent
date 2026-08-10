@@ -45,20 +45,23 @@ ${toJson(input.task)}
 1. 独立阅读 CURRENT_TASK、SPEC、相关源码、测试和仓库状态，不采信候选结果的自我判断。
 2. 同时核对 objective 与 nonGoals，确认候选实现没有用范围外改动掩盖未完成目标。
 3. 按 verificationPlan 独立覆盖每项 acceptanceCriteria；command/static_analysis 应取得相应证据，manual 步骤不得伪造成已由 Agent 自动执行。
-4. 对每项 acceptanceCriteria 按原索引给出一条 acceptanceEvidence，并引用可观察的仓库或测试事实；不要仅复述 Execution Session 报告的 tests。
+4. 按 verificationPlan 原顺序为每个 VERIFY-NNN 返回一条 verificationEvidence：command 步骤必须在 tests 中有且只有一条 command 完全一致、状态一致的记录；static_analysis 必须给出具体检查对象与结论；manual 必须诚实返回 not_run 和原因。
+5. 对每项 acceptanceCriteria 按原索引给出一条 acceptanceEvidence，并引用文件路径、符号、测试命令及结果等可观察事实；不要仅写“已满足”，也不要复述 Execution Session 报告的 tests。
 ${VERIFICATION_POLICY}
-5. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。运行测试前先确认其产物已被 .gitignore 覆盖；若仍产生未被忽略的新文件，必须在返回结果前清理干净——会话前后的 Git 快照对任何工作树、索引或未跟踪文件差异都会判定为越权写入并终止整个 Run。
-6. 全部验收条件均 satisfied、不存在 failed test 且 issues 为空时，返回 approved。
-7. 当前 Task 边界内可以修复的问题，返回 changes_required，并在 issues 中逐条给出准确、可执行的问题；至少存在一项 not_satisfied、failed test 或 issue。
-8. 只有仓库事实、架构前置条件、需求变化、实际范围证明预算不成立，或验收验证依赖当前环境缺失的能力（如 Docker、外部服务）而无法取得证据时，才返回 replan_required 和非空 replanReason；环境阻塞必须在 replanReason 中写明缺失能力与受影响条目。
-9. 不得因为候选结果声称 completed 就降低证据标准；不确定或证据不足时不能批准。
+6. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。运行测试前先确认其产物已被 .gitignore 覆盖；若仍产生未被忽略的新文件，必须在返回结果前清理干净——会话前后的 Git 快照对任何工作树、索引或未跟踪文件差异都会判定为越权写入并终止整个 Run。
+7. 全部验收条件均 satisfied、全部 command/static_analysis verification 均 passed、不存在 failed test 且 issues 为空时，返回 approved；manual verification 仍必须以 not_run 如实列出。
+8. 当前 Task 边界内可以修复的问题，返回 changes_required；至少存在一项 not_satisfied、failed/not_run 的自动验证或非空 issue。
+9. issue 必须包含全局唯一 ISSUE-NNN、category、summary、可观察 evidence、修复后必须成立的 requiredChange、已确认的 affectedPaths 和关联 criterionIndexes。不要把猜测、泛泛建议或实现方案当作问题证据。
+10. 只有仓库事实、架构前置条件、需求变化、实际范围证明预算不成立，或验收验证依赖当前环境缺失的能力（如 Docker、外部服务）而无法取得证据时，才返回 replan_required 和非空 replanReason；环境阻塞必须在 replanReason 中写明缺失能力与受影响条目。
+11. 不得因为候选结果声称 completed 就降低证据标准；不确定或证据不足时不能批准。
 
 返回 TaskReviewResult 结构化结果：
 - decision: "approved" | "changes_required" | "replan_required"
 - summary: 非空复核摘要
 - tests: { command, result: "passed" | "failed" | "not_run" }[]
+- verificationEvidence: { verificationId, status: "passed" | "failed" | "not_run", evidence }[]，按 verificationPlan 原顺序精确覆盖
 - acceptanceEvidence: { criterionIndex, status: "satisfied" | "not_satisfied", evidence }[]
-- issues: string[]
+- issues: { id, category, summary, evidence, requiredChange, affectedPaths, criterionIndexes }[]
 - replanReason: replan_required 时为非空字符串，否则必须为 JSON null
 
 不要返回 Markdown，不要在结构化结果之外输出解释。`;
@@ -85,7 +88,7 @@ export function buildTaskReviewResumePrompt(input: { readonly cause: ErrorCode }
 
 ${VERIFICATION_POLICY}
 
-完成后返回 TaskReviewResult。只有全部验收条件 satisfied、没有 failed test 且 issues 为空时才能返回 approved；否则据实返回 changes_required 或 replan_required。不要返回 Markdown。`;
+完成后返回 TaskReviewResult。必须逐项覆盖 verificationPlan；只有全部验收条件 satisfied、全部自动验证 passed、没有 failed test 且 issues 为空时才能返回 approved；否则据实返回 changes_required 或 replan_required。不要返回 Markdown。`;
 }
 
 export interface TaskReviewRepairPromptInput {
@@ -126,9 +129,11 @@ ${toJson(input.task)}
 
 修复要求：
 1. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行任何有副作用的操作；本 Session 唯一职责是重新返回合法的 TaskReviewResult。
-2. acceptanceEvidence 必须按 CURRENT_TASK.acceptanceCriteria 的原索引逐条覆盖：不多、不少、不重复、不越界。
-3. decision 为 approved 时，全部 acceptanceEvidence 必须为 satisfied、不存在 failed test 且 issues 为空；changes_required 必须至少有一项 not_satisfied、failed test 或非空 issue；replan_required 必须携带非空 replanReason，其他 decision 的 replanReason 必须为 JSON null。
-4. 只修正导致校验失败的字段；复核结论本身仍须基于仓库事实，不要为了让结果合法而批准实际未满足的验收条件。
+2. verificationEvidence 必须按 CURRENT_TASK.verificationPlan 原顺序逐项覆盖；command 项必须与 tests 中唯一的同名命令及状态一致，manual 项必须为 not_run。
+3. acceptanceEvidence 必须按 CURRENT_TASK.acceptanceCriteria 的原索引逐条覆盖：不多、不少、不重复、不越界。
+4. issue 必须是包含全局唯一 ISSUE-NNN、category、summary、evidence、requiredChange、affectedPaths 和 criterionIndexes 的结构化对象。
+5. decision 为 approved 时，全部 acceptanceEvidence 必须为 satisfied、全部 command/static_analysis verification 必须 passed、不存在 failed test 且 issues 为空；changes_required 必须至少有一项未满足事实；replan_required 必须携带非空 replanReason，其他 decision 的 replanReason 必须为 JSON null。
+6. 只修正导致校验失败的字段；复核结论本身仍须基于仓库事实，不要为了让结果合法而批准实际未满足的验收条件。
 
 不要返回 Markdown，不要在结构化结果之外输出解释。`;
 }

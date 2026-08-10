@@ -5,6 +5,12 @@
  * 问题时才能批准。精确覆盖与 decision/issue 耦合由 results.ts 集中校验。
  */
 import { TASK_ID_PATTERN } from '../ids.js';
+import {
+  planReviewCheckSchema,
+  reviewIssueSchema,
+  type PlanReviewCheck,
+  type ReviewIssue,
+} from './review-evidence.js';
 
 export type PlanReviewDecision = 'approved' | 'changes_required';
 export type PlanReviewTaskDecision = 'approved' | 'changes_required';
@@ -12,14 +18,15 @@ export type PlanReviewTaskDecision = 'approved' | 'changes_required';
 export interface PlanReviewTaskAssessment {
   readonly taskId: string;
   readonly decision: PlanReviewTaskDecision;
-  readonly issues: string[];
+  readonly checks: readonly PlanReviewCheck[];
+  readonly issues: readonly ReviewIssue[];
 }
 
 export interface PlanReviewResult {
   readonly decision: PlanReviewDecision;
   readonly summary: string;
-  readonly taskAssessments: PlanReviewTaskAssessment[];
-  readonly issues: string[];
+  readonly taskAssessments: readonly PlanReviewTaskAssessment[];
+  readonly issues: readonly ReviewIssue[];
 }
 
 export const planReviewResultSchema = {
@@ -35,14 +42,15 @@ export const planReviewResultSchema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['taskId', 'decision', 'issues'],
+        required: ['taskId', 'decision', 'checks', 'issues'],
         properties: {
           taskId: { type: 'string', pattern: TASK_ID_PATTERN.source },
           decision: { type: 'string', enum: ['approved', 'changes_required'] },
-          issues: { type: 'array', items: { type: 'string', minLength: 1 } },
+          checks: { type: 'array', items: planReviewCheckSchema },
+          issues: { type: 'array', items: reviewIssueSchema },
         },
       },
     },
-    issues: { type: 'array', items: { type: 'string', minLength: 1 } },
+    issues: { type: 'array', items: reviewIssueSchema },
   },
 } as const;

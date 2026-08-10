@@ -219,6 +219,38 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
     return read === null ? null : read.value;
   }
 
+  /**
+   * 枚举 sessions/ 中已经完成原子发布的 UUID.json 文件。
+   *
+   * 同目录临时文件以点号开头且不匹配 UUID.json；其他辅助文件也不是
+   * Session Record 契约的一部分。筛选后的每个文件统一回到单条读取入口，
+   * 保证列表读取不会绕过 Schema、文件名/内容一致性与领域规则。
+   */
+  async function listSessionRecords(): Promise<readonly SessionRecord[]> {
+    const stat = await fs.stat(sessionsDir);
+    if (stat === null) return [];
+    if (!stat.isDirectory) {
+      throw stateValidationFailed(`${sessionsDir} must be a directory`);
+    }
+
+    let entries: Awaited<ReturnType<FileSystemPort['readdir']>>;
+    try {
+      entries = await fs.readdir(sessionsDir);
+    } catch (error) {
+      throw stateValidationFailed(`failed to read ${sessionsDir}`, error);
+    }
+
+    const records: SessionRecord[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile || !entry.name.endsWith('.json')) continue;
+      const sessionId = entry.name.slice(0, -'.json'.length);
+      if (!isUuid(sessionId)) continue;
+      const record = await readSessionRecord(sessionId);
+      if (record !== null) records.push(record);
+    }
+    return records;
+  }
+
   async function writeSessionRecord(record: SessionRecord): Promise<void> {
     assertPayloadAlreadyRedacted('SessionRecord', record);
     assertSchemaValid('SessionRecord', record, STATE_VALIDATION);
@@ -399,6 +431,7 @@ export function createJsonStateStore(options: JsonStateStoreOptions): StateStore
     readPlanSnapshot,
     writePlanSnapshot,
     readSessionRecord,
+    listSessionRecords,
     writeSessionRecord,
     commitPlanRevision,
     readConsistentSnapshot,

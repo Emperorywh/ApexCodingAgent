@@ -13,6 +13,7 @@ import {
   FAKE_VERSION,
   finalReviewCompleted,
   planDraft,
+  reviewIssue,
   streamOf,
   taskReviewApproved,
   waitForRunFact,
@@ -25,6 +26,9 @@ const CHANGES_REQUIRED = {
   decision: 'changes_required',
   summary: '独立复核发现实现仍不满足验收条件',
   tests: [{ command: 'npm test', result: 'failed' }],
+  verificationEvidence: [
+    { verificationId: 'VERIFY-001', status: 'failed', evidence: 'npm test 返回非零退出码' },
+  ],
   acceptanceEvidence: [
     {
       criterionIndex: 0,
@@ -32,7 +36,15 @@ const CHANGES_REQUIRED = {
       evidence: '仓库中的导出值仍为错误结果',
     },
   ],
-  issues: ['修正导出值并重新运行 npm test'],
+  issues: [
+    reviewIssue({
+      category: 'correctness',
+      summary: '导出值仍为错误结果',
+      evidence: '仓库中的导出值与验收期望不一致',
+      requiredChange: '修正导出值并重新运行 npm test',
+      criterionIndexes: [0],
+    }),
+  ],
   replanReason: null,
 } as const;
 
@@ -343,6 +355,13 @@ describe('e2e independent task review', () => {
                 decision: 'replan_required',
                 summary: '复核发现计划边界与仓库事实不符',
                 tests: [{ command: 'npm test', result: 'not_run' }],
+                verificationEvidence: [
+                  {
+                    verificationId: 'VERIFY-001',
+                    status: 'not_run',
+                    evidence: '计划边界已被证实不成立，命令验证不再具有有效前提',
+                  },
+                ],
                 acceptanceEvidence: [
                   {
                     criterionIndex: 0,
@@ -637,6 +656,7 @@ describe('e2e independent task review', () => {
                   outcome: null,
                   summary: null,
                   tests: [],
+                  verificationEvidence: [],
                   acceptanceEvidence: [],
                   issues: [],
                   error: null,
@@ -729,10 +749,22 @@ describe('e2e independent task review', () => {
                 decision: 'approved',
                 summary: '复核结论携带了不该存在的问题清单',
                 tests: [{ command: 'npm test', result: 'passed' }],
+                verificationEvidence: [
+                  {
+                    verificationId: 'VERIFY-001',
+                    status: 'passed',
+                    evidence: 'npm test 独立执行通过',
+                  },
+                ],
                 acceptanceEvidence: [
                   { criterionIndex: 0, status: 'satisfied', evidence: '独立复核证据 0' },
                 ],
-                issues: ['approved 不允许携带非空 issues'],
+                issues: [
+                  reviewIssue({
+                    summary: 'approved 不允许携带非空 issues',
+                    evidence: 'Reviewer 同时返回 approved 与阻塞问题',
+                  }),
+                ],
                 replanReason: null,
               }),
             },
@@ -789,13 +821,17 @@ describe('e2e independent task review', () => {
             // 语义非法：approved 却携带非空 issues（领域门禁拒绝）。
             {
               stdoutLines: streamOf(
-                taskReviewApproved(1, { issues: ['approved 不允许携带非空 issues'] }),
+                taskReviewApproved(1, {
+                  issues: [reviewIssue({ summary: 'approved 不允许携带非空 issues' })],
+                }),
               ),
             },
             // 修复会话同样非法：耗尽接力次数后转 failed。
             {
               stdoutLines: streamOf(
-                taskReviewApproved(1, { issues: ['approved 不允许携带非空 issues'] }),
+                taskReviewApproved(1, {
+                  issues: [reviewIssue({ summary: 'approved 不允许携带非空 issues' })],
+                }),
               ),
             },
           ],

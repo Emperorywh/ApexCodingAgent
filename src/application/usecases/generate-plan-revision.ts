@@ -19,7 +19,7 @@
  * 该回路与独立 Plan Review 的语义打回反馈回路同级，不修复草稿本身
  * （SPEC §7.5 仍原样拒绝），只是不把可修正的模型疏漏升级为整 Run 终止。
  */
-import { ApexError, isApexError } from '../../domain/errors.js';
+import { ApexError, isApexError, type ErrorCode } from '../../domain/errors.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
@@ -31,11 +31,14 @@ import {
   buildPlanningCorrectionPrompt,
   buildPlanningPrompt,
   buildPlanningResumePrompt,
-  type CompletedTaskSummary,
   type SkippedTaskSummary,
 } from '../prompts/planning.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
-import { preparePlanRevisionMerge } from './apply-plan-revision.js';
+import {
+  completedTaskSummaries,
+  preparePlanRevisionMerge,
+  unabsorbedCheckpoints,
+} from './apply-plan-revision.js';
 import {
   ensureFailedSessionRecord,
   sessionGitFacts,
@@ -77,18 +80,53 @@ export type GeneratePlanRevisionResult =
 export interface GeneratePlanRevisionOptions {
   /** resume 命令传入的被中断 Planning Session ID，仅消费一次。 */
   readonly resumeFromSessionId?: string;
+  /**
+   * resume 重开前的稳定失败原因：草稿确定性校验失败（PLAN_INVALID /
+   * PLAN_REVISION_CONFLICT）时续接提示直接携带该校验结论，而不是按
+   * 前台中断语义让模型盲目重交同一份草稿。
+   */
+  readonly resumeCause?: ErrorCode;
+  /** resumeCause 对应的已脱敏校验消息（lastError.message）。 */
+  readonly resumeErrorMessage?: string;
 }
 
-function completedTaskSummaries(run: RunJson, tasks: TasksJson | null): CompletedTaskSummary[] {
-  if (tasks === null) return [];
-  const definitionById = new Map(tasks.tasks.map((task) => [task.id, task]));
-  return Object.values(run.tasks)
-    .filter((state) => state.status === 'completed')
-    .map((state) => ({
-      definition: definitionById.get(state.taskId)!,
-      resultSummary: state.completedResult!.summary,
-      finalCheckpoint: state.finalCheckpoint!,
-    }));
+/**
+ * 判断 resume 重开的 Planning 是否死于草稿确定性校验：只有这类失败可以
+ * 把精确的校验结论直接交还原 Planner 会话，其余原因维持通用续接提示。
+ */
+function isPlanDraftValidationCause(cause: ErrorCode | undefined): boolean {
+  return cause === 'PLAN_INVALID' || cause === 'PLAN_REVISION_CONFLICT';
+}
+
+/**
+ * 读取终态 Planning 校验失败所引用的被拒草稿。
+ *
+ * Claude transcript 可能已经不可恢复，但本地 completed Session Record 是
+ * 编排器自己的不可变事实。全新 fallback 会话必须从这里恢复草稿，而不能
+ * 把“外部 transcript 不可用”误当成“定向校验反馈也不可用”。
+ */
+async function readResumeCorrectionDraft(
+  deps: UseCaseDeps,
+  sessionId: string,
+  expectedPlanRevision: number,
+): Promise<TaskPlanDraft> {
+  const record = await deps.stateStore.readSessionRecord(sessionId);
+  if (
+    record === null ||
+    record.type !== 'planning' ||
+    record.status !== 'completed' ||
+    record.planRevision !== expectedPlanRevision ||
+    record.structuredResult === null
+  ) {
+    throw new ApexError({
+      code: 'STATE_VALIDATION_FAILED',
+      stage: 'planning',
+      message:
+        `planning correction resume session ${sessionId} does not reference a completed ` +
+        `draft for revision ${expectedPlanRevision}`,
+    });
+  }
+  return record.structuredResult as TaskPlanDraft;
 }
 
 function pendingTasks(run: RunJson, tasks: TasksJson | null): PlannedTask[] {
@@ -230,10 +268,7 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       pendingTasks: pendingTasks(run, tasks),
       skippedTasks: skippedTaskSummaries(run),
       replanTrigger: safeTrigger.type === 'initial' ? null : safeTrigger,
-      unabsorbedCheckpoints: run.intermediateCheckpoints.filter((checkpoint) => {
-        if (checkpoint.ownerTaskId === null) return true;
-        return run.tasks[checkpoint.ownerTaskId]?.status !== 'completed';
-      }),
+      unabsorbedCheckpoints: unabsorbedCheckpoints(run),
       planReviewFeedback,
     });
 
@@ -252,15 +287,55 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
      * transcript 保留完整 SPEC 与仓库分析，模型凭精确校验结论定向修正，
      * 而不是丢弃整趟规划。每轮会话重新执行 §8.3 前置不变量，只读边界与
      * SPEC 复核语义与首轮完全一致；轮次有界，耗尽后按终态失败收尾。
+     *
+     * resume 重开的入口提示按失败原因区分：进程内的修正回路耗尽后，用户
+     * 显式 resume 续接的是同一个已交付非法草稿的会话，直接把持久化的
+     * 校验结论交还模型（与进程内修正轮同形）；其余原因（前台中断、普通
+     * 非零退出等）维持通用续接提示。
      */
+    const resumeCorrectionMessage =
+      isPlanDraftValidationCause(options?.resumeCause) &&
+      options?.resumeErrorMessage !== undefined &&
+      options.resumeErrorMessage.length > 0
+        ? options.resumeErrorMessage
+        : null;
+    let resumeCorrectionDraft: TaskPlanDraft | null = null;
+    if (
+      resumeCorrectionMessage !== null &&
+      options?.resumeFromSessionId !== undefined
+    ) {
+      try {
+        resumeCorrectionDraft = await readResumeCorrectionDraft(
+          deps,
+          options.resumeFromSessionId,
+          run.planRevision + 1,
+        );
+      } catch (error) {
+        return failTerminal(run, error as ApexError);
+      }
+    }
     let resumeHint: SessionResumeHint | null =
       options?.resumeFromSessionId === undefined
         ? null
         : {
             sessionId: options.resumeFromSessionId,
-            prompt: buildPlanningResumePrompt(),
+            prompt:
+              resumeCorrectionMessage === null
+                ? buildPlanningResumePrompt()
+                : buildPlanningCorrectionPrompt(resumeCorrectionMessage),
           };
-    let freshPrompt = prompt;
+    /**
+     * resume 不可用时，通用协调器会把同一调用切换到 freshPrompt。
+     * 校验失败恢复必须同时注入被拒草稿和精确错误，保证全新 Planner 与
+     * 原会话续接拥有等价的定向修正事实。
+     */
+    let freshPrompt =
+      resumeCorrectionMessage === null || resumeCorrectionDraft === null
+        ? prompt
+        : `${prompt}\n\n${buildPlanningCorrectionAppendix(
+            resumeCorrectionDraft,
+            resumeCorrectionMessage,
+          )}`;
     let sessionRun = run;
     let corrections = 0;
 

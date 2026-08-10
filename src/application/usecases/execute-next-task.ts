@@ -295,11 +295,16 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
         await deps.stateStore.writeRun(reviewing);
         return { kind: 'final-review', run: reviewing };
       }
-      // 存在 failed Task 或无法解释的 pending Task（§9.1）。
+      /**
+       * 已提交计划在进入调度前已经通过 ID、依赖图与运行态不变量校验。
+       * 此处仍无法选出唯一可运行 Task，说明持久化运行态与调度事实失去
+       * 一致性，而不是 Planner 草稿仍可通过续接修正。使用不可恢复的
+       * STATE_VALIDATION_FAILED，避免 resume 重开 running 后重复同一失败。
+       */
       return failTerminal(
         run,
         new ApexError({
-          code: 'PLAN_INVALID',
+          code: 'STATE_VALIDATION_FAILED',
           stage: 'scheduling',
           message: 'no runnable task: the plan contains failed or unexplainable pending tasks',
         }),
@@ -348,8 +353,9 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
 
     /**
      * 上一轮独立复核打回（最后一个 Review Episode 为 changes_required）时，
-     * 把复核摘要、未满足证据、失败测试与问题清单注入修复执行的 Prompt；
-     * 首次执行或复核尚未产生结论时为 null。Episode 字段落盘前已脱敏。
+     * 把复核摘要、未满足证据、失败测试、阻塞的自动验证与问题清单注入
+     * 修复执行的 Prompt。manual 的 not_run 是计划内诚实结果，不得误投影
+     * 成需要 Execution 修复的阻塞项。Episode 字段落盘前已脱敏。
      */
     const lastReviewEpisode = run.tasks[readyTaskId]?.taskReviewEpisodes.at(-1);
     const reviewFeedback: TaskReviewFeedback | null =
@@ -358,6 +364,13 @@ export function createExecuteNextTask(deps: UseCaseDeps): {
             summary: lastReviewEpisode.summary ?? '',
             issues: lastReviewEpisode.issues,
             failedTests: lastReviewEpisode.tests.filter((test) => test.result === 'failed'),
+            blockedVerifications: lastReviewEpisode.verificationEvidence.filter(
+              (verification) =>
+                verification.status !== 'passed' &&
+                taskDef.verificationPlan.some(
+                  (step) => step.id === verification.verificationId && step.kind !== 'manual',
+                ),
+            ),
             unsatisfiedEvidence: lastReviewEpisode.acceptanceEvidence.filter(
               (evidence) => evidence.status === 'not_satisfied',
             ),

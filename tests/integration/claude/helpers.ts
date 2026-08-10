@@ -17,6 +17,7 @@ import type {
 } from '../../../src/application/ports/ClaudeRuntimePort.js';
 import type { FileSystemPort } from '../../../src/application/ports/file-system.js';
 import type { SessionType } from '../../../src/domain/schemas/active-session.js';
+import { PLAN_REVIEW_DIMENSIONS } from '../../../src/domain/schemas/review-evidence.js';
 import { createTestProcessExecutor } from '../../process-executor.js';
 
 export const FAKE_CLAUDE_PATH = fileURLToPath(
@@ -203,7 +204,18 @@ export function validStructuredResult(sessionType: SessionType): Record<string, 
       return {
         decision: 'approved',
         summary: 'Independent plan review passed',
-        taskAssessments: [{ taskId: 'TASK-001', decision: 'approved', issues: [] }],
+        taskAssessments: [
+          {
+            taskId: 'TASK-001',
+            decision: 'approved',
+            checks: PLAN_REVIEW_DIMENSIONS.map((dimension) => ({
+              dimension,
+              status: 'satisfied',
+              evidence: `${dimension} verified against repository facts`,
+            })),
+            issues: [],
+          },
+        ],
         issues: [],
       };
     case 'task_review':
@@ -211,6 +223,9 @@ export function validStructuredResult(sessionType: SessionType): Record<string, 
         decision: 'approved',
         summary: 'Independent review passed',
         tests: [{ command: 'npm test', result: 'passed' }],
+        verificationEvidence: [
+          { verificationId: 'VERIFY-001', status: 'passed', evidence: 'npm test passed' },
+        ],
         acceptanceEvidence: [
           { criterionIndex: 0, status: 'satisfied', evidence: 'verified repository facts' },
         ],

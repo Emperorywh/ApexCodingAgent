@@ -16,6 +16,8 @@ import {
   finalReviewCompleted,
   planDraft,
   planReviewApproved,
+  planReviewChecks,
+  reviewIssue,
   streamOf,
   waitForRunFact,
   type RecordedInvocation,
@@ -40,7 +42,15 @@ const PLAN_REVIEW_APPROVED_WITH_ISSUES = {
     {
       taskId: 'TASK-001',
       decision: 'approved',
-      issues: ['非阻塞性观察：集成测试数量叙述与仓库统计不符'],
+      checks: planReviewChecks(),
+      issues: [
+        reviewIssue({
+          category: 'verification',
+          summary: '集成测试数量叙述与仓库统计不符',
+          evidence: '候选计划记录的数量与测试目录可观察文件数不同',
+          requiredChange: '删除无法证实的数量结论或改为可复核的仓库事实',
+        }),
+      ],
     },
   ],
   issues: [],
@@ -54,7 +64,15 @@ const PLAN_CHANGES_REQUIRED = {
     {
       taskId: 'TASK-001',
       decision: 'changes_required',
-      issues: ['objective 同时包含实现与无关迁移工作'],
+      checks: planReviewChecks('scope_cohesion'),
+      issues: [
+        reviewIssue({
+          category: 'task_scope',
+          summary: 'objective 同时包含实现与无关迁移工作',
+          evidence: '两个交付目标可独立实施和验收',
+          requiredChange: '拆分无关迁移工作并保留单一主要目标',
+        }),
+      ],
     },
   ],
   issues: [],
@@ -289,7 +307,7 @@ describe('e2e independent plan review — 边界与失败语义', () => {
         expect(reviewInvocations).toHaveLength(2);
         expect(reviewInvocations[1]!.stdin).toContain('PlanReviewResult 未通过契约校验');
         expect(reviewInvocations[1]!.stdin).toContain(
-          'approved task assessment TASK-001 requires an empty issues list',
+          'approved task assessment TASK-001 requires every check satisfied and no issues',
         );
         expect(reviewInvocations[1]!.stdin).toContain('非阻塞性观察');
         expect(reviewInvocations[1]!.argv).not.toContain('--resume');

@@ -11,6 +11,12 @@ import type {
   TaskPlanDraft,
 } from '../../src/domain/schemas/task-plan-draft.js';
 import type { TaskExecutionResult } from '../../src/domain/schemas/task-execution-result.js';
+import {
+  PLAN_REVIEW_DIMENSIONS,
+  type PlanReviewCheck,
+  type ReviewIssue,
+  type VerificationEvidence,
+} from '../../src/domain/schemas/review-evidence.js';
 import type { TaskRuntimeState, TaskStatus } from '../../src/domain/schemas/task-runtime-state.js';
 import type { RunJson } from '../../src/domain/schemas/run-json.js';
 
@@ -100,6 +106,48 @@ export function mkResult(overrides: Partial<TaskExecutionResult> = {}): TaskExec
   };
 }
 
+/**
+ * 结构化审核问题夹具：证据与修复目标分开，默认关联第一个验收标准。
+ */
+export function mkReviewIssue(overrides: Partial<ReviewIssue> = {}): ReviewIssue {
+  return {
+    id: 'ISSUE-001',
+    category: 'correctness',
+    summary: '实现与验收目标不一致',
+    evidence: 'src/index.ts 的当前行为与验收标准 1 不一致',
+    requiredChange: '使实现满足验收标准 1，并补充对应回归测试',
+    affectedPaths: ['src/index.ts'],
+    criterionIndexes: [0],
+    ...overrides,
+  };
+}
+
+/** Plan Review 七个固定维度的完整通过证据。 */
+export function mkPlanReviewChecks(
+  overrides: Partial<Record<(typeof PLAN_REVIEW_DIMENSIONS)[number], PlanReviewCheck>> = {},
+): PlanReviewCheck[] {
+  return PLAN_REVIEW_DIMENSIONS.map(
+    (dimension) =>
+      overrides[dimension] ?? {
+        dimension,
+        status: 'satisfied',
+        evidence: `${dimension} 已由 SPEC、Task 定义和仓库事实交叉确认`,
+      },
+  );
+}
+
+/** 当前通用 Task 夹具的 verificationPlan 精确覆盖证据。 */
+export function mkVerificationEvidence(
+  overrides: Partial<VerificationEvidence> = {},
+): VerificationEvidence {
+  return {
+    verificationId: 'VERIFY-001',
+    status: 'passed',
+    evidence: 'npm test 成功退出并覆盖全部验收标准',
+    ...overrides,
+  };
+}
+
 export function mkErrorRecord(overrides: Partial<ErrorRecord> = {}): ErrorRecord {
   return {
     errorCode: 'CLAUDE_EXIT_NONZERO',
@@ -167,6 +215,7 @@ export function mkTaskState(
         outcome: 'approved',
         summary: '独立复核通过',
         tests: [{ command: 'npm test', result: 'passed' }],
+        verificationEvidence: [mkVerificationEvidence()],
         acceptanceEvidence: mkResult().acceptanceEvidence,
         issues: [],
         error: null,

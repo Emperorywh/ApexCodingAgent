@@ -112,6 +112,7 @@ export function assertTaskReviewEpisodeRules(episode: TaskReviewEpisode): void {
         episode.outcome === null &&
         episode.summary === null &&
         episode.tests.length === 0 &&
+        episode.verificationEvidence.length === 0 &&
         episode.acceptanceEvidence.length === 0 &&
         episode.issues.length === 0 &&
         episode.error === null,
@@ -770,10 +771,11 @@ export function assertRunInvariants(
         try {
           validateTaskReviewResultSemantics(
             {
-              decision: 'approved',
-              summary: approval.summary!,
-              tests: approval.tests,
-              acceptanceEvidence: approval.acceptanceEvidence,
+            decision: 'approved',
+            summary: approval.summary!,
+            tests: approval.tests,
+            verificationEvidence: approval.verificationEvidence,
+            acceptanceEvidence: approval.acceptanceEvidence,
               issues: approval.issues,
               replanReason: null,
             },

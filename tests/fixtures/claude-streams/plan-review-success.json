@@ -21,6 +21,15 @@
           {
             "taskId": "TASK-001",
             "decision": "approved",
+            "checks": [
+              { "dimension": "spec_alignment", "status": "satisfied", "evidence": "SPEC alignment verified" },
+              { "dimension": "scope_cohesion", "status": "satisfied", "evidence": "Task scope is cohesive" },
+              { "dimension": "dependency_soundness", "status": "satisfied", "evidence": "Dependencies are sound" },
+              { "dimension": "acceptance_verifiability", "status": "satisfied", "evidence": "Acceptance criteria are verifiable" },
+              { "dimension": "verification_coverage", "status": "satisfied", "evidence": "Verification covers every criterion" },
+              { "dimension": "architecture_fit", "status": "satisfied", "evidence": "Architecture boundaries are preserved" },
+              { "dimension": "budget_feasibility", "status": "satisfied", "evidence": "Budget is feasible for the scope" }
+            ],
             "issues": []
           }
         ],

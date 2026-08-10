@@ -42,6 +42,7 @@ import type { IntermediateCheckpoint } from '../../src/domain/schemas/intermedia
 import type { PlanRevisionTrigger } from '../../src/domain/schemas/plan-revision-snapshot.js';
 import type { PlannedTask } from '../../src/domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../src/domain/schemas/tasks-json.js';
+import { mkPlanReviewChecks, mkReviewIssue } from '../domain/fixtures.js';
 
 const REPOSITORY_ROOT = 'C:/repo/demo';
 const RUN_BRANCH = 'apex/run-20260728-abcdef';
@@ -174,6 +175,8 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('依赖关系必须明确且无环');
     expect(prompt).toContain('无法判断的信息记录为 assumption，不要发明业务需求');
     expect(prompt).toContain('Replan 时返回完整新计划，不要返回局部补丁');
+    // completed Task 由系统投射，模型不再承担逐字复述不可变定义的义务。
+    expect(prompt).toContain('Replan 时不得在草稿中包含 completed Task');
     expect(prompt).toContain('每个保留的中间 Checkpoint 必须由且只能由一个 pending Task 接管');
     /*
      * Planning 必须提前把自动验证与人工界面验收分开，避免后续执行 Agent
@@ -223,10 +226,12 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('PREVIOUS_PLAN_TASKS');
     expect(prompt).toContain('"id": "TASK-001"');
     expect(prompt).toContain('"id": "TASK-002"');
-    // completed Task：不可变定义 + 摘要 + Checkpoint
+    // completed Task：紧凑摘要 + Checkpoint（完整定义只在 PREVIOUS_PLAN_TASKS 出现一次）
     expect(prompt).toContain('COMPLETED_TASKS');
     expect(prompt).toContain(completedTask.resultSummary);
     expect(prompt).toContain(OID_COMPLETED);
+    expect(prompt).toContain('一律不得出现在草稿 tasks 中');
+    expect(prompt).toContain('不得复述进草稿');
     // 当前 pending 与 skipped
     expect(prompt).toContain('PENDING_TASKS');
     expect(prompt).toContain('"title": "实现应用层编排"');
@@ -264,7 +269,21 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
             {
               taskId: 'TASK-002',
               decision: 'changes_required',
-              issues: ['objective 包含两个独立交付物'],
+              checks: mkPlanReviewChecks({
+                scope_cohesion: {
+                  dimension: 'scope_cohesion',
+                  status: 'not_satisfied',
+                  evidence: '目标同时包含两个可独立交付且可独立验收的能力',
+                },
+              }),
+              issues: [
+                mkReviewIssue({
+                  category: 'task_scope',
+                  summary: 'objective 包含两个独立交付物',
+                  evidence: '目标同时要求领域模型和应用编排两个可独立验收的交付物',
+                  requiredChange: '拆分为两个边界清晰且依赖显式的 Task',
+                }),
+              ],
             },
           ],
           issues: [],
@@ -343,6 +362,7 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
         retainedCheckpointDispositions: [],
         tasks: [pendingDefinition],
       },
+      completedTasks: [completedTask],
     });
     expect(prompt).toContain('独立 Plan Reviewer');
     expect(prompt).toContain('不得尝试恢复生成该草稿的 Planning Session');
@@ -351,9 +371,15 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('hardContextLimit 必须为 600000');
     expect(prompt).toContain('本会话严格只读');
     expect(prompt).toContain('PlanReviewResult');
+    // 候选只含非 completed 任务；completed 摘要以只读上下文注入且不参与评估。
+    expect(prompt).toContain('只含保留/修改的 pending Task 与新增 Task');
+    expect(prompt).toContain('COMPLETED_TASKS');
+    expect(prompt).toContain(completedTask.resultSummary);
+    expect(prompt).toContain('不得出现在 taskAssessments 中');
+    expect(prompt).toContain('不得重复或推翻 COMPLETED_TASKS 已经完成的工作');
   });
 
-  it('明确 decision 与 issues 耦合：approved 必须空 issues，非阻塞观察写入 summary', () => {
+  it('明确 decision 与逐维度证据耦合：approved 必须全部满足且空 issues', () => {
     const prompt = buildPlanReviewPrompt({
       repositoryRoot: REPOSITORY_ROOT,
       runBranch: RUN_BRANCH,
@@ -366,8 +392,13 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
         retainedCheckpointDispositions: [],
         tasks: [pendingDefinition],
       },
+      completedTasks: [completedTask],
     });
-    expect(prompt).toContain('approved 的 assessment issues 必须为空数组');
+    expect(prompt).toContain('approved 要求全部 checks 为 satisfied 且 issues 为空');
+    expect(prompt).toContain('changes_required 必须同时包含至少一个 not_satisfied check');
+    expect(prompt).toContain('spec_alignment');
+    expect(prompt).toContain('budget_feasibility');
+    expect(prompt).toContain('ISSUE-001..ISSUE-999');
     expect(prompt).toContain('非阻塞性观察');
     expect(prompt).toContain('写入 summary');
   });
@@ -378,6 +409,7 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('只续接 Reviewer 自己的复核上下文');
     expect(prompt).toContain('不得恢复或引用 Planning Session');
     expect(prompt).toContain('完整 PlanReviewResult');
+    expect(prompt).toContain('changes_required 必须同时包含 not_satisfied check');
     expect(prompt).toContain('approved 的 assessment 不得携带任何 issue');
   });
 
@@ -433,7 +465,9 @@ describe('buildPlanReviewRepairPrompt（计划复核结果修复接力）', () =
     expect(prompt).toContain('本会话严格只读');
     expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
     expect(prompt).toContain('按 PLAN_CANDIDATE.tasks 原顺序且不多不少');
-    expect(prompt).toContain('approved 的 assessment issues 必须为空数组');
+    expect(prompt).toContain('approved 要求所有 checks satisfied 且 issues 为空');
+    expect(prompt).toContain('changes_required 必须同时包含 failed check 和结构化 issue');
+    expect(prompt).toContain('checks 必须按以下固定顺序完整覆盖');
     expect(prompt).toContain('不要返回 Markdown');
   });
 
@@ -519,8 +553,20 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
   it('复核打回反馈注入 REVIEW_FEEDBACK 小节', () => {
     const reviewFeedback: TaskReviewFeedback = {
       summary: '候选实现遗漏了空输入的错误处理',
-      issues: ['src/foo.ts 未处理空数组输入'],
+      issues: [
+        mkReviewIssue({
+          category: 'correctness',
+          summary: 'src/foo.ts 未处理空数组输入',
+          evidence: '空数组会直接进入首元素读取分支',
+          requiredChange: '为空数组增加显式错误分支并补充回归测试',
+          affectedPaths: ['src/foo.ts'],
+          criterionIndexes: [0],
+        }),
+      ],
       failedTests: [{ command: 'npx vitest run tests/foo', result: 'failed' }],
+      blockedVerifications: [
+        { verificationId: 'VERIFY-001', status: 'failed', evidence: '目标测试返回非零退出码' },
+      ],
       unsatisfiedEvidence: [
         { criterionIndex: 0, status: 'not_satisfied', evidence: '仓库中不存在错误处理分支' },
       ],
@@ -531,7 +577,9 @@ describe('buildExecutionPrompt（SPEC §25 + §9.2）', () => {
     expect(prompt).toContain('未满足验收标准 0');
     expect(prompt).toContain('仓库中不存在错误处理分支');
     expect(prompt).toContain('失败测试：npx vitest run tests/foo');
-    expect(prompt).toContain('待修复问题：src/foo.ts 未处理空数组输入');
+    expect(prompt).toContain('未通过验证 VERIFY-001（failed）');
+    expect(prompt).toContain('ISSUE-001 [correctness] src/foo.ts 未处理空数组输入');
+    expect(prompt).toContain('必须达到：为空数组增加显式错误分支并补充回归测试');
   });
 
   it('reviewFeedback 为 null 时不出现 REVIEW_FEEDBACK 小节', () => {
@@ -736,7 +784,8 @@ describe('buildTaskReviewRepairPrompt（复核结果修复接力）', () => {
     expect(prompt).toContain('不得修改、创建、删除、暂存或提交文件');
     expect(prompt).toContain('acceptanceEvidence 必须按 CURRENT_TASK.acceptanceCriteria 的原索引逐条覆盖');
     expect(prompt).toContain('decision 为 approved 时，全部 acceptanceEvidence 必须为 satisfied');
-    expect(prompt).toContain('changes_required 必须至少有一项 not_satisfied、failed test 或非空 issue');
+    expect(prompt).toContain('changes_required 必须至少有一项未满足事实');
+    expect(prompt).toContain('verificationEvidence 必须按 CURRENT_TASK.verificationPlan 原顺序逐项覆盖');
     expect(prompt).toContain('replan_required 必须携带非空 replanReason');
     expect(prompt).toContain('不要返回 Markdown');
   });

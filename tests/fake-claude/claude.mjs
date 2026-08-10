@@ -45,6 +45,20 @@ if (scenarioPath === undefined || scenarioPath === '') {
   process.stderr.write('fake-claude: APEX_FAKE_CLAUDE_SCENARIO is not set\n');
   process.exit(64);
 }
+
+/**
+ * Fake Reviewer 必须与生产契约使用相同的固定审核维度，避免 E2E
+ * 因自动批准器省略证据而绕过真实 Plan Review 门禁。
+ */
+const PLAN_REVIEW_DIMENSIONS = [
+  'spec_alignment',
+  'scope_cohesion',
+  'dependency_soundness',
+  'acceptance_verifiability',
+  'verification_coverage',
+  'architecture_fit',
+  'budget_feasibility',
+];
 const scenarioFile = JSON.parse(readFileSync(scenarioPath, 'utf8'));
 
 const argv = process.argv.slice(2);
@@ -109,6 +123,9 @@ function isTaskReviewInvocation() {
  * 候选引用与其指向的 Planning Session Record 在 Reviewer 会话启动前必须
  * 已经落盘；读取失败说明编排时序或持久化已损坏，直接抛错让本次调用以
  * 非零退出失败，而不是猜测任务集合掩盖真实故障。
+ *
+ * 候选只包含非 completed Task：Session Record 里残留的任何 completed
+ * 条目都会被合并投射忽略，评估集合必须与生产校验的 candidateTasks 一致。
  */
 function automaticPlanReviewScenario() {
   const run = JSON.parse(
@@ -120,7 +137,14 @@ function automaticPlanReviewScenario() {
       'utf8',
     ),
   );
-  const taskIds = record.structuredResult.tasks.map((task) => task.id);
+  const completedIds = new Set(
+    Object.values(run.tasks)
+      .filter((state) => state.status === 'completed')
+      .map((state) => state.taskId),
+  );
+  const taskIds = record.structuredResult.tasks
+    .map((task) => task.id)
+    .filter((taskId) => !completedIds.has(taskId));
   return {
     stdoutLines: [
       { type: 'system', subtype: 'init', session_id: '{sessionId}', model: 'fake-plan-review-model' },
@@ -134,6 +158,11 @@ function automaticPlanReviewScenario() {
           taskAssessments: taskIds.map((taskId) => ({
             taskId,
             decision: 'approved',
+            checks: PLAN_REVIEW_DIMENSIONS.map((dimension) => ({
+              dimension,
+              status: 'satisfied',
+              evidence: `${dimension} 已由 Fake Reviewer 对照候选计划确认`,
+            })),
             issues: [],
           })),
           issues: [],
@@ -146,6 +175,9 @@ function automaticPlanReviewScenario() {
 /** 从当前持久化计划生成与验收标准数量一致的独立批准结果。 */
 function automaticTaskReviewScenario() {
   let criterionCount = 1;
+  let verificationPlan = [
+    { id: 'VERIFY-001', kind: 'command', command: 'npm test' },
+  ];
   try {
     const run = JSON.parse(
       readFileSync(`${process.cwd()}/.apex-coding-agent/run.json`, 'utf8'),
@@ -155,6 +187,7 @@ function automaticTaskReviewScenario() {
     );
     const task = tasks.tasks.find((item) => item.id === run.currentTaskId);
     criterionCount = task?.acceptanceCriteria?.length ?? 1;
+    verificationPlan = task?.verificationPlan ?? verificationPlan;
   } catch {
     criterionCount = 1;
   }
@@ -168,7 +201,17 @@ function automaticTaskReviewScenario() {
         structured_output: {
           decision: 'approved',
           summary: '独立复核通过',
-          tests: [{ command: 'npm test', result: 'passed' }],
+          tests: verificationPlan
+            .filter((verification) => verification.kind === 'command')
+            .map((verification) => ({ command: verification.command, result: 'passed' })),
+          verificationEvidence: verificationPlan.map((verification) => ({
+            verificationId: verification.id,
+            status: verification.kind === 'manual' ? 'not_run' : 'passed',
+            evidence:
+              verification.kind === 'manual'
+                ? '该步骤按计划保留给用户手动验证'
+                : `${verification.id} 已由 Fake Reviewer 独立执行通过`,
+          })),
           acceptanceEvidence: Array.from({ length: criterionCount }, (_, index) => ({
             criterionIndex: index,
             status: 'satisfied',

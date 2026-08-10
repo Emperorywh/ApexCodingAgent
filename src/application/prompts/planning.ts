@@ -14,7 +14,7 @@ import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.j
 import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 
-/** completed Task 的不可变摘要：完整定义 + 结果摘要 + 最终 Checkpoint（SPEC §7.1）。 */
+/** completed Task 的不可变摘要：权威定义 + 结果摘要 + 最终 Checkpoint（SPEC §7.1）。 */
 export interface CompletedTaskSummary {
   readonly definition: PlannedTask;
   readonly resultSummary: string;
@@ -87,10 +87,10 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - 依赖关系必须明确且无环。
 - 无法判断的信息记录为 assumption，不要发明业务需求。
 - 调查任务必须产生具体结论或设计决策。
-- Replan 时返回完整新计划，不要返回局部补丁。
+- Replan 时返回完整新计划，不要返回局部补丁。完整新计划只包含全部保留或修改的 pending Task 与新增 Task。
 - Replan 原因暴露环境能力或外部约束（如 Docker 不可用、网络受限）时，必须审查所有 pending Task 的 acceptanceCriteria 与 verificationPlan 中依赖同一能力的条目，在本次 Revision 中一并调整（如拆分为本地可验证部分与独立 CI 门禁 Task），不得只修复触发 Replan 的 Task。
-- Replan 时原样保留所有 completed Task 的 ID 和完整定义。
-- Replan 时可以修改 pending Task。
+- Replan 时不得在草稿中包含 completed Task：系统合并时会按权威定义把它们自动并入新计划，草稿中携带的 completed 条目会被直接忽略。新 Task 的 dependsOn 可以引用 completed Task 的 ID。
+- Replan 时可以修改 pending Task；保留不变的 pending Task 必须原样出现在草稿中。
 - 省略旧 pending Task 表示将其标记为 skipped。
 - 新增 Task 使用从未出现过的 ID。
 - 当前计划中的 pending Task 不得超过 50 个。
@@ -105,7 +105,7 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - command 验证必须填写真实存在或由仓库事实支持的命令与有界 timeoutSeconds；其他验证的 command 和 timeoutSeconds 必须为 null。
 - manual 验证必须写出用户可执行的具体过程与期望证据；仓库代理说明禁止自动界面测试时，不得把开发服务器命令列为 Agent 必跑项。
 - 需要本地服务的自动验证必须规划为单一有界入口，由同一入口负责启动、就绪检查和结束，不能依赖长期后台服务。
-- 新增或修改的 Task：budget.hardContextLimit 固定为 600000，targetContextBudget（单位为 token）不得超过 480000，maxAgentTurns 必须在 8..128 内并与范围相称；原样保留的 completed/pending Task 必须保持其既有 budget 数值不变（旧 Revision 的 hardContextLimit 可能是 300000），不得改写为新值。
+- 新增或修改的 Task：budget.hardContextLimit 固定为 600000，targetContextBudget（单位为 token）不得超过 480000，maxAgentTurns 必须在 8..128 内并与范围相称；原样保留的 pending Task 必须保持其既有 budget 数值不变（旧 Revision 的 hardContextLimit 可能是 300000），不得改写为新值。
 - 预算评估必须包含理解仓库、实现、验证与一次返工余量；不能靠填满硬上限容纳本应拆分的多个目标。
 - likelyPaths 只是提示，不是强制文件范围；每项必须是仓库根目录下的 Git 相对路径，使用正斜杠，文件和目录均不得以斜杠结尾，不得包含 . 或 .. 路径段。
 
@@ -137,13 +137,16 @@ function toJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+/**
+ * completed Task 只渲染紧凑摘要：完整定义已经出现在 PREVIOUS_PLAN_TASKS
+ * 中，重复全文只会放大提示词，并诱使模型把不可变条目复述进草稿。
+ */
 function formatCompletedTasks(tasks: readonly CompletedTaskSummary[]): string {
   if (tasks.length === 0) return '（无）';
   return tasks
     .map(
       (task) =>
-        `- ${task.definition.id}:\n` +
-        `  definition: ${toJson(task.definition)}\n` +
+        `- ${task.definition.id}: ${task.definition.title}\n` +
         `  resultSummary: ${task.resultSummary}\n` +
         `  finalCheckpoint: ${task.finalCheckpoint}`,
     )
@@ -184,7 +187,12 @@ function buildContextSection(input: PlanningPromptInput): string {
 
 /** Replan 追加小节（SPEC §7.1 生成新 Revision 时必须读取的全部上下文）。 */
 function buildReplanSection(input: PlanningPromptInput): string {
-  const parts: string[] = ['REPLAN 上下文（本次为重新规划，请生成完整新 Revision）：', ''];
+  const parts: string[] = [
+    'REPLAN 上下文（本次为重新规划，请生成完整新 Revision）：',
+    '',
+    '本次草稿只包含保留或修改的 pending Task 与新增 Task；completed Task 由系统按权威定义自动并入，一律不得出现在草稿 tasks 中。',
+    '',
+  ];
 
   if (input.replanTrigger !== null) {
     parts.push(
@@ -200,7 +208,7 @@ function buildReplanSection(input: PlanningPromptInput): string {
   }
 
   parts.push(
-    'COMPLETED_TASKS（不可变定义、结果摘要与 Checkpoint）：',
+    'COMPLETED_TASKS（已完成 Task 的结果摘要，仅供上下文，不得复述进草稿）：',
     formatCompletedTasks(input.completedTasks),
     '',
     'PENDING_TASKS（当前 pending Task，JSON）：',

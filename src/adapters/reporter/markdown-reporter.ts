@@ -2,7 +2,7 @@
  * Markdown Reporter adapter (SPEC §14.4 Final Report, §5.5). Renders
  * `report.md` strictly from the committed facts handed in through
  * {@link GenerateReportInput} — run.json, tasks.json, Plan Revision
- * Snapshots and read-only Git facts. It never inspects Claude free-text
+ * Snapshots, immutable Session Records and read-only Git facts. It never inspects Claude free-text
  * logs and never infers state; it does not claim independent security or
  * process-recovery verification without evidence (SPEC §14.4).
  *
@@ -15,10 +15,12 @@ import type { FileSystemPort } from '../../application/ports/file-system.js';
 import type { RedactionPort } from '../../application/ports/redaction.js';
 import type {
   GenerateReportInput,
+  PlanReviewReportEntry,
   ReporterPort,
 } from '../../application/ports/ReporterPort.js';
 import { ApexError } from '../../domain/errors.js';
 import type { ErrorRecord } from '../../domain/schemas/error-record.js';
+import type { ReviewIssue } from '../../domain/schemas/review-evidence.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { TaskRuntimeState } from '../../domain/schemas/task-runtime-state.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
@@ -85,6 +87,112 @@ function renderErrorSummary(record: ErrorRecord): string {
   return lines.join('\n');
 }
 
+/**
+ * 统一渲染 Plan/Task Review 共用的结构化问题。
+ * 缩进由调用方决定，字段顺序固定为结论、证据、修复目标、影响路径与
+ * 关联验收标准，避免两个报告分支再次复制并产生展示漂移。
+ */
+function renderReviewIssue(issue: ReviewIssue, indentation: string): string[] {
+  const lines = [
+    `${indentation}- 发现问题 ${issue.id}（${issue.category}）：${inline(issue.summary)}`,
+    `${indentation}  - 证据：${inline(issue.evidence)}`,
+    `${indentation}  - 必须达到：${inline(issue.requiredChange)}`,
+  ];
+  if (issue.affectedPaths.length > 0) {
+    lines.push(`${indentation}  - 影响路径：${issue.affectedPaths.map(inline).join('、')}`);
+  }
+  if (issue.criterionIndexes.length > 0) {
+    lines.push(
+      `${indentation}  - 关联验收标准：${issue.criterionIndexes
+        .map((index) => index + 1)
+        .join('、')}`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * 渲染单个 Task 的全部独立复核 Episode。
+ * 该函数不判断 Task 最终状态，因此 completed、skipped、failed 与未完成
+ * Run 共用同一审计表达，不会因计划修订改变最终状态而丢失历史。
+ */
+function renderTaskReviewEpisodes(task: TaskRuntimeState): string[] {
+  if (task.taskReviewEpisodes.length === 0) {
+    return ['- Task Review Episode：无记录。'];
+  }
+  const out: string[] = [];
+  task.taskReviewEpisodes.forEach((episode, index) => {
+    out.push(`- Task Review Episode ${index + 1}：`);
+    out.push(
+      `  - Reviewer Session：\`${episode.sessionId}\`；` +
+        `Execution Session：\`${episode.executionSessionId}\`；Plan Revision：${episode.planRevision}`,
+    );
+    out.push(`  - 候选 Checkpoint：\`${episode.candidateCheckpoint}\``);
+    out.push(`  - 时间：${episode.startedAt} → ${episode.endedAt ?? '未结束'}`);
+    out.push(`  - outcome：${episode.outcome ?? '未记录'}`);
+    if (episode.summary !== null) out.push(`  - 摘要：${inline(episode.summary)}`);
+    for (const test of episode.tests) {
+      out.push(`  - 独立测试：\`${inline(test.command)}\` → ${test.result}`);
+    }
+    for (const verification of episode.verificationEvidence) {
+      out.push(
+        `  - 计划验证：\`${verification.verificationId}\` → ${verification.status} — ` +
+          inline(verification.evidence),
+      );
+    }
+    for (const item of episode.acceptanceEvidence) {
+      out.push(
+        `  - 独立验收证据：验收标准 ${item.criterionIndex + 1}：` +
+          `${item.status} — ${inline(item.evidence)}`,
+      );
+    }
+    for (const issue of episode.issues) {
+      out.push(...renderReviewIssue(issue, '  '));
+    }
+  });
+  return out;
+}
+
+/**
+ * 渲染全部 Plan Review Session 尝试。
+ * completed 表示 Session 成功产出结构化结果，不等同于 Plan 已提交；报告
+ * 会保留 decision、固定维度证据与结构化问题，failed 则保留稳定错误事实。
+ */
+function renderPlanReviewHistory(history: readonly PlanReviewReportEntry[]): string[] {
+  const out = ['', '## Plan Review 审核历史', ''];
+  if (history.length === 0) {
+    out.push('- 无 Plan Review Session 记录。');
+    return out;
+  }
+  for (const entry of history) {
+    out.push(`### Session \`${entry.sessionId}\`（Revision ${entry.planRevision}）`, '');
+    out.push(`- 时间：${entry.startedAt} → ${entry.endedAt}`);
+    out.push(`- Session 状态：${entry.status}`);
+    if (entry.status === 'failed') {
+      out.push(renderErrorSummary(entry.error), '');
+      continue;
+    }
+    out.push(`- decision：${entry.result.decision}`);
+    out.push(`- 摘要：${inline(entry.result.summary)}`);
+    for (const assessment of entry.result.taskAssessments) {
+      out.push(`- Task \`${assessment.taskId}\`：${assessment.decision}`);
+      for (const check of assessment.checks) {
+        out.push(
+          `  - ${check.dimension}：${check.status} — ${inline(check.evidence)}`,
+        );
+      }
+      for (const issue of assessment.issues) {
+        out.push(...renderReviewIssue(issue, '  '));
+      }
+    }
+    for (const issue of entry.result.issues) {
+      out.push(...renderReviewIssue(issue, ''));
+    }
+    out.push('');
+  }
+  return out;
+}
+
 /** 已提交事实中每个 completed Task 最终独立批准 Episode 的验收证据。 */
 function renderAcceptanceEvidence(task: TaskRuntimeState): string[] {
   const evidence = task.taskReviewEpisodes.at(-1)?.acceptanceEvidence ?? [];
@@ -102,12 +210,18 @@ function renderCompletedReport(input: GenerateReportInput): string {
   const taskStates = orderedTaskStates(run);
   const completed = taskStates.filter((task) => task.status === 'completed');
   const skipped = taskStates.filter((task) => task.status === 'skipped');
+  const detailedTasks = taskStates.filter(
+    (task) =>
+      task.status === 'completed' ||
+      task.executionEpisodes.length > 0 ||
+      task.taskReviewEpisodes.length > 0,
+  );
   const finalReview = run.finalReviewEpisodes[run.finalReviewEpisodes.length - 1] ?? null;
 
   const out: string[] = [
     '# Run 完成报告',
     '',
-    '> 本报告仅依据已提交事实（run.json、tasks.json、Plan Revision Snapshot 与 Git 只读状态）生成；',
+    '> 本报告仅依据已提交事实（run.json、tasks.json、Plan Revision Snapshot、Session Record 与 Git 只读状态）生成；',
     '> Reporter 不从 Claude 自由文本推断状态，也未执行独立的安全验证或进程恢复验证。',
     '',
     '## 基本信息',
@@ -137,6 +251,8 @@ function renderCompletedReport(input: GenerateReportInput): string {
     );
   }
 
+  out.push(...renderPlanReviewHistory(input.planReviewHistory));
+
   out.push('', '## Task 清单', '', '### 已完成（completed）', '');
   if (completed.length === 0) out.push('- 无。');
   for (const task of completed) out.push(`- ${renderTaskRef(tasks, task.taskId)}`);
@@ -147,11 +263,13 @@ function renderCompletedReport(input: GenerateReportInput): string {
   }
 
   out.push('', '## Task 执行明细', '');
-  if (completed.length === 0) out.push('- 无 completed Task。', '');
-  for (const task of completed) {
-    out.push(`### ${renderTaskRef(tasks, task.taskId)}（completed）`, '');
-    out.push(`- 最终 Checkpoint：\`${task.finalCheckpoint ?? 'null'}\``);
-    out.push(...renderAcceptanceEvidence(task));
+  if (detailedTasks.length === 0) out.push('- 无 Task 执行或复核记录。', '');
+  for (const task of detailedTasks) {
+    out.push(`### ${renderTaskRef(tasks, task.taskId)}（${task.status}）`, '');
+    if (task.status === 'completed') {
+      out.push(`- 最终 Checkpoint：\`${task.finalCheckpoint ?? 'null'}\``);
+      out.push(...renderAcceptanceEvidence(task));
+    }
     if (task.executionEpisodes.length === 0) {
       out.push('- Execution Episode：无记录。');
     }
@@ -175,33 +293,10 @@ function renderCompletedReport(input: GenerateReportInput): string {
       }
     });
     /**
-     * Task Review 与 Execution 分开展示，报告由此保留“谁产生候选、谁独立批准”
-     * 的可审计关系；不能只展示最终 completed 状态而隐藏复核门禁。
+     * Task Review 渲染不再绑定 completed：被 Replan 省略为 skipped 的
+     * Task 仍保留“谁产生候选、谁打回、要求如何修复”的完整审计链。
      */
-    if (task.taskReviewEpisodes.length === 0) {
-      out.push('- Task Review Episode：无记录。');
-    }
-    task.taskReviewEpisodes.forEach((episode, index) => {
-      out.push(`- Task Review Episode ${index + 1}：`);
-      out.push(
-        `  - Reviewer Session：\`${episode.sessionId}\`；` +
-          `Execution Session：\`${episode.executionSessionId}\`；Plan Revision：${episode.planRevision}`,
-      );
-      out.push(`  - 候选 Checkpoint：\`${episode.candidateCheckpoint}\``);
-      out.push(`  - 时间：${episode.startedAt} → ${episode.endedAt ?? '未结束'}`);
-      out.push(`  - outcome：${episode.outcome ?? '未记录'}`);
-      if (episode.summary !== null) out.push(`  - 摘要：${inline(episode.summary)}`);
-      for (const test of episode.tests) {
-        out.push(`  - 独立测试：\`${inline(test.command)}\` → ${test.result}`);
-      }
-      for (const item of episode.acceptanceEvidence) {
-        out.push(
-          `  - 独立验收证据：验收标准 ${item.criterionIndex + 1}：` +
-            `${item.status} — ${inline(item.evidence)}`,
-        );
-      }
-      for (const issue of episode.issues) out.push(`  - 发现问题：${inline(issue)}`);
-    });
+    out.push(...renderTaskReviewEpisodes(task));
     out.push('');
   }
 
@@ -316,7 +411,7 @@ function renderUnfinishedReport(input: GenerateReportInput): string {
   const out: string[] = [
     '# Run 报告（未完成）',
     '',
-    '> 本报告仅依据已提交事实（run.json、tasks.json、Plan Revision Snapshot 与 Git 只读状态）生成；',
+    '> 本报告仅依据已提交事实（run.json、tasks.json、Plan Revision Snapshot、Session Record 与 Git 只读状态）生成；',
     '> Reporter 不从 Claude 自由文本推断状态，也未执行独立的安全验证或进程恢复验证。',
     '',
     `**本 Run 未完成。**状态：${run.status}；终态时间：${run.terminalAt ?? '未记录'}。`,
@@ -346,6 +441,8 @@ function renderUnfinishedReport(input: GenerateReportInput): string {
     }
   }
 
+  out.push(...renderPlanReviewHistory(input.planReviewHistory));
+
   out.push('', '## Task 清单', '', '### 已完成', '');
   if (completed.length === 0) out.push('- 无。');
   for (const task of completed) out.push(`- ${renderTaskRef(tasks, task.taskId)}`);
@@ -356,6 +453,20 @@ function renderUnfinishedReport(input: GenerateReportInput): string {
   if (notExecuted.length === 0) out.push('- 无。');
   for (const task of notExecuted) {
     out.push(`- ${renderTaskRef(tasks, task.taskId)}（${task.status}）`);
+  }
+
+  /**
+   * 未完成 Run 同样可能已经产生可复核的 Task Review 事实。报告必须展示
+   * 已落盘 Episode，而不能因为最终状态不是 completed 就只留下错误摘要。
+   */
+  const reviewedTasks = taskStates.filter((task) => task.taskReviewEpisodes.length > 0);
+  out.push('', '## Task Review 审核历史', '');
+  if (reviewedTasks.length === 0) {
+    out.push('- 无 Task Review Episode 记录。');
+  }
+  for (const task of reviewedTasks) {
+    out.push(`### ${renderTaskRef(tasks, task.taskId)}（${task.status}）`, '');
+    out.push(...renderTaskReviewEpisodes(task), '');
   }
 
   out.push(

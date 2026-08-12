@@ -14,6 +14,7 @@ import type {
   TestReport,
 } from '../../domain/schemas/task-execution-result.js';
 import type { SkippedTaskSummary } from './planning.js';
+import { withStructuredOutputInstruction } from './structured-output.js';
 import { VERIFICATION_POLICY } from './verification-policy.js';
 
 /**
@@ -153,7 +154,9 @@ function buildContextSection(input: FinalReviewPromptInput): string {
 
 /** 构建 Final Review Session 的完整提示词。 */
 export function buildFinalReviewPrompt(input: FinalReviewPromptInput): string {
-  return [FINAL_REVIEW_BASELINE, buildContextSection(input)].join('\n\n');
+  return withStructuredOutputInstruction(
+    [FINAL_REVIEW_BASELINE, buildContextSection(input)].join('\n\n'),
+  );
 }
 
 /**
@@ -173,11 +176,11 @@ export function buildFinalReviewResumePrompt(input: { readonly cause: ErrorCode 
         : input.cause === 'GIT_PUSH_FAILED'
           ? '此前的 Final Review 会话已完成复核并形成本地 Checkpoint，仅推送到远程失败；本地提交完整保留在运行分支上，本会话续接原复核上下文，核对 Git 状态后基于已有复核事实重新返回结论。'
           : `此前的 Final Review 会话因可续接错误 ${input.cause} 终止，本会话从原对话断点继续。`;
-  return `${causeSentence}
+  return withStructuredOutputInstruction(`${causeSentence}
 
 仓库可能保留此前会话的复核修改：先核对当前文件与 Git 状态，在此基础上继续完成整体复核，不要推倒重来。原安全边界、验收证据核对、测试要求、replan_required 规则和 FinalReviewResult 结构化结果契约全部继续有效。
 
 ${VERIFICATION_POLICY}
 
-返回 FinalReviewResult。不要返回 Markdown，不要在结构化结果之外输出解释。`;
+返回 FinalReviewResult。不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }

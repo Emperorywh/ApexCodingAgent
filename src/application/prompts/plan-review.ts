@@ -10,6 +10,7 @@ import { isResultContractErrorCode, type ErrorCode } from '../../domain/errors.j
 import { PLAN_REVIEW_DIMENSIONS } from '../../domain/schemas/review-evidence.js';
 import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { CompletedTaskSummary } from './planning.js';
+import { withStructuredOutputInstruction } from './structured-output.js';
 
 export interface PlanReviewPromptInput {
   readonly repositoryRoot: string;
@@ -43,7 +44,7 @@ function formatReviewDimensions(): string {
 
 /** 构造全新、严格只读的计划复核会话输入。 */
 export function buildPlanReviewPrompt(input: PlanReviewPromptInput): string {
-  return `你是 ApexCodingAgent 的独立 Plan Reviewer。你没有、也不得尝试恢复生成该草稿的 Planning Session。你的职责是基于仓库与 SPEC 事实，判断这份计划中的每个 Task 是否足够聚焦、可独立验证，并能在声明的注意力预算内完成。
+  return withStructuredOutputInstruction(`你是 ApexCodingAgent 的独立 Plan Reviewer。你没有、也不得尝试恢复生成该草稿的 Planning Session。你的职责是基于仓库与 SPEC 事实，判断这份计划中的每个 Task 是否足够聚焦、可独立验证，并能在声明的注意力预算内完成。
 
 仓库根目录：${input.repositoryRoot}
 Run Branch：${input.runBranch}
@@ -86,7 +87,7 @@ ${formatReviewDimensions()}
 - issues: 计划级 ReviewIssue[]（整体 approved 时必须为 []，criterionIndexes 必须为空）
 - ReviewIssue: { id, category, summary, evidence, requiredChange, affectedPaths, criterionIndexes }
 
-不要返回 Markdown，不要在结构化结果之外输出解释。`;
+不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
 
 /**
@@ -104,11 +105,11 @@ export function buildPlanReviewResumePrompt(input: { readonly cause: ErrorCode }
       : isResultContractErrorCode(input.cause)
         ? '此前的独立 Plan Review Session 进程正常结束，但返回的 PlanReviewResult 未通过契约校验；本会话续接该 Reviewer 的复核上下文，基于已完成的复核事实重新返回合法结果。'
         : `此前的独立 Plan Review Session 因可续接错误 ${input.cause} 终止，本会话只续接 Reviewer 自己的复核上下文。`;
-  return `${causeSentence}
+  return withStructuredOutputInstruction(`${causeSentence}
 
 继续基于仓库、SPEC 与原 PLAN_CANDIDATE 检查 Task 单一目标、nonGoals、结构化验证覆盖和预算可完成性。每个 Task 必须按固定顺序完整返回七个 checks；Task 级 changes_required 必须同时包含 not_satisfied check 与带 evidence、requiredChange 的结构化 ReviewIssue。不得恢复或引用 Planning Session，不得修改仓库或移动 HEAD。
 
-完成后返回完整 PlanReviewResult。只有每个 Task 都 approved 且计划级 issues 为空时才能批准；approved 的 assessment 不得携带任何 issue，非阻塞性观察写入 summary。不要返回 Markdown。`;
+完成后返回完整 PlanReviewResult。只有每个 Task 都 approved 且计划级 issues 为空时才能批准；approved 的 assessment 不得携带任何 issue，非阻塞性观察写入 summary。不要返回 Markdown。`);
 }
 
 export interface PlanReviewRepairPromptInput {
@@ -133,7 +134,7 @@ export interface PlanReviewRepairPromptInput {
  * 打回，严格只读边界不变。
  */
 export function buildPlanReviewRepairPrompt(input: PlanReviewRepairPromptInput): string {
-  return `你是 ApexCodingAgent 的独立 Plan Reviewer。上一趟计划复核会话已结束，但它返回的 PlanReviewResult 未通过契约校验，计划候选仍未被批准或打回。
+  return withStructuredOutputInstruction(`你是 ApexCodingAgent 的独立 Plan Reviewer。上一趟计划复核会话已结束，但它返回的 PlanReviewResult 未通过契约校验，计划候选仍未被批准或打回。
 
 仓库根目录：${input.repositoryRoot}
 Run Branch：${input.runBranch}
@@ -158,5 +159,5 @@ ${toJson(input.draft)}
 5. 每条 issue 必须包含全局唯一 ISSUE-NNN、category、summary、evidence、requiredChange、affectedPaths 和 criterionIndexes；计划级 issue 的 criterionIndexes 必须为空。非阻塞性观察写入 summary。
 6. 只修正导致校验失败的字段；复核结论本身仍须基于仓库事实。不要为了让结果合法而删除真实存在的阻塞性问题——若某条 issue 确实要求修改计划，应将该 Task（或整体 decision）改为 changes_required 并保留该 issue。
 
-不要返回 Markdown，不要在结构化结果之外输出解释。`;
+不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }

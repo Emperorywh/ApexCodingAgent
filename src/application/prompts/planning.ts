@@ -13,6 +13,7 @@ import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-sna
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
+import { withStructuredOutputInstruction } from './structured-output.js';
 
 /** completed Task 的不可变摘要：权威定义 + 结果摘要 + 最终 Checkpoint（SPEC §7.1）。 */
 export interface CompletedTaskSummary {
@@ -255,7 +256,7 @@ export function buildPlanningPrompt(input: PlanningPromptInput): string {
   if (input.planReviewFeedback !== null) {
     sections.push(buildPlanReviewFeedbackSection(input));
   }
-  return sections.join('\n\n');
+  return withStructuredOutputInstruction(sections.join('\n\n'));
 }
 
 /**
@@ -265,11 +266,11 @@ export function buildPlanningPrompt(input: PlanningPromptInput): string {
  * 从被中断位置继续并重新核对当前只读事实，避免重复注入整份上下文。
  */
 export function buildPlanningResumePrompt(): string {
-  return `此前的 Planning 会话被前台中断，本会话从原对话断点继续。
+  return withStructuredOutputInstruction(`此前的 Planning 会话被前台中断，本会话从原对话断点继续。
 
 请先核对当前 SPEC 与仓库只读事实是否仍和原规划上下文一致，然后继续完成尚未完成的规划工作。Planning 的只读边界、Task 拆分规则、依赖约束、Checkpoint 接管规则和 TaskPlanDraft 结构化结果契约全部继续有效。
 
-返回完整 TaskPlanDraft。不要返回 Markdown，不要在结构化结果之外输出解释。`;
+返回完整 TaskPlanDraft。不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
 
 /**
@@ -279,14 +280,14 @@ export function buildPlanningResumePrompt(): string {
  * 修正会话只携带精确的校验结论，模型据此做定向修正，而不是盲目重规划。
  */
 export function buildPlanningCorrectionPrompt(error: string): string {
-  return `你上一轮返回的 TaskPlanDraft 未通过系统的确定性校验，未被提交。
+  return withStructuredOutputInstruction(`你上一轮返回的 TaskPlanDraft 未通过系统的确定性校验，未被提交。
 
 VALIDATION_ERROR（确定性校验结论）：
 ${error}
 
 请针对该校验结论修正计划，并返回一份完整的修正后 TaskPlanDraft：不是局部补丁，也不要只解释原因。Planning 的只读边界、Task 拆分规则、依赖约束、验收条件必须由 verificationPlan 逐条覆盖等结构化结果契约全部继续有效。
 
-不要返回 Markdown，不要在结构化结果之外输出解释。`;
+不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
 
 /**
@@ -323,15 +324,17 @@ export function buildPlanningCorrectionSessionPrompt(
   rejectedDraft: TaskPlanDraft,
   error: string,
 ): string {
-  return [
-    '你是 ApexCodingAgent 的计划草稿修正器。当前会话只修正一份已经完成仓库分析、但未通过确定性校验的 TaskPlanDraft。',
-    '',
-    '修正规则：',
-    '1. 逐条处理 VALIDATION_ERROR 中列出的全部问题；一条结论可能同时列出多个独立覆盖缺口。',
-    '2. 除修复这些错误必需的最小字段外，保持 REJECTED_DRAFT 的任务边界、依赖、预算、Checkpoint disposition 与其他字段不变。',
-    '3. 不重新探索仓库，不执行工具，不重新制定方案；被拒草稿是本次修正的权威输入。',
-    '4. 返回一份完整的新 TaskPlanDraft，不是局部补丁；不要返回 Markdown，也不要在结构化结果之外输出解释。',
-    '',
-    buildPlanningCorrectionAppendix(rejectedDraft, error),
-  ].join('\n');
+  return withStructuredOutputInstruction(
+    [
+      '你是 ApexCodingAgent 的计划草稿修正器。当前会话只修正一份已经完成仓库分析、但未通过确定性校验的 TaskPlanDraft。',
+      '',
+      '修正规则：',
+      '1. 逐条处理 VALIDATION_ERROR 中列出的全部问题；一条结论可能同时列出多个独立覆盖缺口。',
+      '2. 除修复这些错误必需的最小字段外，保持 REJECTED_DRAFT 的任务边界、依赖、预算、Checkpoint disposition 与其他字段不变。',
+      '3. 不重新探索仓库，不执行工具，不重新制定方案；被拒草稿是本次修正的权威输入。',
+      '4. 返回一份完整的新 TaskPlanDraft，不是局部补丁；不要返回 Markdown，也不要在结构化结果之外输出解释。',
+      '',
+      buildPlanningCorrectionAppendix(rejectedDraft, error),
+    ].join('\n'),
+  );
 }

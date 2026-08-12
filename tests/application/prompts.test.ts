@@ -39,6 +39,7 @@ import {
   buildPlanReviewResumePrompt,
   type PlanReviewRepairPromptInput,
 } from '../../src/application/prompts/plan-review.js';
+import { STRUCTURED_OUTPUT_INSTRUCTION } from '../../src/application/prompts/structured-output.js';
 import type { IntermediateCheckpoint } from '../../src/domain/schemas/intermediate-checkpoint.js';
 import type { PlanRevisionTrigger } from '../../src/domain/schemas/plan-revision-snapshot.js';
 import type { PlannedTask } from '../../src/domain/schemas/task-plan-draft.js';
@@ -932,5 +933,141 @@ describe('buildFinalReviewResumePrompt（Final Review 断点续接）', () => {
     expect(prompt).toContain('本地提交完整保留');
     expect(prompt).not.toContain('被前台中断');
     expect(prompt).toContain('FinalReviewResult');
+  });
+});
+
+describe('统一结构化结果提交协议', () => {
+  it('覆盖全部完整会话 Prompt，并且协议固定处于末尾且只出现一次', () => {
+    /**
+     * 真实故障中 Execution Agent 把结果 JSON 写成普通文本，Claude Code
+     * 随后在 StructuredOutput 强制提交阶段收到 Provider 400。这里枚举
+     * 首次、恢复和结果修复入口，防止任一会话重新出现提交语义歧义。
+     */
+    const draft = {
+      summary: '候选计划',
+      assumptions: [],
+      retainedCheckpointDispositions: [],
+      tasks: [pendingDefinition],
+    };
+    const executionInput: ExecutionPromptInput = {
+      repositoryRoot: REPOSITORY_ROOT,
+      runBranch: RUN_BRANCH,
+      specPath: SPEC_PATH,
+      specSha256: SPEC_SHA256,
+      planRevision: 1,
+      task: pendingDefinition,
+      completedTasks: [completedTask],
+      adoptedCheckpoints: [],
+      reviewFeedback: null,
+    };
+    const taskReviewInput: TaskReviewPromptInput = {
+      repositoryRoot: REPOSITORY_ROOT,
+      runBranch: RUN_BRANCH,
+      specPath: SPEC_PATH,
+      specSha256: SPEC_SHA256,
+      planRevision: 1,
+      task: pendingDefinition,
+      candidateCheckpoint: OID_COMPLETED,
+    };
+    const prompts: readonly { readonly name: string; readonly value: string }[] = [
+      { name: 'planning', value: buildPlanningPrompt(planningBase) },
+      { name: 'planning-resume', value: buildPlanningResumePrompt() },
+      {
+        name: 'planning-correction',
+        value: buildPlanningCorrectionPrompt('verification coverage invalid'),
+      },
+      {
+        name: 'planning-correction-session',
+        value: buildPlanningCorrectionSessionPrompt(draft, 'verification coverage invalid'),
+      },
+      {
+        name: 'plan-review',
+        value: buildPlanReviewPrompt({
+          repositoryRoot: REPOSITORY_ROOT,
+          runBranch: RUN_BRANCH,
+          specPath: SPEC_PATH,
+          specSha256: SPEC_SHA256,
+          planRevision: 1,
+          draft,
+          completedTasks: [],
+        }),
+      },
+      {
+        name: 'plan-review-resume',
+        value: buildPlanReviewResumePrompt({ cause: 'CLAUDE_EXIT_NONZERO' }),
+      },
+      {
+        name: 'plan-review-repair',
+        value: buildPlanReviewRepairPrompt({
+          repositoryRoot: REPOSITORY_ROOT,
+          runBranch: RUN_BRANCH,
+          specPath: SPEC_PATH,
+          specSha256: SPEC_SHA256,
+          planRevision: 1,
+          draft,
+          validationError: 'result invalid',
+          invalidResultJson: null,
+        }),
+      },
+      { name: 'execution', value: buildExecutionPrompt(executionInput) },
+      {
+        name: 'execution-resume',
+        value: buildExecutionResumePrompt({
+          task: pendingDefinition,
+          cause: 'CLAUDE_EXIT_NONZERO',
+          origin: 'user_resume',
+        }),
+      },
+      {
+        name: 'execution-repair',
+        value: buildExecutionResultRepairPrompt({
+          repositoryRoot: REPOSITORY_ROOT,
+          runBranch: RUN_BRANCH,
+          task: pendingDefinition,
+          validationError: 'result invalid',
+          invalidResultJson: null,
+        }),
+      },
+      { name: 'task-review', value: buildTaskReviewPrompt(taskReviewInput) },
+      {
+        name: 'task-review-resume',
+        value: buildTaskReviewResumePrompt({ cause: 'CLAUDE_EXIT_NONZERO' }),
+      },
+      {
+        name: 'task-review-repair',
+        value: buildTaskReviewRepairPrompt({
+          repositoryRoot: REPOSITORY_ROOT,
+          runBranch: RUN_BRANCH,
+          task: pendingDefinition,
+          candidateCheckpoint: OID_COMPLETED,
+          validationError: 'result invalid',
+          invalidResultJson: null,
+        }),
+      },
+      {
+        name: 'final-review',
+        value: buildFinalReviewPrompt({
+          repositoryRoot: REPOSITORY_ROOT,
+          runBranch: RUN_BRANCH,
+          specPath: SPEC_PATH,
+          specSha256: SPEC_SHA256,
+          planRevision: 1,
+          completedTasks: [],
+          skippedTasks: [],
+          intermediateCheckpoints: [],
+        }),
+      },
+      {
+        name: 'final-review-resume',
+        value: buildFinalReviewResumePrompt({ cause: 'CLAUDE_EXIT_NONZERO' }),
+      },
+    ];
+
+    expect(STRUCTURED_OUTPUT_INSTRUCTION).toContain('select:StructuredOutput');
+    expect(STRUCTURED_OUTPUT_INSTRUCTION).toContain('不得把最终 JSON 作为普通文本');
+    for (const prompt of prompts) {
+      expect(prompt.value.endsWith(STRUCTURED_OUTPUT_INSTRUCTION), prompt.name).toBe(true);
+      expect(prompt.value.split(STRUCTURED_OUTPUT_INSTRUCTION), prompt.name).toHaveLength(2);
+    }
   });
 });

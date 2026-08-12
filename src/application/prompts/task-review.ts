@@ -6,6 +6,7 @@
  */
 import { isResultContractErrorCode, type ErrorCode } from '../../domain/errors.js';
 import type { PlannedTask } from '../../domain/schemas/task-plan-draft.js';
+import { withStructuredOutputInstruction } from './structured-output.js';
 import { VERIFICATION_POLICY } from './verification-policy.js';
 
 export interface TaskReviewPromptInput {
@@ -29,7 +30,7 @@ function toJson(value: unknown): string {
  * 索引或 HEAD；编排器会用会话前后 Git 快照独立执行第二道门禁。
  */
 export function buildTaskReviewPrompt(input: TaskReviewPromptInput): string {
-  return `你是 ApexCodingAgent 的独立 Task Reviewer。你没有、也不得尝试恢复产生候选实现的 Execution Session 上下文。你的职责是从全新上下文独立验证候选 Task 是否真正完成。
+  return withStructuredOutputInstruction(`你是 ApexCodingAgent 的独立 Task Reviewer。你没有、也不得尝试恢复产生候选实现的 Execution Session 上下文。你的职责是从全新上下文独立验证候选 Task 是否真正完成。
 
 仓库根目录：${input.repositoryRoot}
 Run Branch：${input.runBranch}
@@ -64,7 +65,7 @@ ${VERIFICATION_POLICY}
 - issues: { id, category, summary, evidence, requiredChange, affectedPaths, criterionIndexes }[]
 - replanReason: replan_required 时为非空字符串，否则必须为 JSON null
 
-不要返回 Markdown，不要在结构化结果之外输出解释。`;
+不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
 
 /**
@@ -82,13 +83,13 @@ export function buildTaskReviewResumePrompt(input: { readonly cause: ErrorCode }
       : isResultContractErrorCode(input.cause)
         ? '此前的独立 Task Review Session 进程正常结束，但返回的 TaskReviewResult 未通过契约校验；本会话续接该 Reviewer 的复核上下文，基于已完成的复核事实重新返回合法结果。'
         : `此前的独立 Task Review Session 因可续接错误 ${input.cause} 终止，本会话只续接该 Reviewer 自己的复核上下文。`;
-  return `${causeSentence}
+  return withStructuredOutputInstruction(`${causeSentence}
 
 继续从仓库事实核对 CURRENT_TASK 和候选 Checkpoint。不得恢复或引用产生候选实现的 Execution Session；不得修改、创建、删除、暂存或提交文件，也不得移动 HEAD。
 
 ${VERIFICATION_POLICY}
 
-完成后返回 TaskReviewResult。必须逐项覆盖 verificationPlan；只有全部验收条件 satisfied、全部自动验证 passed、没有 failed test 且 issues 为空时才能返回 approved；否则据实返回 changes_required 或 replan_required。不要返回 Markdown。`;
+完成后返回 TaskReviewResult。必须逐项覆盖 verificationPlan；只有全部验收条件 satisfied、全部自动验证 passed、没有 failed test 且 issues 为空时才能返回 approved；否则据实返回 changes_required 或 replan_required。不要返回 Markdown。`);
 }
 
 export interface TaskReviewRepairPromptInput {
@@ -114,7 +115,7 @@ export interface TaskReviewRepairPromptInput {
  * 打回，严格只读边界不变。
  */
 export function buildTaskReviewRepairPrompt(input: TaskReviewRepairPromptInput): string {
-  return `你是 ApexCodingAgent 的独立 Task Reviewer。上一趟复核会话已结束，但它返回的 TaskReviewResult 未通过契约校验，候选实现仍未被批准或打回。
+  return withStructuredOutputInstruction(`你是 ApexCodingAgent 的独立 Task Reviewer。上一趟复核会话已结束，但它返回的 TaskReviewResult 未通过契约校验，候选实现仍未被批准或打回。
 
 项目根目录是 ${input.repositoryRoot}，当前分支必须是 ${input.runBranch}。候选 Checkpoint：${input.candidateCheckpoint}。
 
@@ -135,5 +136,5 @@ ${toJson(input.task)}
 5. decision 为 approved 时，全部 acceptanceEvidence 必须为 satisfied、全部 command/static_analysis verification 必须 passed、不存在 failed test 且 issues 为空；changes_required 必须至少有一项未满足事实；replan_required 必须携带非空 replanReason，其他 decision 的 replanReason 必须为 JSON null。
 6. 只修正导致校验失败的字段；复核结论本身仍须基于仓库事实，不要为了让结果合法而批准实际未满足的验收条件。
 
-不要返回 Markdown，不要在结构化结果之外输出解释。`;
+不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }

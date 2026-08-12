@@ -19,6 +19,7 @@ import type {
   TestReport,
 } from '../../domain/schemas/task-execution-result.js';
 import type { CompletedTaskSummary } from './planning.js';
+import { withStructuredOutputInstruction } from './structured-output.js';
 import { VERIFICATION_POLICY } from './verification-policy.js';
 
 /**
@@ -183,7 +184,9 @@ function buildContextSection(input: ExecutionPromptInput): string {
 
 /** 构建 Execution Session 的完整提示词。 */
 export function buildExecutionPrompt(input: ExecutionPromptInput): string {
-  return [EXECUTION_BASELINE, buildContextSection(input)].join('\n\n');
+  return withStructuredOutputInstruction(
+    [EXECUTION_BASELINE, buildContextSection(input)].join('\n\n'),
+  );
 }
 
 export interface ExecutionResultRepairPromptInput {
@@ -207,7 +210,7 @@ export interface ExecutionResultRepairPromptInput {
 export function buildExecutionResultRepairPrompt(
   input: ExecutionResultRepairPromptInput,
 ): string {
-  return `你是 ApexCodingAgent 当前 Task 的结果修复 Agent。上一个 Execution Session 已结束，但它返回的 TaskExecutionResult 未通过契约校验，系统尚未提交任何业务结论，当前 Task 仍处于 running。
+  return withStructuredOutputInstruction(`你是 ApexCodingAgent 当前 Task 的结果修复 Agent。上一个 Execution Session 已结束，但它返回的 TaskExecutionResult 未通过契约校验，系统尚未提交任何业务结论，当前 Task 仍处于 running。
 
 项目根目录是 ${input.repositoryRoot}，当前分支必须是 ${input.runBranch}。
 
@@ -228,7 +231,7 @@ ${toJson(input.task)}
 5. decision 为 completed 时，所有 acceptanceEvidence 必须为 satisfied，且 tests 中不得存在 failed。
 6. 只修正导致校验失败的字段，其余字段保持对已完成工作的真实陈述；如果工作实际未全部完成，据实返回 failed 或 replan_required，不要伪造 completed。
 
-不要返回 Markdown，不要在结构化结果之外输出解释。`;
+不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
 
 /**
@@ -268,7 +271,7 @@ export function buildExecutionResumePrompt(input: {
       ? '上一趟会话耗尽了回合预算，系统自动续接本会话并追加了一趟等额预算；这不是人工干预，任务目标与完成判定不变。'
       : '本会话通过显式 resume 从上一趟执行断点继续。';
 
-  return `你是 ApexCodingAgent 当前 Task 的执行 Agent。${originSentence}
+  return withStructuredOutputInstruction(`你是 ApexCodingAgent 当前 Task 的执行 Agent。${originSentence}
 
 RESUME_CAUSE: ${input.cause}
 ${causeInstruction}
@@ -286,5 +289,5 @@ ${VERIFICATION_POLICY}
 3. 只有全部 acceptanceCriteria 均 satisfied 且不存在 failed test 时才能返回 completed；无法完成时据实返回 failed 或 replan_required。
 4. 先盘点已有实现与仍有效的测试证据，只处理尚未覆盖的最小缺口；不得重复已通过的验证，也不得追加 verificationPlan 之外的可选工作。
 
-返回 TaskExecutionResult 结构化结果。不要返回 Markdown，不要在结构化结果之外输出解释。`;
+返回 TaskExecutionResult 结构化结果。不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }

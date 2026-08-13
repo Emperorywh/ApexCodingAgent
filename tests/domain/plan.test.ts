@@ -26,7 +26,7 @@ import {
 const INITIAL_CONTEXT: PlanDraftValidationContext = {
   nextPlanRevision: 1,
   completedTasks: [],
-  reusablePendingTaskIds: [],
+  reusablePendingTasks: [],
   usedTaskIds: [],
   unabsorbedCheckpointOids: [],
 };
@@ -36,6 +36,21 @@ function replanContext(overrides: Partial<PlanDraftValidationContext>): PlanDraf
 }
 
 describe('TaskPlanDraft validation (§7.5)', () => {
+  it('初始计划拒绝没有上一 Revision 可物化的 retain 引用', () => {
+    /**
+     * Schema 需要兼容 Replan 的联合形状；是否存在可引用的权威定义属于
+     * Revision 语义，只能由确定性领域校验判断。
+     */
+    expectApexError(
+      () =>
+        validateTaskPlanDraft(
+          mkDraft([{ id: 'TASK-001', disposition: 'retain' }]),
+          INITIAL_CONTEXT,
+        ),
+      'PLAN_INVALID',
+    );
+  });
+
   it('accepts a valid initial draft with a dependency chain', () => {
     const draft = mkDraft([
       mkTask('TASK-001'),
@@ -219,7 +234,7 @@ describe('TaskPlanDraft validation (§7.5)', () => {
         mkDraft([completed, retainedPending, fresh]),
         replanContext({
           completedTasks: [completed],
-          reusablePendingTaskIds: ['TASK-002'],
+          reusablePendingTasks: [retainedPending],
           usedTaskIds: ['TASK-001', 'TASK-002'],
         }),
       ),
@@ -271,7 +286,7 @@ describe('TaskPlanDraft validation (§7.5)', () => {
     );
     // Old pending IDs may be kept with a modified definition.
     const retained = replanContext({
-      reusablePendingTaskIds: ['TASK-005'],
+      reusablePendingTasks: [mkTask('TASK-005')],
       usedTaskIds: ['TASK-005'],
     });
     expect(() =>
@@ -310,7 +325,7 @@ describe('checkpoint dispositions (§7.3/§7.5, AC-033)', () => {
   function dispositionContext(): PlanDraftValidationContext {
     return replanContext({
       completedTasks: [],
-      reusablePendingTaskIds: ['TASK-001', 'TASK-002'],
+      reusablePendingTasks: [mkTask('TASK-001'), mkTask('TASK-002')],
       usedTaskIds: ['TASK-001', 'TASK-002'],
       unabsorbedCheckpointOids: [checkpoint.oid],
     });
@@ -367,7 +382,7 @@ describe('checkpoint dispositions (§7.3/§7.5, AC-033)', () => {
   it('requires the owner to be a pending task, not a completed one', () => {
     const context = replanContext({
       completedTasks: [mkTask('TASK-009')],
-      reusablePendingTaskIds: ['TASK-001'],
+      reusablePendingTasks: [mkTask('TASK-001')],
       usedTaskIds: ['TASK-001', 'TASK-009'],
       unabsorbedCheckpointOids: [checkpoint.oid],
     });
@@ -428,6 +443,83 @@ describe('Plan Revision merge (§6.5)', () => {
     expect(result.tasks.map((task) => task.id)).toEqual(['TASK-001', 'TASK-002', 'TASK-004']);
     // 复核候选只含草稿自己表达的非 completed 任务。
     expect(result.candidateTasks.map((task) => task.id)).toEqual(['TASK-002', 'TASK-004']);
+  });
+
+  it('用紧凑引用原样保留 pending Task，只复核修改和新增定义', () => {
+    /**
+     * 真实长 Run 的旧计划可包含数十个大 Task；未改定义只保留两字段引用，
+     * 合并后仍逐字采用权威对象，并保持草稿声明顺序。Reviewer 候选只包含
+     * 实际变化，避免输入、结构化输出和 taskAssessments 三次重复放大。
+     */
+    const taskOne = mkTask('TASK-001');
+    const taskTwo = mkTask('TASK-002', ['TASK-001']);
+    const taskThree = mkTask('TASK-003', ['TASK-002']);
+    const result = mergePlanRevision({
+      draft: mkDraft([
+        { id: 'TASK-002', disposition: 'retain' },
+        mkTask('TASK-003', ['TASK-002'], { objective: '调整后的目标' }),
+        mkTask('TASK-004', ['TASK-003']),
+      ]),
+      currentPlanRevision: 1,
+      currentTasks: [taskOne, taskTwo, taskThree],
+      taskStates: {
+        'TASK-001': mkTaskState('TASK-001', 'completed'),
+        'TASK-002': mkTaskState('TASK-002', 'pending'),
+        'TASK-003': mkTaskState('TASK-003', 'pending'),
+      },
+      unabsorbedCheckpoints: [],
+    });
+
+    expect(result.tasks).toEqual([
+      taskOne,
+      taskTwo,
+      { ...taskThree, objective: '调整后的目标' },
+      mkTask('TASK-004', ['TASK-003']),
+    ]);
+    expect(result.retainedPendingTaskIds).toEqual(['TASK-002', 'TASK-003']);
+    expect(result.updatedPendingTaskIds).toEqual(['TASK-003']);
+    expect(result.candidateTasks.map((task) => task.id)).toEqual(['TASK-003', 'TASK-004']);
+  });
+
+  it('拒绝未知、重复以及与完整定义冲突的紧凑引用', () => {
+    const taskOne = mkTask('TASK-001');
+    const taskTwo = mkTask('TASK-002', ['TASK-001']);
+    const base = {
+      currentPlanRevision: 1,
+      currentTasks: [taskOne, taskTwo],
+      taskStates: {
+        'TASK-001': mkTaskState('TASK-001', 'completed'),
+        'TASK-002': mkTaskState('TASK-002', 'pending'),
+      },
+      unabsorbedCheckpoints: [],
+    } as const;
+
+    expectApexError(
+      () => mergePlanRevision({ ...base, draft: mkDraft([{ id: 'TASK-099', disposition: 'retain' }]) }),
+      'PLAN_REVISION_CONFLICT',
+    );
+    expectApexError(
+      () =>
+        mergePlanRevision({
+          ...base,
+          draft: mkDraft([
+            { id: 'TASK-002', disposition: 'retain' },
+            { id: 'TASK-002', disposition: 'retain' },
+          ]),
+        }),
+      'PLAN_INVALID',
+    );
+    expectApexError(
+      () =>
+        mergePlanRevision({
+          ...base,
+          draft: mkDraft([
+            { id: 'TASK-002', disposition: 'retain' },
+            taskTwo,
+          ]),
+        }),
+      'PLAN_REVISION_CONFLICT',
+    );
   });
 
   it('projects canonical completed definitions regardless of the draft', () => {

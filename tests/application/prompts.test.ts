@@ -176,7 +176,8 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('每个任务只承担一个清晰的主要目标');
     expect(prompt).toContain('依赖关系必须明确且无环');
     expect(prompt).toContain('无法判断的信息记录为 assumption，不要发明业务需求');
-    expect(prompt).toContain('Replan 时返回完整新计划，不要返回局部补丁');
+    expect(prompt).toContain('Replan 时返回完整新计划语义，不要返回局部补丁');
+    expect(prompt).toContain('{id, disposition: "retain"}');
     // completed Task 由系统投射，模型不再承担逐字复述不可变定义的义务。
     expect(prompt).toContain('Replan 时不得在草稿中包含 completed Task');
     expect(prompt).toContain('每个保留的中间 Checkpoint 必须由且只能由一个 pending Task 接管');
@@ -224,19 +225,18 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('REPLAN_TRIGGER');
     expect(prompt).toContain('type: execution_replan');
     expect(prompt).toContain(replanTrigger.reason);
-    // 上一 Revision 完整计划（JSON 序列化 tasks）
-    expect(prompt).toContain('PREVIOUS_PLAN_TASKS');
-    expect(prompt).toContain('"id": "TASK-001"');
-    expect(prompt).toContain('"id": "TASK-002"');
-    // completed Task：紧凑摘要 + Checkpoint（完整定义只在 PREVIOUS_PLAN_TASKS 出现一次）
+    // 只注入当前 pending 的完整定义；completed 定义由紧凑结果摘要替代。
+    expect(prompt).toContain('PENDING_TASK_DEFINITIONS');
+    expect(prompt).toContain('"id":"TASK-002"');
+    expect(prompt).not.toContain('"id":"TASK-001"');
+    // completed Task：只注入紧凑摘要 + Checkpoint，不再复制不可变完整定义。
     expect(prompt).toContain('COMPLETED_TASKS');
     expect(prompt).toContain(completedTask.resultSummary);
     expect(prompt).toContain(OID_COMPLETED);
     expect(prompt).toContain('一律不得出现在草稿 tasks 中');
     expect(prompt).toContain('不得复述进草稿');
-    // 当前 pending 与 skipped
-    expect(prompt).toContain('PENDING_TASKS');
-    expect(prompt).toContain('"title": "实现应用层编排"');
+    // 当前 pending 定义与 skipped 状态都存在。
+    expect(prompt).toContain('"title":"实现应用层编排"');
     expect(prompt).toContain('SKIPPED_TASKS');
     expect(prompt).toContain(skippedTask.skipReason);
     // 未吸收中间 Checkpoint：OID + role + taskId + summary + 接管要求
@@ -246,6 +246,28 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('taskId: TASK-002');
     expect(prompt).toContain(unabsorbedCheckpoint.summary);
     expect(prompt).toContain('并在 retainedCheckpointDispositions 中给出归属');
+  });
+
+  it('大 pending 定义在 Replan 输入中只出现一次，completed 完整定义不再注入', () => {
+    /**
+     * 真实长 Run 中 17 个 pending Task 的完整定义约 80KB，旧 Prompt 在
+     * PREVIOUS_PLAN_TASKS 与 PENDING_TASKS 各复制一次，随后又要求模型
+     * 全量回显。现在只给当前 pending 权威定义；用唯一长字段锁定单份输入。
+     */
+    const uniqueContext = `UNIQUE-LARGE-PENDING-CONTEXT-${'x'.repeat(8_000)}`;
+    const largePending = { ...pendingDefinition, context: uniqueContext };
+    const prompt = buildPlanningPrompt({
+      ...planningBase,
+      previousPlan: { ...previousPlan, tasks: [completedDefinition, largePending] },
+      completedTasks: [completedTask],
+      pendingTasks: [largePending],
+      replanTrigger,
+    });
+
+    expect(prompt.split(uniqueContext)).toHaveLength(2);
+    expect(prompt).toContain('PENDING_TASK_DEFINITIONS');
+    expect(prompt).not.toContain('"id":"TASK-001"');
+    expect(prompt).not.toContain('PENDING_TASKS（当前 pending Task，JSON）');
   });
 
   it('仅 replanTrigger 非 null（previousPlan 为 null）也视为 replan', () => {
@@ -389,6 +411,7 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
         retainedCheckpointDispositions: [],
         tasks: [pendingDefinition],
       },
+      retainedPendingTasks: [],
       completedTasks: [completedTask],
     });
     expect(prompt).toContain('独立 Plan Reviewer');
@@ -399,7 +422,7 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('本会话严格只读');
     expect(prompt).toContain('PlanReviewResult');
     // 候选只含非 completed 任务；completed 摘要以只读上下文注入且不参与评估。
-    expect(prompt).toContain('只含保留/修改的 pending Task 与新增 Task');
+    expect(prompt).toContain('只含修改的 pending Task 与新增 Task');
     expect(prompt).toContain('COMPLETED_TASKS');
     expect(prompt).toContain(completedTask.resultSummary);
     expect(prompt).toContain('不得出现在 taskAssessments 中');
@@ -419,6 +442,7 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
         retainedCheckpointDispositions: [],
         tasks: [pendingDefinition],
       },
+      retainedPendingTasks: [],
       completedTasks: [completedTask],
     });
     expect(prompt).toContain('approved 要求全部 checks 为 satisfied 且 issues 为空');
@@ -428,6 +452,33 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('ISSUE-001..ISSUE-999');
     expect(prompt).toContain('非阻塞性观察');
     expect(prompt).toContain('写入 summary');
+  });
+
+  it('没有修改或新增 Task 时明确要求空逐任务评估并保留计划级复核', () => {
+    /**
+     * 全部 pending 都用 retain 引用的 Revision 仍需独立 Reviewer 批准，
+     * 但不能虚构逐任务候选或为了满足旧 minItems 重复输出历史定义。
+     */
+    const prompt = buildPlanReviewPrompt({
+      repositoryRoot: REPOSITORY_ROOT,
+      runBranch: RUN_BRANCH,
+      specPath: SPEC_PATH,
+      specSha256: SPEC_SHA256,
+      planRevision: 2,
+      draft: {
+        summary: '仅调整 Checkpoint 归属',
+        assumptions: [],
+        retainedCheckpointDispositions: [],
+        tasks: [],
+      },
+      retainedPendingTasks: [pendingDefinition],
+      completedTasks: [completedTask],
+    });
+    expect(prompt).toContain('PLAN_CANDIDATE.tasks 为空');
+    expect(prompt).toContain('taskAssessments 必须为 []');
+    expect(prompt).toContain('仍须完成仓库、SPEC 与计划级问题复核');
+    expect(prompt).toContain('RETAINED_PENDING_CONTEXT');
+    expect(prompt).toContain('不得为这些 Task 生成 taskAssessment');
   });
 
   it('恢复提示只续接 Reviewer 自己的上下文', () => {
@@ -989,6 +1040,7 @@ describe('统一结构化结果提交协议', () => {
           specSha256: SPEC_SHA256,
           planRevision: 1,
           draft,
+          retainedPendingTasks: [],
           completedTasks: [],
         }),
       },

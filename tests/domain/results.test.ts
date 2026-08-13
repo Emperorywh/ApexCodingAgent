@@ -450,6 +450,37 @@ describe('FinalReviewResult semantics (§14.1)', () => {
 });
 
 describe('PlanReviewResult semantic gate', () => {
+  it('候选定义为空时接受空逐任务评估，但仍校验计划级结论', () => {
+    /**
+     * 只调整 Checkpoint 归属且全部 pending 都用 retain 引用时，没有新的
+     * Task 定义需要重复评估；Reviewer 仍能通过计划级 issues 阻止提交。
+     */
+    expect(() =>
+      validatePlanReviewResultSemantics(
+        mkPlanReview({ taskAssessments: [] }),
+        [],
+      ),
+    ).not.toThrow();
+    expectApexError(
+      () =>
+        validatePlanReviewResultSemantics(
+          mkPlanReview({ decision: 'changes_required', taskAssessments: [] }),
+          [],
+        ),
+      'PLAN_REVIEW_RESULT_INVALID',
+    );
+    expect(() =>
+      validatePlanReviewResultSemantics(
+        mkPlanReview({
+          decision: 'changes_required',
+          taskAssessments: [],
+          issues: [mkReviewIssue({ category: 'architecture', criterionIndexes: [] })],
+        }),
+        [],
+      ),
+    ).not.toThrow();
+  });
+
   it('accepts only exact ordered Task coverage for approved', () => {
     expect(() => validatePlanReviewResultSemantics(mkPlanReview(), PLAN_TASKS)).not.toThrow();
     expectApexError(

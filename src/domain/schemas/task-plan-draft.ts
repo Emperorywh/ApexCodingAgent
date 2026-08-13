@@ -1,9 +1,9 @@
 /**
- * TaskPlanDraft (SPEC §7.3). Returned by Planning Sessions; also the normative
- * task definition shape embedded in tasks.json and Plan Revision Snapshots.
+ * Planning Session 返回的 TaskPlanDraft（SPEC §7.3）。
  *
- * Semantic checks (ID uniqueness, dependency graph, revision/disposition
- * rules) live in `src/domain/plan.ts`.
+ * 完整 PlannedTask 仍是 tasks.json 与 Plan Revision Snapshot 的权威持久化
+ * 形状；Replan 草稿额外允许 retain 引用，提交前由领域合并物化为完整定义。
+ * ID 唯一性、依赖图和 Revision/disposition 等语义规则集中在 plan.ts。
  */
 import { GIT_OID_PATTERN, TASK_ID_PATTERN } from '../ids.js';
 import { GIT_RELATIVE_PATH_PATTERN } from '../paths.js';
@@ -84,11 +84,36 @@ export interface CheckpointDisposition {
   rationale: string;
 }
 
+/**
+ * Replan 对上一 Revision 未改 pending Task 的紧凑引用。
+ *
+ * 引用与完整 PlannedTask 共用 tasks 数组，使历史 Session Record 的完整
+ * Task 对象无需迁移仍然合法；`disposition` 采用 const 可避免两种形状歧义。
+ */
+export interface RetainedTaskReference {
+  readonly id: string;
+  readonly disposition: 'retain';
+}
+
+/**
+ * 草稿条目只允许完整任务定义或紧凑保留引用，不提供第三种隐式补丁形状。
+ */
+export type TaskPlanDraftEntry = PlannedTask | RetainedTaskReference;
+
+/**
+ * 通过专用判别字段区分紧凑引用与完整 Task 定义。
+ */
+export function isRetainedTaskReference(
+  entry: TaskPlanDraftEntry,
+): entry is RetainedTaskReference {
+  return 'disposition' in entry && entry.disposition === 'retain';
+}
+
 export interface TaskPlanDraft {
   summary: string;
   assumptions: string[];
   retainedCheckpointDispositions: CheckpointDisposition[];
-  tasks: PlannedTask[];
+  tasks: TaskPlanDraftEntry[];
 }
 
 /**
@@ -252,6 +277,16 @@ export const checkpointDispositionSchema = {
   },
 } as const satisfies JSONSchemaType<CheckpointDisposition>;
 
+export const retainedTaskReferenceSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['id', 'disposition'],
+  properties: {
+    id: { type: 'string', pattern: TASK_ID_PATTERN.source },
+    disposition: { type: 'string', const: 'retain' },
+  },
+} as const satisfies JSONSchemaType<RetainedTaskReference>;
+
 export const taskPlanDraftSchema = {
   type: 'object',
   additionalProperties: false,
@@ -263,6 +298,9 @@ export const taskPlanDraftSchema = {
       type: 'array',
       items: checkpointDispositionSchema,
     },
-    tasks: { type: 'array', items: plannedTaskSchema },
+    tasks: {
+      type: 'array',
+      items: { anyOf: [plannedTaskSchema, retainedTaskReferenceSchema] },
+    },
   },
 } as const;

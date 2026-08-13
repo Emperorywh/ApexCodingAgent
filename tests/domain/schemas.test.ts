@@ -259,6 +259,41 @@ describe('valid examples for all 15 schemas', () => {
   });
 });
 
+describe('TaskPlanDraft 紧凑 Replan 引用', () => {
+  it('接受 retain 引用并继续接受历史完整 Task 对象', () => {
+    /**
+     * 引用嵌在既有 tasks 数组中，旧 Session Record 无需迁移；两种条目
+     * 都由同一 TaskPlanDraft Schema 明确描述。
+     */
+    expectValid('TaskPlanDraft', mkDraft([
+      { id: 'TASK-001', disposition: 'retain' },
+      mkTask('TASK-002', ['TASK-001']),
+    ]));
+  });
+
+  it('拒绝不完整或带额外字段的 retain 引用', () => {
+    expectInvalid('TaskPlanDraft', mkDraft([
+      { id: 'TASK-001', disposition: 'other' } as never,
+    ]));
+    expectInvalid('TaskPlanDraft', mkDraft([
+      { id: 'TASK-001', disposition: 'retain', title: '不允许混合形状' } as never,
+    ]));
+  });
+});
+
+describe('PlanReviewResult 空候选结构', () => {
+  it('允许没有修改或新增 Task 时返回空 taskAssessments', () => {
+    /**
+     * TaskPlanDraft 仅含 retain 引用时 Reviewer 没有逐任务候选，空数组是
+     * 明确结构而不是字段缺失；decision/issues 耦合继续由语义门禁负责。
+     */
+    expectValid('PlanReviewResult', {
+      ...(VALID.PlanReviewResult() as object),
+      taskAssessments: [],
+    });
+  });
+});
+
 describe('additionalProperties: false everywhere', () => {
   it.each(SCHEMA_NAMES.map((name) => [name] as const))('%s rejects unknown top-level fields', (name) => {
     expectInvalid(name, { ...(VALID[name]() as object), extraField: 1 });
@@ -378,16 +413,18 @@ describe('custom formats and enums', () => {
       readonly properties: {
         readonly tasks: {
           readonly items: {
-            readonly properties: {
-              readonly likelyPaths: {
-                readonly items: { readonly pattern: string; readonly description: string };
+            readonly anyOf: readonly [{
+              readonly properties: {
+                readonly likelyPaths: {
+                  readonly items: { readonly pattern: string; readonly description: string };
+                };
               };
-            };
+            }, unknown];
           };
         };
       };
     };
-    const pathItemSchema = schema.properties.tasks.items.properties.likelyPaths.items;
+    const pathItemSchema = schema.properties.tasks.items.anyOf[0].properties.likelyPaths.items;
     const externalPattern = new RegExp(pathItemSchema.pattern);
 
     expect(pathItemSchema.description).toContain('目录均不得以斜杠结尾');

@@ -38,7 +38,10 @@ export const planReviewResultSchema = {
     summary: { type: 'string', minLength: 1 },
     taskAssessments: {
       type: 'array',
-      minItems: 1,
+      /**
+       * 紧凑 Replan 可能只调整 Checkpoint 归属并原样保留全部 pending Task；
+       * 此时候选定义为空，Reviewer 仍需给出计划级结论但没有 Task 可逐项评估。
+       */
       items: {
         type: 'object',
         additionalProperties: false,

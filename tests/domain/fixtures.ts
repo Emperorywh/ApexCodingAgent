@@ -9,6 +9,7 @@ import type {
   CheckpointDisposition,
   PlannedTask,
   TaskPlanDraft,
+  TaskPlanDraftEntry,
 } from '../../src/domain/schemas/task-plan-draft.js';
 import type { TaskExecutionResult } from '../../src/domain/schemas/task-execution-result.js';
 import {
@@ -79,7 +80,7 @@ export function mkTask(
 }
 
 export function mkDraft(
-  tasks: PlannedTask[],
+  tasks: TaskPlanDraftEntry[],
   dispositions: CheckpointDisposition[] = [],
 ): TaskPlanDraft {
   return {

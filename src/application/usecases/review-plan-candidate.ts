@@ -10,7 +10,11 @@ import {
 } from '../../domain/results.js';
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import { MAX_PLAN_REVIEW_ATTEMPTS, type RunJson } from '../../domain/schemas/run-json.js';
-import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
+import {
+  isRetainedTaskReference,
+  type PlannedTask,
+  type TaskPlanDraft,
+} from '../../domain/schemas/task-plan-draft.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import {
   buildPlanReviewPrompt,
@@ -138,16 +142,23 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
     const candidate = run.planCandidate;
     const tasks = await deps.stateStore.readTasks();
     let draft: TaskPlanDraft;
+    let candidateTasks: ReturnType<typeof preparePlanRevisionMerge>['candidateTasks'];
+    let retainedPendingTasks: PlannedTask[];
     /**
-     * Reviewer 只评估草稿表达的未来计划（保留/修改的 pending 与新增
-     * Task）；completed Task 由合并按权威定义投射，不作为候选内容。
-     * candidateDraft 同时是 taskAssessments 精确覆盖的基准。
+     * Reviewer 只评估草稿完整表达的变化（修改的 pending 与新增 Task）。
+     * completed 与 retain 引用的未改 Task 都由合并投射，已经在
+     * 上一 Revision 通过复核，不再重复放大候选和 taskAssessments。
      */
     let candidateDraft: TaskPlanDraft;
     try {
       draft = await readCandidateDraft(run);
       const merge = preparePlanRevisionMerge(run, tasks, draft);
+      candidateTasks = merge.candidateTasks;
       candidateDraft = { ...draft, tasks: merge.candidateTasks };
+      const retainedReferenceIds = new Set(
+        draft.tasks.filter(isRetainedTaskReference).map((reference) => reference.id),
+      );
+      retainedPendingTasks = merge.tasks.filter((task) => retainedReferenceIds.has(task.id));
     } catch (error) {
       return failTerminal(run, error as ApexError);
     }
@@ -179,6 +190,7 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
       specSha256: specBefore.sha256,
       planRevision: candidate.planRevision,
       draft: candidateDraft,
+      retainedPendingTasks,
       completedTasks: completedTaskSummaries(run, tasks),
     });
 
@@ -279,7 +291,7 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
       try {
         validatePlanReviewResultSemantics(
           rawResult,
-          candidateDraft.tasks,
+          candidateTasks,
         );
       } catch (error) {
         const apex = error as ApexError;

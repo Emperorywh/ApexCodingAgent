@@ -2,13 +2,13 @@
  * 独立 Plan Review Prompt 构建器。
  *
  * Reviewer 不继承 Planner 对话，只接收已经通过确定性领域校验的草稿候选
- * （保留/修改的 pending Task 与新增 Task；completed Task 由系统按权威
- * 定义自动并入，不属于候选），并从仓库、SPEC 与任务预算事实独立判断
- * 是否允许提交 Plan Revision。
+ * （修改的 pending Task 与新增 Task；completed 与紧凑保留的 pending
+ * Task 由系统按权威定义自动并入，不属于候选），并从仓库、SPEC 与任务
+ * 预算事实独立判断是否允许提交 Plan Revision。
  */
 import { isResultContractErrorCode, type ErrorCode } from '../../domain/errors.js';
 import { PLAN_REVIEW_DIMENSIONS } from '../../domain/schemas/review-evidence.js';
-import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
+import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
 import type { CompletedTaskSummary } from './planning.js';
 import { withStructuredOutputInstruction } from './structured-output.js';
 
@@ -18,14 +18,24 @@ export interface PlanReviewPromptInput {
   readonly specPath: string;
   readonly specSha256: string;
   readonly planRevision: number;
-  /** 候选草稿：tasks 只含非 completed 任务（保留/修改的 pending 与新增）。 */
+  /** 候选草稿：tasks 只含修改的 pending 与新增 Task。 */
   readonly draft: TaskPlanDraft;
+  /** retain 引用物化出的旧 pending 定义：只作跨任务边界上下文。 */
+  readonly retainedPendingTasks: readonly PlannedTask[];
   /** 已 completed Task 的紧凑摘要（不参与评估，仅供边界判断）。 */
   readonly completedTasks: readonly CompletedTaskSummary[];
 }
 
 function toJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+/**
+ * 保留任务通常占 Replan 的大多数；紧凑 JSON 保留全部语义字段，只移除
+ * 无助于 Reviewer 判断的缩进空白，避免在第二个模型会话里重新放大输入。
+ */
+function toCompactJson(value: unknown): string {
+  return JSON.stringify(value);
 }
 
 function formatCompletedSummaries(tasks: readonly CompletedTaskSummary[]): string {
@@ -52,8 +62,11 @@ SPEC 路径：${input.specPath}
 SPEC SHA-256：${input.specSha256}
 待提交 Plan Revision：${input.planRevision}
 
-PLAN_CANDIDATE（候选草稿，JSON；只含保留/修改的 pending Task 与新增 Task，不含 completed Task）：
+PLAN_CANDIDATE（候选草稿，JSON；只含修改的 pending Task 与新增 Task，不含 completed 或 retain 引用原样保留的 Task）：
 ${toJson(input.draft)}
+
+RETAINED_PENDING_CONTEXT（retain 引用物化出的完整旧定义，紧凑 JSON；只用于检查候选与现有未来计划的依赖、边界及当前 SPEC 一致性，不得为这些 Task 生成 taskAssessment）：
+${toCompactJson(input.retainedPendingTasks)}
 
 COMPLETED_TASKS（已 completed Task 的结果摘要；它们的定义已锁定、由系统自动并入新计划，不属于候选、不需要评估）：
 ${formatCompletedSummaries(input.completedTasks)}
@@ -71,6 +84,7 @@ ${formatCompletedSummaries(input.completedTasks)}
 10. 不要按文件数或架构层机械拆分；一个具有单一行为闭环的纵向功能可以跨层。
 11. 全新系统不得接受 legacy、兼容、迁移、fallback 或 deprecated 工作。
 12. 每个候选 Task 都必须给出一条 taskAssessment，按 PLAN_CANDIDATE.tasks 原顺序且不多不少；COMPLETED_TASKS 中的 Task 不得出现在 taskAssessments 中。
+   若 PLAN_CANDIDATE.tasks 为空，taskAssessments 必须为 []，但仍须完成仓库、SPEC 与计划级问题复核。
 13. 每条 assessment 必须按下列固定顺序给出完整 checks，不得省略、合并或增加维度。每个 check 都要引用 SPEC 条目、仓库路径、已有接口或 Task 字段等可核对事实，不能只写“看起来合理”：
 ${formatReviewDimensions()}
 14. assessment 的 decision 必须与 checks 和 issues 一致：approved 要求全部 checks 为 satisfied 且 issues 为空；changes_required 必须同时包含至少一个 not_satisfied check 和至少一个阻塞 ReviewIssue，二者不得互相替代。
@@ -78,7 +92,8 @@ ${formatReviewDimensions()}
 16. issues 只收录必须修改的阻塞性问题；不影响计划正确性的观察、建议或文档瑕疵一律写入 summary，不得写入任何 issues。
 17. 只有全部 Task assessment 均 approved 且计划级 issues 为空时，整体 decision 才能为 approved；计划级 issues 同样只收录阻塞性问题。
 18. 候选 Task 不得重复或推翻 COMPLETED_TASKS 已经完成的工作；dependsOn 引用 completed Task 的 ID 是允许的。发现候选与已完成工作重叠或边界冲突时，写入对应 Task 的 issues。
-19. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。
+19. 必须把 RETAINED_PENDING_CONTEXT 与当前 SPEC、仓库事实和候选变更一起检查；若某个 retain Task 因候选变化或当前 SPEC 已不能原样保留，写入计划级 issue，明确指出需要 Planner 在下一稿完整重定义的 Task ID。不得为 retain Task 生成 taskAssessment。
+20. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。
 
 返回 PlanReviewResult：
 - decision: "approved" | "changes_required"
@@ -118,7 +133,7 @@ export interface PlanReviewRepairPromptInput {
   readonly specPath: string;
   readonly specSha256: string;
   readonly planRevision: number;
-  /** 被复核的候选草稿（tasks 只含非 completed 任务，taskAssessments 覆盖与顺序依据）。 */
+  /** 被复核的候选草稿（tasks 只含修改的 pending 与新增 Task）。 */
   readonly draft: TaskPlanDraft;
   /** 上一次结果的契约校验错误（原样给出）。 */
   readonly validationError: string;
@@ -148,7 +163,7 @@ ${input.validationError}
 上一次返回的结构化结果（JSON；不可得时为"（无）"）：
 ${input.invalidResultJson ?? '（无）'}
 
-PLAN_CANDIDATE（候选草稿，JSON；只含保留/修改的 pending Task 与新增 Task）：
+PLAN_CANDIDATE（候选草稿，JSON；只含修改的 pending Task 与新增 Task）：
 ${toJson(input.draft)}
 
 修复要求：

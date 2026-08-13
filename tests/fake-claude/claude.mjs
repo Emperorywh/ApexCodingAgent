@@ -143,6 +143,9 @@ function automaticPlanReviewScenario() {
       .map((state) => state.taskId),
   );
   const taskIds = record.structuredResult.tasks
+    // 紧凑 Replan 的 retain 引用已在上一 Revision 通过复核；自动 Reviewer
+    // 只评估完整表达的修改/新增定义，与生产 candidateTasks 投影保持一致。
+    .filter((task) => task.disposition !== 'retain')
     .map((task) => task.id)
     .filter((taskId) => !completedIds.has(taskId));
   return {

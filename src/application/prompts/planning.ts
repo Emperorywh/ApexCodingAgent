@@ -2,8 +2,8 @@
  * 内置 Planning Prompt 构建器（SPEC §24 规范性基线 + §7.1 上下文注入）。
  *
  * 基线文本逐条保留核心职责与全部任务拆分原则，仅在末尾追加系统上下文小节；
- * Replan（previousPlan 或 replanTrigger 非 null）时按 §7.1 追加上一 Revision
- * 完整计划、completed/pending/skipped Task、结构化原因与未吸收中间 Checkpoint。
+ * Replan（previousPlan 或 replanTrigger 非 null）时按 §7.1 追加 pending 权威
+ * 定义、completed/skipped 摘要、结构化原因与未吸收中间 Checkpoint。
  *
  * 纯函数，不依赖 node:*，不读取文件系统——SPEC 内容与仓库事实由调用方
  * （Coordinator / 适配层）负责提供，模型 Session 自行读取仓库。
@@ -15,7 +15,7 @@ import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 import { withStructuredOutputInstruction } from './structured-output.js';
 
-/** completed Task 的不可变摘要：权威定义 + 结果摘要 + 最终 Checkpoint（SPEC §7.1）。 */
+/** completed Task 的不可变摘要：标识/标题 + 结果摘要 + 最终 Checkpoint（SPEC §7.1）。 */
 export interface CompletedTaskSummary {
   readonly definition: PlannedTask;
   readonly resultSummary: string;
@@ -37,7 +37,7 @@ export interface PlanningPromptInput {
   readonly specPath: string;
   /** 启动时 SPEC 内容的 SHA-256。 */
   readonly specSha256: string;
-  /** Replan 时的上一 Revision 完整计划；初始规划为 null。 */
+  /** Replan 时存在的上一 Revision 计划事实；初始规划为 null。 */
   readonly previousPlan: TasksJson | null;
   /** 已 completed 的 Task（不可变定义 + 结果摘要 + Checkpoint）。 */
   readonly completedTasks: readonly CompletedTaskSummary[];
@@ -88,11 +88,11 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - 依赖关系必须明确且无环。
 - 无法判断的信息记录为 assumption，不要发明业务需求。
 - 调查任务必须产生具体结论或设计决策。
-- Replan 时返回完整新计划，不要返回局部补丁。完整新计划只包含全部保留或修改的 pending Task 与新增 Task。
+- Replan 时返回完整新计划语义，不要返回局部补丁：tasks 中用 {id, disposition: "retain"} 引用按上一 Revision 原样保留的 pending Task；只有修改后的旧 pending Task 与新增 Task 才输出完整定义。
 - Replan 原因暴露环境能力或外部约束（如 Docker 不可用、网络受限）时，必须审查所有 pending Task 的 acceptanceCriteria 与 verificationPlan 中依赖同一能力的条目，在本次 Revision 中一并调整（如拆分为本地可验证部分与独立 CI 门禁 Task），不得只修复触发 Replan 的 Task。
 - Replan 时不得在草稿中包含 completed Task：系统合并时会按权威定义把它们自动并入新计划，草稿中携带的 completed 条目会被直接忽略。新 Task 的 dependsOn 可以引用 completed Task 的 ID。
-- Replan 时可以修改 pending Task；保留不变的 pending Task 必须原样出现在草稿中。
-- 省略旧 pending Task 表示将其标记为 skipped。
+- Replan 时可以修改 pending Task；保留不变的 pending Task 只在 tasks 写入 {id, disposition: "retain"}，不要复制完整定义。
+- 旧 pending Task 若既没有 retain 引用，也未以完整定义出现在 tasks，表示将其标记为 skipped。
 - 新增 Task 使用从未出现过的 ID。
 - 当前计划中的 pending Task 不得超过 50 个。
 - 整个 Run 的 Task ID 数字部分不得超过 999。
@@ -117,6 +117,10 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - retainedCheckpointDispositions
 - tasks
 
+Replan 时 tasks 的每一项使用二选一结构：
+- 原样保留旧 pending Task：{ id, disposition: "retain" }
+- 修改旧 pending Task 或新增 Task：使用下述完整任务字段
+
 每个任务包含：
 
 - id
@@ -139,8 +143,16 @@ function toJson(value: unknown): string {
 }
 
 /**
- * completed Task 只渲染紧凑摘要：完整定义已经出现在 PREVIOUS_PLAN_TASKS
- * 中，重复全文只会放大提示词，并诱使模型把不可变条目复述进草稿。
+ * pending 权威定义已有清晰字段边界，不需要额外缩进重复消耗上下文。
+ * 紧凑 JSON 保留逐字段信息，只移除空白。
+ */
+function toCompactJson(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+/**
+ * completed Task 只渲染紧凑摘要：系统会投射其权威定义，重复全文只会
+ * 放大提示词，并诱使模型把不可变条目复述进草稿。
  */
 function formatCompletedTasks(tasks: readonly CompletedTaskSummary[]): string {
   if (tasks.length === 0) return '（无）';
@@ -191,7 +203,7 @@ function buildReplanSection(input: PlanningPromptInput): string {
   const parts: string[] = [
     'REPLAN 上下文（本次为重新规划，请生成完整新 Revision）：',
     '',
-    '本次草稿只包含保留或修改的 pending Task 与新增 Task；completed Task 由系统按权威定义自动并入，一律不得出现在草稿 tasks 中。',
+    '本次草稿使用紧凑差量表达：tasks 中用 {id, disposition: "retain"} 引用原样保留的 pending Task；只有修改后的旧 pending Task 与新增 Task 才输出完整定义；completed Task 由系统按权威定义自动并入，一律不得出现在草稿 tasks 中。',
     '',
   ];
 
@@ -204,16 +216,15 @@ function buildReplanSection(input: PlanningPromptInput): string {
     );
   }
 
-  if (input.previousPlan !== null) {
-    parts.push('PREVIOUS_PLAN_TASKS（上一 Revision 完整计划，JSON）：', toJson(input.previousPlan.tasks), '');
-  }
+  parts.push(
+    'PENDING_TASK_DEFINITIONS（当前 pending Task 的权威完整定义，紧凑 JSON；字段信息未省略，每个未修改 Task 只需返回 retain 引用）：',
+    toCompactJson(input.pendingTasks),
+    '',
+  );
 
   parts.push(
     'COMPLETED_TASKS（已完成 Task 的结果摘要，仅供上下文，不得复述进草稿）：',
     formatCompletedTasks(input.completedTasks),
-    '',
-    'PENDING_TASKS（当前 pending Task，JSON）：',
-    toJson(input.pendingTasks),
     '',
     'SKIPPED_TASKS（skipped Task 及原因）：',
     formatSkippedTasks(input.skippedTasks),
@@ -268,7 +279,7 @@ export function buildPlanningPrompt(input: PlanningPromptInput): string {
 export function buildPlanningResumePrompt(): string {
   return withStructuredOutputInstruction(`此前的 Planning 会话被前台中断，本会话从原对话断点继续。
 
-请先核对当前 SPEC 与仓库只读事实是否仍和原规划上下文一致，然后继续完成尚未完成的规划工作。Planning 的只读边界、Task 拆分规则、依赖约束、Checkpoint 接管规则和 TaskPlanDraft 结构化结果契约全部继续有效。
+请先核对当前 SPEC 与仓库只读事实是否仍和原规划上下文一致，然后继续完成尚未完成的规划工作。Planning 的只读边界、Task 拆分规则、依赖约束、Checkpoint 接管规则和 TaskPlanDraft 结构化结果契约全部继续有效。Replan 结果继续使用紧凑差量表达：tasks 中以 {id, disposition: "retain"} 引用未改旧 pending Task，修改或新增 Task 才返回完整定义。
 
 返回完整 TaskPlanDraft。不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }

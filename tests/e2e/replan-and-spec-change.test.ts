@@ -53,14 +53,17 @@ describe('e2e replan_required', () => {
               writeFiles: [{ path: 'src/draft-work.ts', content: 'export const draft = 1;\n' }],
               stdoutLines: streamOf(REPLAN_RESULT),
             },
-            // 3. 第二次 Planning：接管中间 Checkpoint（占位符由 Fake Claude
-            //    从 run.json 读取替换），TASK-001 定义修改。
+            /*
+             * 3. 第二次 Planning：接管中间 Checkpoint（占位符由 Fake Claude
+             * 从 run.json 读取替换），只完整输出修改过的 TASK-001；未修改的
+             * TASK-002 使用紧凑引用，由系统从上一 Revision 投射权威定义。
+             */
             {
               stdoutLines: streamOf(
                 planDraft(
                   [
                     { id: 'TASK-001', title: '实现功能 A（含配置层）' },
-                    { id: 'TASK-002', dependsOn: ['TASK-001'] },
+                    { id: 'TASK-002', disposition: 'retain' },
                   ],
                   {
                     summary: '修订计划',
@@ -125,6 +128,9 @@ describe('e2e replan_required', () => {
         expect(tasks.tasks.find((task) => task.id === 'TASK-001')!.title).toBe(
           '实现功能 A（含配置层）',
         );
+        expect(tasks.tasks.find((task) => task.id === 'TASK-002')!.dependsOn).toEqual([
+          'TASK-001',
+        ]);
 
         // 每个 Planning 后都有独立 Plan Review，因此两个 Revision 共增加两个 Reviewer。
         const records = await harness.listSessionRecords();
@@ -141,6 +147,22 @@ describe('e2e replan_required', () => {
           'task_review',
           'final_review',
         ]);
+        const planReviews = records.filter((record) => record.type === 'plan_review');
+        const revision2Review = planReviews[1]!.structuredResult as {
+          readonly taskAssessments: readonly { readonly taskId: string }[];
+        };
+        expect(revision2Review.taskAssessments.map((assessment) => assessment.taskId)).toEqual([
+          'TASK-001',
+        ]);
+        const planReviewInvocations = (await harness.readRecords())
+          .filter((record) => record.argv.includes('--session-id'))
+          .filter((record) => record.stdin.includes('独立 Plan Reviewer'));
+        expect(planReviewInvocations).toHaveLength(2);
+        const revision2Prompt = planReviewInvocations[1]!.stdin;
+        expect(revision2Prompt).toContain('RETAINED_PENDING_CONTEXT');
+        expect(revision2Prompt).toContain('"id":"TASK-002"');
+        expect(revision2Prompt).toContain('"dependsOn":["TASK-001"]');
+        expect(revision2Prompt).toContain('不得为 retain Task 生成 taskAssessment');
         /*
          * Execution 结构化结果、Run 运行态、Revision Trigger 和 Session
          * Record 共用真实生产路径；任一层遗漏都会让这个聚合断言失败。

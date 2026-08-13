@@ -497,10 +497,14 @@ export function streamOf(
   ];
 }
 
-/** 构造合法 TaskPlanDraft 的便捷形式。 */
+/**
+ * 构造合法 TaskPlanDraft 的便捷形式。
+ * Replan 测试可只提供 id + disposition，模拟 Planner 对未修改任务的紧凑引用。
+ */
 export function planDraft(
   tasks: readonly {
     id: string;
+    disposition?: 'retain';
     title?: string;
     dependsOn?: string[];
     acceptanceCriteria?: string[];
@@ -514,34 +518,39 @@ export function planDraft(
     summary: options.summary ?? '计划摘要',
     assumptions: ['假设：仓库可用 npm 构建'],
     retainedCheckpointDispositions: options.dispositions ?? [],
-    tasks: tasks.map((task) => ({
-      id: task.id,
-      title: task.title ?? `实现 ${task.id}`,
-      objective: `完成 ${task.id} 的目标`,
-      nonGoals: [`不处理 ${task.id} 之外的需求`],
-      dependsOn: task.dependsOn ?? [],
-      acceptanceCriteria: task.acceptanceCriteria ?? [`${task.id} 的验收条件`],
-      verificationPlan: [
-        {
-          id: 'VERIFY-001',
-          kind: 'command',
-          criterionIndexes: (task.acceptanceCriteria ?? [`${task.id} 的验收条件`]).map(
-            (_criterion, index) => index,
-          ),
-          procedure: '运行完整测试门禁',
-          expectedEvidence: '命令成功退出并覆盖所有验收条件',
-          command: 'npm test',
-          timeoutSeconds: 900,
+    tasks: tasks.map((task) => {
+      if (task.disposition === 'retain') {
+        return { id: task.id, disposition: 'retain' };
+      }
+      return {
+        id: task.id,
+        title: task.title ?? `实现 ${task.id}`,
+        objective: `完成 ${task.id} 的目标`,
+        nonGoals: [`不处理 ${task.id} 之外的需求`],
+        dependsOn: task.dependsOn ?? [],
+        acceptanceCriteria: task.acceptanceCriteria ?? [`${task.id} 的验收条件`],
+        verificationPlan: [
+          {
+            id: 'VERIFY-001',
+            kind: 'command',
+            criterionIndexes: (task.acceptanceCriteria ?? [`${task.id} 的验收条件`]).map(
+              (_criterion, index) => index,
+            ),
+            procedure: '运行完整测试门禁',
+            expectedEvidence: '命令成功退出并覆盖所有验收条件',
+            command: 'npm test',
+            timeoutSeconds: 900,
+          },
+        ],
+        likelyPaths: ['src/index.ts'],
+        budget: {
+          targetContextBudget: 200_000,
+          hardContextLimit: 600_000,
+          maxAgentTurns: 64,
         },
-      ],
-      likelyPaths: ['src/index.ts'],
-      budget: {
-        targetContextBudget: 200_000,
-        hardContextLimit: 600_000,
-        maxAgentTurns: 64,
-      },
-      context: '端到端测试任务',
-    })),
+        context: '端到端测试任务',
+      };
+    }),
   };
 }
 

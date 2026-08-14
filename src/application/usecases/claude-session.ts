@@ -28,6 +28,7 @@ import { assertTaskTransition } from '../../domain/task-state.js';
 import type { ActiveSession, SessionType } from '../../domain/schemas/active-session.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
 import type { SessionRecord } from '../../domain/schemas/session-record.js';
+import type { TaskPlanDraftSchemaMode } from '../../domain/schemas/task-plan-draft.js';
 import { ClaudeInvocationError, type ClaudeInvocationFact, type ClaudePermissionModeFor, type ClaudeStreamActivity } from '../ports/ClaudeRuntimePort.js';
 import type { SessionGitFacts } from '../ports/GitPort.js';
 import {
@@ -54,6 +55,11 @@ export interface BeginSessionInput<T extends SessionType> {
   readonly repositoryRoot: string;
   /** 仅 Execution 从 TaskBudget 注入，运行时通过 --max-turns 强制执行。 */
   readonly maxTurns?: number | null;
+  /**
+   * 仅 Planning 会话携带的草稿 Schema 阶段。
+   * 初始计划与真正 Replan 必须由用例显式区分，不能交给 Adapter 根据提示词猜测。
+   */
+  readonly planningDraftSchemaMode?: TaskPlanDraftSchemaMode;
   /**
    * 可选的会话续接来源（SPEC §17 resume）：非空时 Claude 以
    * `--resume --fork-session` 续接该被中断会话；五类 Session 的首次
@@ -358,6 +364,9 @@ export async function invokeSession<T extends SessionType>(
     permissionMode: input.permissionMode,
     maxTurns: input.maxTurns ?? null,
     resumeFromSessionId: input.resumeFromSessionId ?? null,
+    ...(input.planningDraftSchemaMode === undefined
+      ? {}
+      : { planningDraftSchemaMode: input.planningDraftSchemaMode }),
     onStreamActivity: (next) => {
       activity = next;
       // init 事件一到就告知本次 Session 实际使用的模型与 Provider。

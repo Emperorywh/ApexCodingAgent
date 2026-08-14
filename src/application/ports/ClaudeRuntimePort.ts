@@ -19,7 +19,10 @@ import type { FinalReviewResult } from '../../domain/schemas/final-review-result
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import type { TaskExecutionResult } from '../../domain/schemas/task-execution-result.js';
 import type { TaskReviewResult } from '../../domain/schemas/task-review-result.js';
-import type { TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
+import type {
+  TaskPlanDraft,
+  TaskPlanDraftSchemaMode,
+} from '../../domain/schemas/task-plan-draft.js';
 
 /**
  * Claude CLI 可接收的权限模式。调用方显式选择策略，适配器只执行已经
@@ -55,6 +58,13 @@ interface ClaudeInvocationRequestBase {
   readonly resumeFromSessionId?: string | null;
   /** Execution 的 Task 预算回合上限；其他会话不设置时由 Claude 使用默认值。 */
   readonly maxTurns?: number | null;
+  /**
+   * 仅 Planning 使用的阶段化草稿 Schema。
+   *
+   * 初始 Revision 必须传 initial，在 StructuredOutput 边界禁止 retain；已有
+   * 权威 Revision 的 Replan 传 replan，继续允许紧凑引用。
+   */
+  readonly planningDraftSchemaMode?: TaskPlanDraftSchemaMode;
 }
 
 /**

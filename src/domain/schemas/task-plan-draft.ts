@@ -117,6 +117,14 @@ export interface TaskPlanDraft {
 }
 
 /**
+ * Claude Planning 输出端使用的草稿形态。
+ *
+ * initial 对应尚无已提交 Revision 的首份计划，只能返回完整 Task；replan
+ * 对应已有权威计划的重新规划，可以用 retain 引用压缩未修改的 pending Task。
+ */
+export type TaskPlanDraftSchemaMode = 'initial' | 'replan';
+
+/**
  * 规划期预算 Schema：约束 Planner 的结构化输出。
  *
  * targetContextBudget/maxAgentTurns 沿用当前政策区间（历史合法值均落在
@@ -301,6 +309,24 @@ export const taskPlanDraftSchema = {
     tasks: {
       type: 'array',
       items: { anyOf: [plannedTaskSchema, retainedTaskReferenceSchema] },
+    },
+  },
+} as const;
+
+/**
+ * 初始 Planning 专用的窄 Schema。
+ *
+ * 持久化与历史 Session Record 继续使用 taskPlanDraftSchema；这里只收紧发给
+ * Claude CLI 的 StructuredOutput 契约，避免模型先提交无法解析的 retain
+ * 引用，再把缺少完整定义的草稿交给后续轻量修正会话猜测重建。
+ */
+export const initialTaskPlanDraftSchema = {
+  ...taskPlanDraftSchema,
+  properties: {
+    ...taskPlanDraftSchema.properties,
+    tasks: {
+      type: 'array',
+      items: plannedTaskSchema,
     },
   },
 } as const;

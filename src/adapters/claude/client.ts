@@ -20,7 +20,10 @@ import type {
   ClaudeRuntimePort,
 } from '../../application/ports/ClaudeRuntimePort.js';
 import type { SessionType } from '../../domain/schemas/active-session.js';
-import { getSchemaJson } from '../../domain/schemas/index.js';
+import {
+  getSchemaJson,
+  getTaskPlanDraftSchemaJson,
+} from '../../domain/schemas/index.js';
 import type {
   ActiveProcess,
   ProcessExecutor,
@@ -228,7 +231,22 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
      * 直接调用；版本事实仍在当前边界重新清洗，错误路径和成功路径共用它。
      */
     const claudeVersion = redaction.redactText(request.capabilityReport.version);
-    const resultSchema = RESULT_SCHEMA_BY_SESSION_TYPE[request.type];
+    /**
+     * 初始 Planning 的输出契约必须在 Claude 工具层先收紧。
+     * 其他会话禁止携带该字段，避免调用方传入一个与 Session 类型不一致的 Schema。
+     */
+    if (request.type === 'planning' && request.planningDraftSchemaMode === undefined) {
+      throw new TypeError('planning invoke requires planningDraftSchemaMode');
+    }
+    if (request.type !== 'planning' && request.planningDraftSchemaMode !== undefined) {
+      throw new TypeError(
+        `planningDraftSchemaMode is not allowed for ${request.type}`,
+      );
+    }
+    const resultSchemaJson =
+      request.type === 'planning'
+        ? getTaskPlanDraftSchemaJson(request.planningDraftSchemaMode!)
+        : getSchemaJson(RESULT_SCHEMA_BY_SESSION_TYPE[request.type]);
     /*
      * resume 续接仍由 Claude Adapter 独占构造。
      *
@@ -259,7 +277,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       'stream-json',
       '--verbose',
       '--json-schema',
-      JSON.stringify(getSchemaJson(resultSchema)),
+      JSON.stringify(resultSchemaJson),
     ];
 
     const streamCollector = createClaudeStreamCollector({

@@ -6,6 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  changedMaterializedTaskIds,
+  materializeRetainedTaskReferences,
   mergePlanRevision,
   plannedTaskEquals,
   validateTaskPlanDraft,
@@ -308,6 +310,59 @@ describe('TaskPlanDraft validation (§7.5)', () => {
         replanContext({ nextPlanRevision: 50 }),
       ),
     ).not.toThrow();
+  });
+});
+
+describe('初始复核返工的 retain 确定性物化', () => {
+  it('按上一轮完整草稿逐 ID 展开，并保持当前草稿顺序与修改项', () => {
+    const authoritative = mkDraft([
+      mkTask('TASK-001', [], { title: '权威任务一' }),
+      mkTask('TASK-002', ['TASK-001'], { title: '权威任务二' }),
+    ]);
+    const modified = mkTask('TASK-002', ['TASK-001'], { title: '按复核意见修改' });
+    const materialized = materializeRetainedTaskReferences(
+      mkDraft([modified, { id: 'TASK-001', disposition: 'retain' }]),
+      authoritative,
+    );
+
+    /**
+     * retain 只替换为权威定义，不重新排序，也不覆盖 Planner 明确返回的修改项。
+     * 这正对应生产事故中“6 个修改任务 + 15 个 retain”的恢复形态。
+     */
+    expect(materialized.tasks).toEqual([modified, authoritative.tasks[0]]);
+  });
+
+  it('没有完整权威定义时响亮失败，不猜测 Task 内容', () => {
+    expectApexError(
+      () =>
+        materializeRetainedTaskReferences(
+          mkDraft([{ id: 'TASK-001', disposition: 'retain' }]),
+          mkDraft([{ id: 'TASK-001', disposition: 'retain' }]),
+        ),
+      'PLAN_REVISION_CONFLICT',
+    );
+  });
+
+  it('检测修正会话对物化 Task 的删除、退化引用与字段改写', () => {
+    const authoritative = mkDraft([
+      mkTask('TASK-001', [], { title: '不得改写' }),
+      mkTask('TASK-002', ['TASK-001']),
+    ]);
+    expect(changedMaterializedTaskIds(authoritative, authoritative, ['TASK-001'])).toEqual([]);
+    expect(
+      changedMaterializedTaskIds(
+        mkDraft([mkTask('TASK-001', [], { title: '已经改写' }), authoritative.tasks[1]!]),
+        authoritative,
+        ['TASK-001'],
+      ),
+    ).toEqual(['TASK-001']);
+    expect(
+      changedMaterializedTaskIds(
+        mkDraft([{ id: 'TASK-001', disposition: 'retain' }, authoritative.tasks[1]!]),
+        authoritative,
+        ['TASK-001'],
+      ),
+    ).toEqual(['TASK-001']);
   });
 });
 

@@ -34,6 +34,25 @@ function isPlanReviewInvocation(record: RecordedInvocation): boolean {
   return schema.properties?.taskAssessments !== undefined;
 }
 
+/**
+ * 读取一次 Claude 调用携带的结构化输出 Schema。
+ * 端到端断言据此确认 Plan Review 打回后仍使用初始计划的收窄契约。
+ */
+function readInvocationSchema(record: RecordedInvocation): {
+  readonly properties?: {
+    readonly tasks?: { readonly items?: Record<string, unknown> };
+  };
+} {
+  const schemaIndex = record.argv.indexOf('--json-schema');
+  const schemaText = schemaIndex < 0 ? undefined : record.argv[schemaIndex + 1];
+  if (schemaText === undefined) throw new Error('记录中缺少 --json-schema 参数');
+  return JSON.parse(schemaText) as {
+    readonly properties?: {
+      readonly tasks?: { readonly items?: Record<string, unknown> };
+    };
+  };
+}
+
 /** 语义非法的复核结论：approved 却夹带非空 issues（结构 Schema 通过、领域门禁拒绝）。 */
 const PLAN_REVIEW_APPROVED_WITH_ISSUES = {
   decision: 'approved',
@@ -57,6 +76,22 @@ const PLAN_REVIEW_APPROVED_WITH_ISSUES = {
 } as const;
 
 const ONE_TASK_PLAN = planDraft([{ id: 'TASK-001', title: '实现聚焦功能' }]);
+const TWO_TASK_PLAN = planDraft([
+  { id: 'TASK-001', title: '实现入口能力' },
+  { id: 'TASK-002', title: '实现后续能力', dependsOn: ['TASK-001'] },
+]);
+const TWO_TASK_CORRECTED_PLAN = planDraft([
+  { id: 'TASK-001', title: '按复核意见收窄入口能力' },
+  { id: 'TASK-002', title: '实现后续能力', dependsOn: ['TASK-001'] },
+]);
+const TWO_TASK_REGRESSED_PLAN = planDraft([
+  { id: 'TASK-001', title: '按复核意见收窄入口能力' },
+  { id: 'TASK-002', title: '被修正器擅自概括的后续任务', dependsOn: ['TASK-001'] },
+]);
+const TWO_TASK_COMPACT_REWORK = planDraft([
+  { id: 'TASK-001', title: '按复核意见收窄入口能力' },
+  { id: 'TASK-002', disposition: 'retain' },
+]);
 const PLAN_CHANGES_REQUIRED = {
   decision: 'changes_required',
   summary: '任务边界仍然过大',
@@ -73,6 +108,34 @@ const PLAN_CHANGES_REQUIRED = {
           requiredChange: '拆分无关迁移工作并保留单一主要目标',
         }),
       ],
+    },
+  ],
+  issues: [],
+} as const;
+
+/** 两任务候选的合法打回结果：只要求修改 TASK-001，TASK-002 明确保留。 */
+const TWO_TASK_CHANGES_REQUIRED = {
+  decision: 'changes_required',
+  summary: '入口任务边界仍然过大',
+  taskAssessments: [
+    {
+      taskId: 'TASK-001',
+      decision: 'changes_required',
+      checks: planReviewChecks('scope_cohesion'),
+      issues: [
+        reviewIssue({
+          category: 'task_scope',
+          summary: '入口任务包含两个可独立验收的目标',
+          evidence: '目标描述同时覆盖入口能力与后续能力',
+          requiredChange: '收窄 TASK-001，保持 TASK-002 原定义',
+        }),
+      ],
+    },
+    {
+      taskId: 'TASK-002',
+      decision: 'approved',
+      checks: planReviewChecks(),
+      issues: [],
     },
   ],
   issues: [],
@@ -130,11 +193,87 @@ describe('e2e independent plan review', () => {
         );
         expect(invocations[2]!.stdin).toContain('PLAN_REVIEW_FEEDBACK');
         expect(invocations[2]!.stdin).toContain('objective 同时包含实现与无关迁移工作');
+        expect(invocations[2]!.stdin).toContain('INITIAL_PLAN_CONTRACT');
+        expect(invocations[2]!.stdin).toContain('禁止使用 {id, disposition: "retain"}');
+        expect(readInvocationSchema(invocations[2]!).properties?.tasks?.items).not.toHaveProperty(
+          'anyOf',
+        );
       } finally {
         await harness.cleanup();
       }
     },
     120_000,
+  );
+
+  it(
+    '初始复核返工误用 retain 时按上一份完整候选物化，并由自包含修正稿继续',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApprovePlanReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(TWO_TASK_PLAN) },
+            { stdoutLines: streamOf(TWO_TASK_CHANGES_REQUIRED) },
+            { stdoutLines: streamOf(TWO_TASK_COMPACT_REWORK) },
+            { stdoutLines: streamOf(TWO_TASK_REGRESSED_PLAN) },
+            { stdoutLines: streamOf(TWO_TASK_CORRECTED_PLAN) },
+            { stdoutLines: streamOf(planReviewApproved(['TASK-001', 'TASK-002'])) },
+            {
+              writeFiles: [{ path: 'src/entry.ts', content: 'export const entry = true;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            {
+              writeFiles: [{ path: 'src/follow-up.ts', content: 'export const followUp = true;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001', 'TASK-002'])) },
+          ],
+        });
+
+        const result = await harness.start();
+        expect(result.kind, JSON.stringify(result)).toBe('completed');
+        if (result.kind !== 'completed') return;
+
+        const records = await harness.listSessionRecords();
+        const planningRecords = records.filter((record) => record.type === 'planning');
+        expect(planningRecords).toHaveLength(4);
+
+        /**
+         * 紧凑返工稿保留为不可变会话证据；下一趟 Planning 收到系统物化的
+         * 完整 TASK-002，并且最终提交引用该自包含修正会话而不是紧凑会话。
+         */
+        expect(planningRecords[1]!.structuredResult).toMatchObject(TWO_TASK_COMPACT_REWORK);
+        const invocations = (await harness.readRecords()).filter((record) =>
+          record.argv.includes('--session-id'),
+        );
+        expect(invocations[3]!.stdin).toContain('确定性展开为权威 Task 定义');
+        expect(invocations[3]!.stdin).toContain('TASK-002');
+        expect(invocations[3]!.stdin).toContain('实现后续能力');
+        expect(planningRecords[2]!.structuredResult).toMatchObject(TWO_TASK_REGRESSED_PLAN);
+        expect(invocations[4]!.stdin).toContain(
+          'planning correction changed authoritative materialized tasks: TASK-002',
+        );
+        expect(invocations[4]!.stdin).toContain('实现后续能力');
+        expect(invocations[4]!.stdin).not.toContain('被修正器擅自概括的后续任务');
+
+        const tasks = await harness.readTasksJson();
+        expect(tasks.plannerSessionId).toBe(planningRecords[3]!.sessionId);
+        expect(tasks.tasks.map((task) => task.title)).toEqual([
+          '按复核意见收窄入口能力',
+          '实现后续能力',
+        ]);
+        expect(harness.outputLines.join('\n')).toContain(
+          '启动轻量 Planner 定向修正（第 2/2 轮）',
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
   );
 
   it(

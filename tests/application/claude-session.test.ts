@@ -37,6 +37,7 @@ describe('beginSession interrupt gate', () => {
       prompt: 'plan',
       permissionMode: 'plan',
       repositoryRoot: 'C:/repo',
+      planningDraftSchemaMode: 'initial',
     };
 
     /**
@@ -74,6 +75,7 @@ describe('invokeSession interrupt gate', () => {
       prompt: 'plan',
       permissionMode: 'plan',
       repositoryRoot: 'C:/repo',
+      planningDraftSchemaMode: 'initial',
     };
     const handle: ActiveSessionHandle<'planning'> = {
       sessionId: '123e4567-e89b-42d3-a456-426614174000',

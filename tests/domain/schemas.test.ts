@@ -8,9 +8,11 @@ import { ApexError } from '../../src/domain/errors.js';
 import {
   assertSchemaValid,
   getSchemaJson,
+  getTaskPlanDraftSchemaJson,
   getSchemaVersion,
   SCHEMA_NAMES,
   validate,
+  validateTaskPlanDraftSchema,
   type SchemaName,
 } from '../../src/domain/schemas/index.js';
 import {
@@ -278,6 +280,21 @@ describe('TaskPlanDraft 紧凑 Replan 引用', () => {
     expectInvalid('TaskPlanDraft', mkDraft([
       { id: 'TASK-001', disposition: 'retain', title: '不允许混合形状' } as never,
     ]));
+  });
+
+  it('初始 Planning 的调用期窄 Schema 拒绝 retain，但不改变持久化兼容 Schema', () => {
+    /**
+     * 初始输出和历史记录使用不同宽度的 Schema：前者阻止不可解析引用，
+     * 后者继续接受合法 Replan Session Record，避免格式演进破坏恢复能力。
+     */
+    const retainedDraft = mkDraft([{ id: 'TASK-001', disposition: 'retain' }]);
+    expect(validateTaskPlanDraftSchema('initial', retainedDraft).valid).toBe(false);
+    expect(validateTaskPlanDraftSchema('replan', retainedDraft).valid).toBe(true);
+    expect(validate('TaskPlanDraft', retainedDraft).valid).toBe(true);
+    const initialSchema = getTaskPlanDraftSchemaJson('initial') as {
+      readonly properties: { readonly tasks: { readonly items: Record<string, unknown> } };
+    };
+    expect(initialSchema.properties.tasks.items).not.toHaveProperty('anyOf');
   });
 });
 

@@ -16,7 +16,10 @@ import {
 import type { FileSystemPort } from '../../../src/application/ports/file-system.js';
 import type { SessionType } from '../../../src/domain/schemas/active-session.js';
 import type { ErrorCode } from '../../../src/domain/errors.js';
-import { getSchemaJson } from '../../../src/domain/schemas/index.js';
+import {
+  getSchemaJson,
+  getTaskPlanDraftSchemaJson,
+} from '../../../src/domain/schemas/index.js';
 import type { TaskPlanDraft } from '../../../src/domain/schemas/task-plan-draft.js';
 import { expectApexErrorAsync } from '../../adapters/fixtures.js';
 import {
@@ -98,6 +101,54 @@ describe('argument array contract (SPEC §7.2)', () => {
     ]);
     expect(records[0]!.stdin).toBe(prompt);
     expect(records[0]!.cwd).toBe(harness.root);
+  }, TEST_TIMEOUT);
+
+  it('初始 Planning 向 Claude 传递不含 retain 分支的窄 Schema', async () => {
+    await harness.writeScenario({ version: FAKE_VERSION, stdoutLines: streamLines('planning') });
+    await runtime.invoke(
+      mkRequest(harness, {
+        type: 'planning',
+        permissionMode: 'plan',
+        planningDraftSchemaMode: 'initial',
+      }),
+    );
+
+    /**
+     * 这里验证真实进程 argv，而不只验证领域 Schema 辅助函数，保证收紧契约
+     * 确实到达 Claude Code 的 StructuredOutput 工具边界。
+     */
+    const records = await harness.readRecords();
+    const schemaIndex = records[0]!.argv.indexOf('--json-schema');
+    expect(records[0]!.argv[schemaIndex + 1]).toBe(
+      JSON.stringify(getTaskPlanDraftSchemaJson('initial')),
+    );
+  }, TEST_TIMEOUT);
+
+  it('初始 Planning 保留可解析的 retain 漂移，供应用层确定性恢复', async () => {
+    const retainedDraft = {
+      summary: '非法初始草稿',
+      assumptions: [],
+      retainedCheckpointDispositions: [],
+      tasks: [{ id: 'TASK-001', disposition: 'retain' }],
+    };
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines: streamLines('planning', { structuredOutput: retainedDraft }),
+    });
+
+    const fact = await runtime.invoke(
+      mkRequest(harness, {
+        type: 'planning',
+        permissionMode: 'plan',
+        planningDraftSchemaMode: 'initial',
+      }),
+    );
+
+    /**
+     * 外发 Schema 已负责阻止正常的非法提交；若 CLI 仍返回通用 Schema 合法的
+     * retain，Adapter 不抹掉该事实，由 GeneratePlanRevision 使用权威上一稿恢复。
+     */
+    expect(fact.structuredResult).toEqual(retainedDraft);
   }, TEST_TIMEOUT);
 
   it('passes the Task turn budget as an explicit Claude CLI option', async () => {
@@ -430,6 +481,7 @@ describe('session type × outcome matrix (SPEC §22.2)', () => {
         type: sessionType,
         permissionMode:
           sessionType === 'planning' || sessionType === 'plan_review' ? 'plan' : 'auto',
+        ...(sessionType === 'planning' ? { planningDraftSchemaMode: 'replan' as const } : {}),
       });
 
       if (expectedCode === undefined) {

@@ -186,7 +186,7 @@ function formatCheckpoints(checkpoints: readonly IntermediateCheckpoint[]): stri
 
 /** 系统上下文小节：REPOSITORY_ROOT / RUN_BRANCH / SPEC_PATH / SPEC_SHA256。 */
 function buildContextSection(input: PlanningPromptInput): string {
-  return [
+  const sections = [
     '系统提供的上下文：',
     '',
     `REPOSITORY_ROOT: ${input.repositoryRoot}`,
@@ -195,7 +195,18 @@ function buildContextSection(input: PlanningPromptInput): string {
     `SPEC_SHA256: ${input.specSha256}`,
     '',
     `当前 Run Branch 为 ${input.runBranch}，规划必须基于该分支的仓库事实。`,
-  ].join('\n');
+  ];
+  /**
+   * Plan Review 打回仍然可能发生在第一个 Revision 提交之前。
+   * 这里把“是否已有权威计划”直接写进提示词，避免模型仅凭“返工”一词误判成 Replan。
+   */
+  if (input.previousPlan === null && input.replanTrigger === null) {
+    sections.push(
+      '',
+      'INITIAL_PLAN_CONTRACT：当前尚无已提交的 Plan Revision。tasks 中每一项都必须返回完整 Task 定义，禁止使用 {id, disposition: "retain"}。独立 Plan Review 打回只是在修正同一份初始候选，不构成 Replan。',
+    );
+  }
+  return sections.join('\n');
 }
 
 /** Replan 追加小节（SPEC §7.1 生成新 Revision 时必须读取的全部上下文）。 */
@@ -242,7 +253,7 @@ function buildReplanSection(input: PlanningPromptInput): string {
 function buildPlanReviewFeedbackSection(input: PlanningPromptInput): string {
   const feedback = input.planReviewFeedback;
   if (feedback === null) return '';
-  return [
+  const sections = [
     'PLAN_REVIEW_FEEDBACK（上一轮草稿未通过独立复核）：',
     '',
     'REJECTED_DRAFT（JSON）：',
@@ -252,7 +263,18 @@ function buildPlanReviewFeedbackSection(input: PlanningPromptInput): string {
     toJson(feedback.review),
     '',
     '必须逐条解决 taskAssessments 与计划级 issues 后返回一份完整的新 TaskPlanDraft；不要返回局部补丁，也不要只解释原方案。',
-  ].join('\n');
+  ];
+  /**
+   * 初始候选没有可被 retain 解析的已提交 Revision。
+   * 即使反馈内含完整上一稿，也必须逐项输出完整定义，让候选 Session Record 自包含。
+   */
+  if (input.previousPlan === null && input.replanTrigger === null) {
+    sections.push(
+      '',
+      '本次仍在修正未提交的初始 Revision：必须输出全部 Task 的完整定义，不得把 REJECTED_DRAFT 中未修改的 Task 改写成 retain 引用。',
+    );
+  }
+  return sections.join('\n');
 }
 
 /**
@@ -334,10 +356,16 @@ export function buildPlanningCorrectionAppendix(
 export function buildPlanningCorrectionSessionPrompt(
   rejectedDraft: TaskPlanDraft,
   error: string,
+  materializedTaskIds: readonly string[] = [],
 ): string {
+  const materializedSection =
+    materializedTaskIds.length === 0
+      ? ''
+      : `\n\n系统已依据上一轮通过确定性校验的完整草稿，将非法 retain 引用确定性展开为权威 Task 定义。下列 Task 必须逐字段原样保留，不得重新概括、缩写或改写：${materializedTaskIds.join('、')}。当前 REJECTED_DRAFT 已经是自包含的完整草稿。`;
   return withStructuredOutputInstruction(
     [
       '你是 ApexCodingAgent 的计划草稿修正器。当前会话只修正一份已经完成仓库分析、但未通过确定性校验的 TaskPlanDraft。',
+      materializedSection,
       '',
       '修正规则：',
       '1. 逐条处理 VALIDATION_ERROR 中列出的全部问题；一条结论可能同时列出多个独立覆盖缺口。',

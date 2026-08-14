@@ -20,7 +20,11 @@ import { sessionRecordSchema } from './session-record.js';
 import { settingsJsonSchema } from './settings-json.js';
 import { taskExecutionEpisodeSchema } from './task-execution-episode.js';
 import { taskExecutionResultSchema } from './task-execution-result.js';
-import { taskPlanDraftSchema } from './task-plan-draft.js';
+import {
+  initialTaskPlanDraftSchema,
+  taskPlanDraftSchema,
+  type TaskPlanDraftSchemaMode,
+} from './task-plan-draft.js';
 import { taskRuntimeStateSchema } from './task-runtime-state.js';
 import { taskReviewEpisodeSchema } from './task-review-episode.js';
 import { taskReviewResultSchema } from './task-review-result.js';
@@ -81,6 +85,13 @@ const ajv = createAjv();
 const VALIDATORS = new Map<SchemaName, ValidateFunction>(
   SCHEMA_NAMES.map((name) => [name, ajv.compile(SCHEMA_DEFINITIONS[name].schema)]),
 );
+/**
+ * 初始草稿是 Claude 调用期的窄契约，不加入持久化 Schema 注册表。
+ *
+ * 这样不会改变 SPEC §11.5 的内置文档数量，也不会让历史 Session Record
+ * 因为曾经合法包含 Replan retain 引用而失去可读性。
+ */
+const INITIAL_TASK_PLAN_DRAFT_VALIDATOR = ajv.compile(initialTaskPlanDraftSchema);
 
 export interface SchemaValidationIssue {
   readonly path: string;
@@ -100,6 +111,17 @@ function toIssue(error: ErrorObject): SchemaValidationIssue {
   };
 }
 
+/** 把任意已编译 Schema 的 Ajv 结果归一化为领域层统一的校验结果。 */
+function validateWith(
+  validator: ValidateFunction,
+  data: unknown,
+): SchemaValidationResult {
+  if (validator(data)) {
+    return { valid: true };
+  }
+  return { valid: false, issues: (validator.errors ?? []).map(toIssue) };
+}
+
 /** Unified schema validation entry (SPEC §11.5). */
 export function validate(schemaName: SchemaName, data: unknown): SchemaValidationResult {
   const validator = VALIDATORS.get(schemaName);
@@ -110,10 +132,21 @@ export function validate(schemaName: SchemaName, data: unknown): SchemaValidatio
       message: `unknown built-in schema: ${schemaName}`,
     });
   }
-  if (validator(data)) {
-    return { valid: true };
-  }
-  return { valid: false, issues: (validator.errors ?? []).map(toIssue) };
+  return validateWith(validator, data);
+}
+
+/**
+ * 按 Planning 所处阶段校验调用期草稿契约。
+ * initial 用于验证外发 StructuredOutput 窄契约；入站仍按通用草稿读取，
+ * 让 Application 能对外部 CLI 的 retain 漂移执行确定性恢复。
+ */
+export function validateTaskPlanDraftSchema(
+  mode: TaskPlanDraftSchemaMode,
+  data: unknown,
+): SchemaValidationResult {
+  return mode === 'initial'
+    ? validateWith(INITIAL_TASK_PLAN_DRAFT_VALIDATOR, data)
+    : validate('TaskPlanDraft', data);
 }
 
 /**
@@ -142,6 +175,16 @@ export function assertSchemaValid(
 /** Raw JSON Schema object, e.g. for Claude `--json-schema` invocations. */
 export function getSchemaJson(schemaName: SchemaName): Readonly<Record<string, unknown>> {
   return SCHEMA_DEFINITIONS[schemaName].schema;
+}
+
+/**
+ * 返回 Claude Planning 的阶段化 StructuredOutput Schema。
+ * 调用者只能选择 initial 或 replan，不能自行拼装一份与领域校验漂移的 Schema。
+ */
+export function getTaskPlanDraftSchemaJson(
+  mode: TaskPlanDraftSchemaMode,
+): Readonly<Record<string, unknown>> {
+  return mode === 'initial' ? initialTaskPlanDraftSchema : taskPlanDraftSchema;
 }
 
 export function getSchemaVersion(schemaName: SchemaName): number {

@@ -170,6 +170,65 @@ function effectiveTasks(
   return [...completedTasks, ...futureTasks];
 }
 
+/**
+ * 依据一份自包含的权威草稿，确定性展开另一份草稿中的 retain 引用。
+ *
+ * 该函数只做逐 ID 投射，不让模型重新概括 Task，也不修改顺序、依赖或预算。
+ * 权威草稿自身若仍是紧凑引用，说明调用方没有提供可解析基线，必须响亮失败。
+ */
+export function materializeRetainedTaskReferences(
+  draft: TaskPlanDraft,
+  authoritativeDraft: TaskPlanDraft,
+): TaskPlanDraft {
+  const authoritativeById = new Map<string, PlannedTask>();
+  for (const entry of authoritativeDraft.tasks) {
+    if (!isRetainedTaskReference(entry)) {
+      authoritativeById.set(entry.id, entry);
+    }
+  }
+  const tasks = draft.tasks.map((entry): PlannedTask => {
+    if (!isRetainedTaskReference(entry)) return entry;
+    const authoritative = authoritativeById.get(entry.id);
+    if (authoritative === undefined) {
+      throw planConflict(
+        `retained task reference ${entry.id} has no complete authoritative definition`,
+      );
+    }
+    return authoritative;
+  });
+  return { ...draft, tasks };
+}
+
+/**
+ * 检查修正会话是否改写了由系统确定性展开的 Task。
+ * 缺失、重新退化为 retain 或任一字段变化都返回对应 ID，供用例阻止语义回退。
+ */
+export function changedMaterializedTaskIds(
+  draft: TaskPlanDraft,
+  authoritativeDraft: TaskPlanDraft,
+  taskIds: readonly string[],
+): string[] {
+  const draftById = new Map(
+    draft.tasks
+      .filter((entry): entry is PlannedTask => !isRetainedTaskReference(entry))
+      .map((task) => [task.id, task]),
+  );
+  const authoritativeById = new Map(
+    authoritativeDraft.tasks
+      .filter((entry): entry is PlannedTask => !isRetainedTaskReference(entry))
+      .map((task) => [task.id, task]),
+  );
+  return taskIds.filter((taskId) => {
+    const candidate = draftById.get(taskId);
+    const authoritative = authoritativeById.get(taskId);
+    return (
+      candidate === undefined ||
+      authoritative === undefined ||
+      !plannedTaskEquals(candidate, authoritative)
+    );
+  });
+}
+
 function assertGraphShape(tasks: readonly PlannedTask[]): void {
   const byId = new Map<string, PlannedTask>();
   for (const task of tasks) {

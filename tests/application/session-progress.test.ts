@@ -34,6 +34,7 @@ const input: BeginSessionInput<'planning'> = {
   prompt: 'plan',
   permissionMode: 'plan',
   repositoryRoot: 'C:/repo',
+  planningDraftSchemaMode: 'initial',
 };
 
 const handle: ActiveSessionHandle<'planning'> = {

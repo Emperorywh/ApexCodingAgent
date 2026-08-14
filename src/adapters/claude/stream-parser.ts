@@ -575,6 +575,11 @@ export function evaluateCollectedStreamOutcome<T extends SessionType>(
     );
   }
 
+  /**
+   * 入站流保持按通用 TaskPlanDraft 读取，初始计划的 retain 漂移才能交给
+   * Application 使用上一份完整候选确定性物化。出站 --json-schema 仍使用
+   * initial 窄契约；这里的宽读取只承担外部 CLI 未遵守契约时的防御性兜底。
+   */
   const resultSchema = RESULT_SCHEMA_BY_SESSION_TYPE[input.sessionType];
   const validation = validate(resultSchema, input.stream.structuredOutput);
   if (!validation.valid) {

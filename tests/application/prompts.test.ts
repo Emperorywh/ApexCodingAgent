@@ -209,6 +209,8 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).not.toContain('REPLAN 上下文');
     expect(prompt).not.toContain('RETAINED_INTERMEDIATE_CHECKPOINTS:');
     expect(prompt).not.toContain('PREVIOUS_PLAN_TASKS');
+    expect(prompt).toContain('INITIAL_PLAN_CONTRACT');
+    expect(prompt).toContain('禁止使用 {id, disposition: "retain"}');
   });
 
   it('replan 时追加 §7.1 全部上下文', () => {
@@ -318,6 +320,12 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('范围过大的草稿');
     expect(prompt).toContain('objective 包含两个独立交付物');
     expect(prompt).toContain('完整的新 TaskPlanDraft');
+    /**
+     * Review 打回没有提交 Revision 1，提示词必须再次声明完整输出契约，
+     * 不能让“上一轮”措辞诱导 Planner 进入 Replan 的紧凑引用协议。
+     */
+    expect(prompt).toContain('本次仍在修正未提交的初始 Revision');
+    expect(prompt).toContain('不得把 REJECTED_DRAFT 中未修改的 Task 改写成 retain 引用');
   });
 });
 
@@ -394,6 +402,27 @@ describe('buildPlanningCorrectionSessionPrompt（轻量独立修正会话）', (
     expect(prompt).toContain('不重新探索仓库');
     expect(prompt).toContain('完整的新 TaskPlanDraft');
     expect(prompt).not.toContain(REPOSITORY_ROOT);
+  });
+
+  it('标出系统物化的权威 Task，禁止轻量修正会话改写', () => {
+    const prompt = buildPlanningCorrectionSessionPrompt(
+      {
+        summary: '已经展开的完整草稿',
+        assumptions: [],
+        retainedCheckpointDispositions: [],
+        tasks: [pendingDefinition],
+      },
+      'initial plan must not contain retained task references',
+      ['TASK-002', 'TASK-003'],
+    );
+
+    /**
+     * 修正器拿到的是程序从上一稿逐 ID 展开的定义，不是可自由重写的参考文本。
+     * 两个 ID 都必须进入明确的逐字段保护指令。
+     */
+    expect(prompt).toContain('确定性展开为权威 Task 定义');
+    expect(prompt).toContain('TASK-002、TASK-003');
+    expect(prompt).toContain('不得重新概括、缩写或改写');
   });
 });
 

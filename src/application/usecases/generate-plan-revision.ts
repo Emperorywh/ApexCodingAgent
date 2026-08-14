@@ -20,14 +20,23 @@
  * （SPEC §7.5 仍原样拒绝），只是不把可修正的模型疏漏升级为整 Run 终止。
  */
 import { ApexError, isApexError, type ErrorCode } from '../../domain/errors.js';
+import {
+  changedMaterializedTaskIds,
+  materializeRetainedTaskReferences,
+} from '../../domain/plan.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
 import type { PlanRevisionTrigger } from '../../domain/schemas/plan-revision-snapshot.js';
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
 import type { RunJson } from '../../domain/schemas/run-json.js';
-import type { PlannedTask, TaskPlanDraft } from '../../domain/schemas/task-plan-draft.js';
+import {
+  isRetainedTaskReference,
+  type PlannedTask,
+  type TaskPlanDraft,
+} from '../../domain/schemas/task-plan-draft.js';
 import type { TasksJson } from '../../domain/schemas/tasks-json.js';
 import {
   buildPlanningCorrectionPrompt,
+  buildPlanningCorrectionAppendix,
   buildPlanningCorrectionSessionPrompt,
   buildPlanningPrompt,
   buildPlanningResumePrompt,
@@ -138,6 +147,39 @@ function skippedTaskSummaries(run: RunJson): SkippedTaskSummary[] {
   return Object.values(run.tasks)
     .filter((state) => state.status === 'skipped')
     .map((state) => ({ taskId: state.taskId, skipReason: state.skipReason! }));
+}
+
+interface CorrectionDraftContext {
+  readonly draft: TaskPlanDraft;
+  readonly materializedTaskIds: readonly string[];
+  readonly selfContained: boolean;
+}
+
+/**
+ * 为初始 Revision 的修正会话建立自包含草稿。
+ *
+ * Plan Review 打回的上一稿已经通过确定性校验，因此其中每个 Task 都是可按
+ * ID 投射的权威完整定义；没有该基线时不猜测内容，改由原 Planner 上下文续接。
+ */
+function prepareCorrectionDraftContext(
+  draft: TaskPlanDraft,
+  authoritativeDraft: TaskPlanDraft | null,
+  initialRevision: boolean,
+): CorrectionDraftContext {
+  const retainedTaskIds = draft.tasks
+    .filter(isRetainedTaskReference)
+    .map((entry) => entry.id);
+  if (!initialRevision || retainedTaskIds.length === 0) {
+    return { draft, materializedTaskIds: [], selfContained: true };
+  }
+  if (authoritativeDraft === null) {
+    return { draft, materializedTaskIds: [], selfContained: false };
+  }
+  return {
+    draft: materializeRetainedTaskReferences(draft, authoritativeDraft),
+    materializedTaskIds: retainedTaskIds,
+    selfContained: true,
+  };
 }
 
 /**
@@ -279,6 +321,11 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       specSha256: specBefore.sha256,
       permissionMode: 'plan',
       repositoryRoot: root,
+      /**
+       * 复核打回不会把尚未提交的 Revision 1 变成 Replan。
+       * 只依据已提交 planRevision 选择 Schema，避免模型自行解释会话语义。
+       */
+      planningDraftSchemaMode: run.planRevision === 0 ? 'initial' : 'replan',
     } as const;
 
     /*
@@ -324,18 +371,35 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
                 ? buildPlanningResumePrompt()
                 : buildPlanningCorrectionPrompt(resumeCorrectionMessage),
           };
+    const resumeCorrectionContext =
+      resumeCorrectionDraft === null
+        ? null
+        : prepareCorrectionDraftContext(
+            resumeCorrectionDraft,
+            planReviewFeedback?.rejectedDraft ?? null,
+            run.planRevision === 0,
+          );
+    let materializedTaskIds = resumeCorrectionContext?.materializedTaskIds ?? [];
+    let lastSelfContainedCorrectionDraft =
+      resumeCorrectionContext?.selfContained === true ? resumeCorrectionContext.draft : null;
     /**
      * resume 不可用时，通用协调器会把同一调用切换到 freshPrompt。
      * 校验失败恢复必须同时注入被拒草稿和精确错误，保证全新 Planner 与
      * 原会话续接拥有等价的定向修正事实。
      */
     let freshPrompt =
-      resumeCorrectionMessage === null || resumeCorrectionDraft === null
+      resumeCorrectionMessage === null || resumeCorrectionContext === null
         ? prompt
-        : buildPlanningCorrectionSessionPrompt(
-            resumeCorrectionDraft,
-            resumeCorrectionMessage,
-          );
+        : resumeCorrectionContext.selfContained
+          ? buildPlanningCorrectionSessionPrompt(
+              resumeCorrectionContext.draft,
+              resumeCorrectionMessage,
+              resumeCorrectionContext.materializedTaskIds,
+            )
+          : `${prompt}\n\n${buildPlanningCorrectionAppendix(
+              resumeCorrectionContext.draft,
+              resumeCorrectionMessage,
+            )}`;
     let sessionRun = run;
     let corrections = 0;
 
@@ -403,8 +467,39 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
       }
 
       let draft: TaskPlanDraft | null = null;
+      let correctionDraftForPrompt: TaskPlanDraft | null = null;
       try {
         draft = deps.redaction.redactStructured(fact.structuredResult);
+        correctionDraftForPrompt = draft;
+        if (
+          lastSelfContainedCorrectionDraft !== null &&
+          materializedTaskIds.length > 0
+        ) {
+          const changedTaskIds = changedMaterializedTaskIds(
+            draft,
+            lastSelfContainedCorrectionDraft,
+            materializedTaskIds,
+          );
+          if (changedTaskIds.length > 0) {
+            correctionDraftForPrompt = lastSelfContainedCorrectionDraft;
+            throw new ApexError({
+              code: 'PLAN_REVISION_CONFLICT',
+              stage: 'planning',
+              message:
+                `planning correction changed authoritative materialized tasks: ` +
+                changedTaskIds.join(', '),
+            });
+          }
+        }
+
+        /**
+         * 完整但仍有其他语义缺口的草稿也可作为下一轮物化基线。
+         * 紧凑草稿本身不能成为基线；它必须先在 catch 分支逐 ID 展开，并由
+         * 新的 Planning Session 返回自包含结果后才能成为持久化候选。
+         */
+        if (!draft.tasks.some(isRetainedTaskReference)) {
+          lastSelfContainedCorrectionDraft = draft;
+        }
         preparePlanRevisionMerge(handle.run, tasks, draft);
         const reviewAttempt = (run.planReviewFeedback?.reviewAttempt ?? 0) + 1;
         const staged: RunJson = {
@@ -438,24 +533,64 @@ export function createGeneratePlanRevision(deps: UseCaseDeps): {
           corrections += 1;
           // 校验消息嵌入模型生成的草稿事实，进入提示词与终端前统一脱敏。
           const safeMessage = deps.redaction.redactText(error.message);
+          let correctionContext: CorrectionDraftContext;
+          try {
+            correctionContext = prepareCorrectionDraftContext(
+              correctionDraftForPrompt ?? draft,
+              lastSelfContainedCorrectionDraft ?? planReviewFeedback?.rejectedDraft ?? null,
+              run.planRevision === 0,
+            );
+          } catch (materializationError) {
+            return failWithSession(handle, materializationError as ApexError);
+          }
+          if (correctionContext.materializedTaskIds.length > 0) {
+            materializedTaskIds = [
+              ...new Set([
+                ...materializedTaskIds,
+                ...correctionContext.materializedTaskIds,
+              ]),
+            ];
+          }
+          if (correctionContext.selfContained) {
+            lastSelfContainedCorrectionDraft = correctionContext.draft;
+          }
           deps.logger.log('warn', 'planning.draft_correction', {
             sessionId: handle.sessionId,
             errorCode: error.errorCode,
             message: safeMessage,
             correction: corrections,
+            materializedTaskCount: materializedTaskIds.length,
+            selfContained: correctionContext.selfContained,
           });
+          const correctionMode = correctionContext.selfContained
+            ? '轻量 Planner 定向修正'
+            : '原 Planner 上下文续接修正';
           deps.output.writeLine(
             deps.redaction.redactText(
               `↻ 计划草稿未通过确定性校验 · ${error.errorCode} · ` +
-                `启动轻量 Planner 定向修正（第 ${corrections}/${MAX_PLAN_DRAFT_CORRECTIONS} 轮）· ${safeMessage}`,
+                `启动${correctionMode}（第 ${corrections}/${MAX_PLAN_DRAFT_CORRECTIONS} 轮）· ${safeMessage}`,
             ),
           );
           /**
-           * 进程内修正始终从被拒草稿构造独立上下文，不再尝试续接超大的原会话。
-           * 用户显式 resume 的断点能力仍由入口 resumeHint 保留，两种语义互不耦合。
+           * 自包含草稿继续使用轻量独立会话；无法展开的初始 retain 草稿必须
+           * 续接原 Planner，resume 不可用时才回退到携完整规划提示的全新会话。
            */
-          resumeHint = null;
-          freshPrompt = buildPlanningCorrectionSessionPrompt(draft, safeMessage);
+          resumeHint = correctionContext.selfContained
+            ? null
+            : {
+                sessionId: handle.sessionId,
+                prompt: buildPlanningCorrectionPrompt(safeMessage),
+              };
+          freshPrompt = correctionContext.selfContained
+            ? buildPlanningCorrectionSessionPrompt(
+                correctionContext.draft,
+                safeMessage,
+                materializedTaskIds,
+              )
+            : `${prompt}\n\n${buildPlanningCorrectionAppendix(
+                correctionContext.draft,
+                safeMessage,
+              )}`;
           sessionRun = handle.run;
           continue;
         }

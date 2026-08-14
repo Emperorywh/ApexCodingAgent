@@ -62,12 +62,20 @@ export interface RepositoryFact {
 }
 
 /**
- * 同一未提交 Revision 允许的独立计划复核轮次上限。
+ * 同一未提交 Revision 允许 Planner 根据独立复核反馈执行的返工次数。
  *
- * 持久化形状（reviewAttempt 上限）与 ReviewPlanCandidate 的终止判定共用
- * 同一常量，避免 Schema 与用例各自维护字面量而漂移。
+ * 初始候选不是返工；三次返工分别消费前三次 changes_required，因而最多
+ * 会产生四份候选并执行四次复核。把“复核次数”直接设为三会让第三份反馈
+ * 没有任何修正机会，实际只完成两次返工。
  */
-export const MAX_PLAN_REVIEW_ATTEMPTS = 3;
+export const MAX_PLAN_REVIEW_REWORKS = 3;
+
+/**
+ * 持久化 reviewAttempt 统计候选被复核的次数，包含第一份初始候选。
+ * Schema 与 ReviewPlanCandidate 共用该派生上限，避免持久化边界和终止判定
+ * 各自维护字面量而再次出现计数语义偏差。
+ */
+export const MAX_PLAN_REVIEW_ATTEMPTS = MAX_PLAN_REVIEW_REWORKS + 1;
 
 /**
  * 已通过确定性计划校验、正在等待独立 Reviewer 的草稿引用。

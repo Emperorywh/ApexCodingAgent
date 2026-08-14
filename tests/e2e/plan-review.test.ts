@@ -2,7 +2,7 @@
  * 独立 Plan Review 端到端测试。
  *
  * 覆盖 Reviewer 打回后 Planner 消费结构化反馈重新生成草稿、Reviewer
- * 中断后只续接自身会话、三次打回上限、只读副作用门禁、复核期间 SPEC
+ * 中断后只续接自身会话、三次实际返工上限、只读副作用门禁、复核期间 SPEC
  * 变化丢弃候选，以及候选/反馈引用损坏时的响亮失败。
  */
 import { rm } from 'node:fs/promises';
@@ -354,7 +354,7 @@ describe('e2e independent plan review', () => {
   );
 
   it(
-    '同一 Revision 连续三次 changes_required 后以稳定错误停止',
+    '第三份 changes_required 仍交给 Planner 执行第三次返工并可获批准',
     async () => {
       const harness = await createE2EHarness();
       try {
@@ -364,6 +364,63 @@ describe('e2e independent plan review', () => {
           help: COMPLETE_HELP,
           autoApprovePlanReviews: false,
           sequence: [
+            /**
+             * 初稿以及前两份返工稿均被打回；第三份反馈产生后必须再启动
+             * 一次 Planning，第四份候选获批，复现真实项目的临界路径。
+             */
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(PLAN_CHANGES_REQUIRED) },
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(PLAN_CHANGES_REQUIRED) },
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(PLAN_CHANGES_REQUIRED) },
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(planReviewApproved(['TASK-001'])) },
+            {
+              writeFiles: [{ path: 'src/focused.ts', content: 'export const focused = true;\n' }],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+
+        const result = await harness.start();
+        expect(result.kind, JSON.stringify(result)).toBe('completed');
+        if (result.kind !== 'completed') return;
+
+        expect((await harness.listSessionRecords()).map((record) => record.type)).toEqual([
+          'planning',
+          'plan_review',
+          'planning',
+          'plan_review',
+          'planning',
+          'plan_review',
+          'planning',
+          'plan_review',
+          'execution',
+          'task_review',
+          'final_review',
+        ]);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it(
+    '同一 Revision 完成三次返工后第四份候选仍被打回才以稳定错误停止',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          autoApprovePlanReviews: false,
+          sequence: [
+            { stdoutLines: streamOf(ONE_TASK_PLAN) },
+            { stdoutLines: streamOf(PLAN_CHANGES_REQUIRED) },
             { stdoutLines: streamOf(ONE_TASK_PLAN) },
             { stdoutLines: streamOf(PLAN_CHANGES_REQUIRED) },
             { stdoutLines: streamOf(ONE_TASK_PLAN) },
@@ -382,6 +439,8 @@ describe('e2e independent plan review', () => {
         expect(result.run.planCandidate).toBeNull();
         expect(result.run.planReviewFeedback).toBeNull();
         expect((await harness.listSessionRecords()).map((record) => record.type)).toEqual([
+          'planning',
+          'plan_review',
           'planning',
           'plan_review',
           'planning',

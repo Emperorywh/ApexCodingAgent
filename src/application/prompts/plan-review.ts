@@ -88,12 +88,13 @@ ${formatCompletedSummaries(input.completedTasks)}
 13. 每条 assessment 必须按下列固定顺序给出完整 checks，不得省略、合并或增加维度。每个 check 都要引用 SPEC 条目、仓库路径、已有接口或 Task 字段等可核对事实，不能只写“看起来合理”：
 ${formatReviewDimensions()}
 14. assessment 的 decision 必须与 checks 和 issues 一致：approved 要求全部 checks 为 satisfied 且 issues 为空；changes_required 必须同时包含至少一个 not_satisfied check 和至少一个阻塞 ReviewIssue，二者不得互相替代。
-15. issue 必须是结构化对象，并把“观察到的问题”与“修复后必须成立的结果”分开：id 使用本次结果内全局唯一的 ISSUE-001..ISSUE-999；category 使用契约枚举；summary 简述问题；evidence 引用具体 SPEC/Task/仓库事实；requiredChange 描述必须达到的修复结果；affectedPaths 只填写已确认相关的 Git 相对路径；criterionIndexes 只填写关联的 acceptanceCriteria 索引。计划级 issue 没有单一 Task 上下文，criterionIndexes 必须为空数组。
+15. issue 必须是结构化对象，并把“观察到的问题”与“修复后必须成立的结果”分开：id 使用本次结果内全局唯一的 ISSUE-001..ISSUE-999；category 使用契约枚举；summary 简述问题；evidence 引用具体 SPEC/Task/仓库事实；requiredChange 描述必须达到的修复结果；affectedPaths 只填写已确认相关的 Git 相对路径；criterionIndexes 只填写关联的 acceptanceCriteria 索引。计划级 issue 没有单一 Task 上下文，criterionIndexes 必须为空数组。issue 中出现的精确路径、命令、字段名和章节号必须回到 SPEC 或仓库原文逐字核对；不得把通用路径模板与目录树样例重复拼接，不得臆造不存在的目录层级或命令。
 16. issues 只收录必须修改的阻塞性问题；不影响计划正确性的观察、建议或文档瑕疵一律写入 summary，不得写入任何 issues。
 17. 只有全部 Task assessment 均 approved 且计划级 issues 为空时，整体 decision 才能为 approved；计划级 issues 同样只收录阻塞性问题。
 18. 候选 Task 不得重复或推翻 COMPLETED_TASKS 已经完成的工作；dependsOn 引用 completed Task 的 ID 是允许的。发现候选与已完成工作重叠或边界冲突时，写入对应 Task 的 issues。
 19. 必须把 RETAINED_PENDING_CONTEXT 与当前 SPEC、仓库事实和候选变更一起检查；若某个 retain Task 因候选变化或当前 SPEC 已不能原样保留，写入计划级 issue，明确指出需要 Planner 在下一稿完整重定义的 Task ID。不得为 retain Task 生成 taskAssessment。
 20. 本会话严格只读：不得修改、创建、删除、暂存或提交文件，不得移动 HEAD，不得执行 remote push 或其他有副作用的操作。
+21. 必须在本次结果中一次性列全当前能够从 SPEC、仓库和候选计划观察到的全部阻塞项；不得只列一个示例、留待后续轮次再补充同类问题。对上一轮返工新增或修改的字段仍要执行全部复核维度，避免把可同时发现的问题拆到多轮反馈。
 
 返回 PlanReviewResult：
 - decision: "approved" | "changes_required"

@@ -262,7 +262,12 @@ function buildPlanReviewFeedbackSection(input: PlanningPromptInput): string {
     'REVIEW_RESULT（JSON）：',
     toJson(feedback.review),
     '',
-    '必须逐条解决 taskAssessments 与计划级 issues 后返回一份完整的新 TaskPlanDraft；不要返回局部补丁，也不要只解释原方案。',
+    /**
+     * Reviewer 的结论仍是模型输出，Planner 必须以权威 SPEC/仓库事实校核
+     * 其中的字面示例。这样既消费有效反馈，也不会把 Reviewer 拼错的路径
+     * 原样写入下一稿并制造新的规格偏差。
+     */
+    '必须逐条解决 taskAssessments 与计划级 issues 后返回一份完整的新 TaskPlanDraft；对反馈引用的精确路径、命令、字段名和章节号，必须先回到 SPEC 或仓库原文逐字核对；若 requiredChange 中的字面示例与权威原文冲突，以权威原文为准并在 summary 说明校正，不得照抄错误示例。修正后还必须对整份新草稿做一次完整遗漏检查，尤其复核本轮新增或修改的任务字段。不要返回局部补丁，也不要只解释原方案。',
   ];
   /**
    * 初始候选没有可被 retain 解析的已提交 Revision。

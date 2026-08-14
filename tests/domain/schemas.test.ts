@@ -33,6 +33,7 @@ import {
   UUID_1,
   UUID_2,
 } from './fixtures.js';
+import { MAX_PLAN_REVIEW_ATTEMPTS } from '../../src/domain/schemas/run-json.js';
 
 function expectValid(name: SchemaName, data: unknown): void {
   const result = validate(name, data);
@@ -534,6 +535,22 @@ describe('custom formats and enums', () => {
     const run = mkRun() as unknown as Record<string, unknown>;
     expectInvalid('RunJson', { ...run, stateRevision: '1' });
     expectInvalid('RunJson', { ...run, planRevision: -1 });
+    /**
+     * 初始候选加三次实际返工会产生第四次复核；该边界必须可持久化，
+     * 再多一轮则继续由 Schema 拒绝，保持自动回路有界。
+     */
+    const candidate = {
+      planRevision: 1,
+      plannerSessionId: UUID_1,
+      specSha256: SHA256_A,
+      trigger: { type: 'initial', reason: '初始计划', sourceSessionId: null },
+      reviewAttempt: MAX_PLAN_REVIEW_ATTEMPTS,
+    };
+    expectValid('RunJson', { ...run, planCandidate: candidate });
+    expectInvalid('RunJson', {
+      ...run,
+      planCandidate: { ...candidate, reviewAttempt: MAX_PLAN_REVIEW_ATTEMPTS + 1 },
+    });
   });
 
   it('persisted top-level objects pin schemaVersion to the integer 1', () => {

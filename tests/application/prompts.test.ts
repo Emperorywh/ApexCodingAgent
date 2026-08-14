@@ -321,6 +321,13 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('objective 包含两个独立交付物');
     expect(prompt).toContain('完整的新 TaskPlanDraft');
     /**
+     * Planner 要消费 Reviewer 的语义反馈，但 Reviewer 不是权威事实源；
+     * 精确字面示例必须回查，修复后还要检查新稿是否产生其他遗漏。
+     */
+    expect(prompt).toContain('必须先回到 SPEC 或仓库原文逐字核对');
+    expect(prompt).toContain('不得照抄错误示例');
+    expect(prompt).toContain('对整份新草稿做一次完整遗漏检查');
+    /**
      * Review 打回没有提交 Revision 1，提示词必须再次声明完整输出契约，
      * 不能让“上一轮”措辞诱导 Planner 进入 Replan 的紧凑引用协议。
      */
@@ -481,6 +488,13 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain('ISSUE-001..ISSUE-999');
     expect(prompt).toContain('非阻塞性观察');
     expect(prompt).toContain('写入 summary');
+    /**
+     * 真实 Run 中 Reviewer 曾把目录树样例与通用模板重复拼接，多造一层
+     * Login；提示词必须要求精确事实回查，并把阻塞项在单轮内列全。
+     */
+    expect(prompt).toContain('必须回到 SPEC 或仓库原文逐字核对');
+    expect(prompt).toContain('不得把通用路径模板与目录树样例重复拼接');
+    expect(prompt).toContain('一次性列全');
   });
 
   it('没有修改或新增 Task 时明确要求空逐任务评估并保留计划级复核', () => {

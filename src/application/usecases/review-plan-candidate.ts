@@ -9,7 +9,11 @@ import {
   validatePlanReviewResultSemantics,
 } from '../../domain/results.js';
 import type { PlanReviewResult } from '../../domain/schemas/plan-review-result.js';
-import { MAX_PLAN_REVIEW_ATTEMPTS, type RunJson } from '../../domain/schemas/run-json.js';
+import {
+  MAX_PLAN_REVIEW_ATTEMPTS,
+  MAX_PLAN_REVIEW_REWORKS,
+  type RunJson,
+} from '../../domain/schemas/run-json.js';
 import {
   isRetainedTaskReference,
   type PlannedTask,
@@ -331,6 +335,11 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
       }
     }
 
+    /**
+     * reviewAttempt=1 对应初始候选，不消耗返工额度。只有第四份候选仍被
+     * 打回时，才表示三次 Planner 返工均未通过；第三份反馈必须先交给
+     * Planner，不能在反馈刚产生时直接把 Run 判为“不收敛”。
+     */
     if (candidate.reviewAttempt >= MAX_PLAN_REVIEW_ATTEMPTS) {
       return failWithSession(
         handle,
@@ -338,8 +347,10 @@ export function createReviewPlanCandidate(deps: UseCaseDeps): {
           code: 'PLAN_REVIEW_REWORK_LIMIT_EXCEEDED',
           stage: 'plan_review',
           message:
-            `independent plan review requested changes ${candidate.reviewAttempt} times ` +
-            `for revision ${candidate.planRevision}; planning is not converging`,
+            `independent plan review still requested changes after ` +
+            `${MAX_PLAN_REVIEW_REWORKS} replanning rounds ` +
+            `(${candidate.reviewAttempt} reviews) for revision ${candidate.planRevision}; ` +
+            `planning is not converging`,
           sessionId: handle.sessionId,
         }),
       );

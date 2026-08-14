@@ -6,7 +6,11 @@
  * （同一 generatedAt 等重复事实），再由 StateStorePort.commitPlanRevision
  * 按 Snapshot → tasks.json → SHA-256 → run.json（提交点）的顺序落盘。
  */
-import { mergePlanRevision, type PlanMergeResult } from '../../domain/plan.js';
+import {
+  assertTasksAvoidProtectedPaths,
+  mergePlanRevision,
+  type PlanMergeResult,
+} from '../../domain/plan.js';
 import { applyRunEvent } from '../../domain/run-state.js';
 import { ApexError } from '../../domain/errors.js';
 import { formatRfc3339InSystemTimeZone } from '../../domain/time.js';
@@ -73,13 +77,24 @@ export function preparePlanRevisionMerge(
   currentTasks: TasksJson | null,
   draft: TaskPlanDraft,
 ): PlanMergeResult {
-  return mergePlanRevision({
+  const merge = mergePlanRevision({
     draft,
     currentPlanRevision: run.planRevision,
     currentTasks: currentTasks?.tasks ?? [],
     taskStates: run.tasks,
     unabsorbedCheckpoints: unabsorbedCheckpoints(run),
   });
+
+  /**
+   * completed 定义是不可变历史事实，不因新版本增加的计划门禁而回写；其余
+   * 任务都会再次检查，包括 Replan 中用 retain 引用带回来的旧 pending Task。
+   * 这样历史坏计划无法借紧凑引用绕过保护路径校验。
+   */
+  const executableTasks = merge.tasks.filter(
+    (task) => run.tasks[task.id]?.status !== 'completed',
+  );
+  assertTasksAvoidProtectedPaths(executableTasks, run.spec.path);
+  return merge;
 }
 
 /**

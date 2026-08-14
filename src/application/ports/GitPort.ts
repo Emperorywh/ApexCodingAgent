@@ -246,12 +246,17 @@ export interface GitPort {
    *
    * `allowAdvancedHead=true` 仅用于被中断的 Execution/Final Review
    * Session；此时 current HEAD 必须是 expectedHead 的后继，且新增提交
-   * 不得包含 SPEC 或 `.apex-coding-agent/`。其余恢复点要求 HEAD 精确相等。
+   * 不得包含 SPEC 或 `.apex-coding-agent/`。历史坏计划恢复可以额外启用
+   * `allowCommittedSpecChange`，但仍只放行已提交的 SPEC，状态目录与暂存区
+   * 保护保持不变。其余恢复点要求 HEAD 精确相等。
    */
   assertResumePosition(
     root: string,
     facts: SessionGitFacts,
-    options: { readonly allowAdvancedHead: boolean },
+    options: {
+      readonly allowAdvancedHead: boolean;
+      readonly allowCommittedSpecChange?: boolean;
+    },
   ): Promise<ResumePositionFact>;
 
   /**

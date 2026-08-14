@@ -34,6 +34,7 @@ export const MAX_PLAN_REVISIONS = 50;
 export const MAX_TASK_ID_NUMBER = 999;
 
 const PLAN_STAGE = 'planning';
+const STATE_DIRECTORY_PATH = '.apex-coding-agent';
 
 function planInvalid(message: string): ApexError {
   return new ApexError({ code: 'PLAN_INVALID', stage: PLAN_STAGE, message });
@@ -41,6 +42,33 @@ function planInvalid(message: string): ApexError {
 
 function planConflict(message: string): ApexError {
   return new ApexError({ code: 'PLAN_REVISION_CONFLICT', stage: PLAN_STAGE, message });
+}
+
+/**
+ * 拒绝把协调器保护路径写进仍待执行的 Task 定义。
+ *
+ * Execution 的 Git 不变量不会允许模型修改权威 SPEC 或运行状态目录；若计划
+ * 反而把这些路径列为 likelyPaths，执行提示与验收条件就会形成不可完成的
+ * 冲突。这里在 Revision 提交前确定性打回，让 Planner 修正任务边界。
+ */
+export function assertTasksAvoidProtectedPaths(
+  tasks: readonly PlannedTask[],
+  specGitPath: string,
+): void {
+  for (const task of tasks) {
+    const protectedPath = task.likelyPaths.find(
+      (path) =>
+        path === specGitPath ||
+        path === STATE_DIRECTORY_PATH ||
+        path.startsWith(`${STATE_DIRECTORY_PATH}/`),
+    );
+    if (protectedPath !== undefined) {
+      throw planInvalid(
+        `task ${task.id} likelyPaths contains coordinator-protected path ${protectedPath}; ` +
+          'SPEC and .apex-coding-agent must remain outside every executable task',
+      );
+    }
+  }
 }
 
 /** Field-by-field deep equality of two task definitions (SPEC §6.5 step 3). */

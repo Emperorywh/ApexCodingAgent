@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  assertTasksAvoidProtectedPaths,
   changedMaterializedTaskIds,
   materializeRetainedTaskReferences,
   mergePlanRevision,
@@ -38,6 +39,35 @@ function replanContext(overrides: Partial<PlanDraftValidationContext>): PlanDraf
 }
 
 describe('TaskPlanDraft validation (§7.5)', () => {
+  it('拒绝待执行 Task 把 SPEC 或状态目录列为修改目标', () => {
+    /**
+     * 计划模型可能从“回写验收结果”的规格文本推导出自修改任务；该定义与
+     * Execution 的 Git 保护边界永远冲突，必须在启动执行会话前确定性拒绝。
+     */
+    expectApexError(
+      () =>
+        assertTasksAvoidProtectedPaths(
+          [mkTask('TASK-001', [], { likelyPaths: ['docs/SPEC.md'] })],
+          'docs/SPEC.md',
+        ),
+      'PLAN_INVALID',
+    );
+    expectApexError(
+      () =>
+        assertTasksAvoidProtectedPaths(
+          [mkTask('TASK-001', [], { likelyPaths: ['.apex-coding-agent/run.json'] })],
+          'docs/SPEC.md',
+        ),
+      'PLAN_INVALID',
+    );
+    expect(() =>
+      assertTasksAvoidProtectedPaths(
+        [mkTask('TASK-001', [], { likelyPaths: ['src/router'] })],
+        'docs/SPEC.md',
+      ),
+    ).not.toThrow();
+  });
+
   it('初始计划拒绝没有上一 Revision 可物化的 retain 引用', () => {
     /**
      * Schema 需要兼容 Replan 的联合形状；是否存在可引用的权威定义属于

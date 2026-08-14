@@ -11,6 +11,7 @@ import {
 } from '../../src/application/usecases/resume-state.js';
 import type { ResumePoint, RunJson } from '../../src/domain/schemas/run-json.js';
 import {
+  expectApexError,
   mkErrorRecord,
   mkResult,
   mkRun,
@@ -19,6 +20,7 @@ import {
   OID_C,
   SHA256_A,
   T1,
+  UUID_1,
 } from '../domain/fixtures.js';
 
 const REVIEW_POINT: ResumePoint = {
@@ -43,6 +45,50 @@ function windowRun(overrides: Partial<RunJson> = {}): RunJson {
       }),
     },
     ...overrides,
+  });
+}
+
+/**
+ * 复刻旧版本真实事故：Execution 已正常结束并提交 SPEC，Git 门禁随后终结
+ * Run；失败 Task 与 Episode 完整存在，但当时没有生成 resumePoint。
+ */
+function protectedSpecFailedRun(): RunJson {
+  const failure = mkErrorRecord({
+    errorCode: 'PROTECTED_PATH_CHANGED',
+    errorClass: 'git_error',
+    stage: 'git',
+    message: 'session commit contains protected path docs/SPEC.md',
+  });
+  return mkRun({
+    status: 'failed',
+    planRevision: 1,
+    tasksSha256: SHA256_A,
+    lastError: failure,
+    terminalAt: T1,
+    resumePoint: null,
+    tasks: {
+      'TASK-001': mkTaskState('TASK-001', 'failed', {
+        failure,
+        executionEpisodes: [
+          {
+            sessionId: UUID_1,
+            taskId: 'TASK-001',
+            planRevision: 1,
+            specSha256Before: SHA256_A,
+            specSha256After: SHA256_A,
+            startedAt: T1,
+            endedAt: T1,
+            outcome: 'session_error',
+            summary: failure.message,
+            acceptanceEvidence: [],
+            finalCheckpoint: null,
+            intermediateCheckpoint: null,
+            checkpointReason: 'error: session ended before any checkpoint',
+            error: failure,
+          },
+        ],
+      }),
+    },
   });
 }
 
@@ -76,6 +122,56 @@ describe('classifyResumeRun 预复核窗口（§17 resume）', () => {
       sessionId: null,
       sessionType: null,
     });
+  });
+});
+
+describe('classifyResumeRun 历史 SPEC 保护失败', () => {
+  it('只为唯一且事实闭合的失败 Task 合成无会话恢复点', () => {
+    const original = protectedSpecFailedRun();
+    const classification = classifyResumeRun(original, false, { kind: 'unknown' });
+
+    expect(classification).toEqual({
+      point: {
+        fromStatus: 'running',
+        taskId: 'TASK-001',
+        sessionId: null,
+        sessionType: null,
+      },
+      requiresOrphanReconciliation: false,
+      liveness: null,
+      protectedSpecRecovery: true,
+    });
+
+    /**
+     * 旧 Claude 会话已经返回 completed，恢复时只能把 Task 重新放回 pending；
+     * 后续由 SPEC 哈希边界触发 Replan，不能再次续接该违规会话。
+     */
+    const reopened = reopenRun(
+      original,
+      original,
+      classification.point,
+      OID_C,
+      T1,
+    );
+    expect(reopened.status).toBe('running');
+    expect(reopened.tasks['TASK-001']!.status).toBe('pending');
+    expect(reopened.repository.expectedHead).toBe(OID_C);
+  });
+
+  it('错误事实不闭合时仍保持不可恢复', () => {
+    const incomplete = protectedSpecFailedRun();
+    const task = incomplete.tasks['TASK-001']!;
+    const malformed = {
+      ...incomplete,
+      tasks: {
+        ...incomplete.tasks,
+        'TASK-001': { ...task, executionEpisodes: [] },
+      },
+    };
+    expectApexError(
+      () => classifyResumeRun(malformed, false, { kind: 'unknown' }),
+      'RUN_NOT_RESUMABLE',
+    );
   });
 });
 

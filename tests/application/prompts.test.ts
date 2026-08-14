@@ -190,6 +190,13 @@ describe('buildPlanningPrompt（SPEC §24）', () => {
     expect(prompt).toContain('likelyPaths 只是提示，不是强制文件范围');
     expect(prompt).toContain('文件和目录均不得以斜杠结尾');
     expect(prompt).toContain('不得包含 . 或 .. 路径段');
+    /**
+     * Planner 必须提前知道执行器无法提交协调器保护路径，避免从 SPEC 的
+     * “回写自身”文字生成一个验收条件与 Git 门禁互相冲突的 Task。
+     */
+    expect(prompt).toContain('SPEC_PATH 与 .apex-coding-agent 是协调器保护路径');
+    expect(prompt).toContain('不得把它们列入 likelyPaths');
+    expect(prompt).toContain('由用户在 Run 外完成');
     // 返回结构
     expect(prompt).toContain('retainedCheckpointDispositions');
     expect(prompt).toContain('targetContextBudget');
@@ -346,6 +353,7 @@ describe('buildPlanningResumePrompt（Planning 断点续接）', () => {
     expect(prompt).toContain('从原对话断点继续');
     expect(prompt).toContain('只读边界');
     expect(prompt).toContain('完整 TaskPlanDraft');
+    expect(prompt).toContain('任何 Task 都不得要求改写或把它们列入 likelyPaths');
     expect(prompt).not.toContain(REPOSITORY_ROOT);
   });
 });
@@ -361,6 +369,7 @@ describe('buildPlanningCorrectionPrompt（确定性校验打回后的续接修�
     expect(prompt).toContain('完整的修正后 TaskPlanDraft');
     expect(prompt).toContain('只读边界');
     expect(prompt).toContain('verificationPlan 逐条覆盖');
+    expect(prompt).toContain('不得让任何 Task 修改 SPEC_PATH 或 .apex-coding-agent');
     expect(prompt).not.toContain(REPOSITORY_ROOT);
     expect(prompt).not.toContain('REJECTED_DRAFT');
   });
@@ -407,6 +416,7 @@ describe('buildPlanningCorrectionSessionPrompt（轻量独立修正会话）', (
     expect(prompt).toContain('REJECTED_DRAFT');
     expect(prompt).toContain('VALIDATION_ERROR');
     expect(prompt).toContain('不重新探索仓库');
+    expect(prompt).toContain('SPEC_PATH 与 .apex-coding-agent 是协调器保护路径');
     expect(prompt).toContain('完整的新 TaskPlanDraft');
     expect(prompt).not.toContain(REPOSITORY_ROOT);
   });
@@ -463,6 +473,8 @@ describe('buildPlanReviewPrompt（执行前独立计划复核）', () => {
     expect(prompt).toContain(completedTask.resultSummary);
     expect(prompt).toContain('不得出现在 taskAssessments 中');
     expect(prompt).toContain('不得重复或推翻 COMPLETED_TASKS 已经完成的工作');
+    expect(prompt).toContain('SPEC 路径与 .apex-coding-agent 是协调器保护路径');
+    expect(prompt).toContain('必须 changes_required');
   });
 
   it('明确 decision 与逐维度证据耦合：approved 必须全部满足且空 issues', () => {

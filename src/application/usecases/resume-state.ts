@@ -31,6 +31,46 @@ export interface ResumeClassification {
   readonly requiresOrphanReconciliation: boolean;
   /** 分类时依据的属主存活性（终态恢复为 null：无需判定）。 */
   readonly liveness: OwnerLiveness | null;
+  /**
+   * 旧版本因已提交 SPEC 变更而终结、但没有持久化 resumePoint 的恢复形态。
+   * 调用方还必须核对计划授权、实际 SPEC 哈希与 Git 提交路径后才能写状态。
+   */
+  readonly protectedSpecRecovery?: true;
+}
+
+/**
+ * 从旧版本的完整失败事实中确定唯一待恢复 Task。
+ *
+ * 该路径不续接已经正常结束的 Claude 会话，只把 Task 重开为 pending；随后
+ * 执行边界会看到 SPEC 哈希变化并进入 Planning。缺少唯一 Episode、错误码
+ * 不一致或存在多个候选时都拒绝猜测，继续维持 RUN_NOT_RESUMABLE。
+ */
+function legacyProtectedSpecRecoveryPoint(run: RunJson): ResumePoint | null {
+  if (
+    run.status !== 'failed' ||
+    run.resumePoint !== null ||
+    run.lastError?.errorCode !== 'PROTECTED_PATH_CHANGED'
+  ) {
+    return null;
+  }
+
+  const candidates = Object.values(run.tasks).filter((task) => {
+    const episode = task.executionEpisodes.at(-1);
+    return (
+      task.status === 'failed' &&
+      task.failure?.errorCode === 'PROTECTED_PATH_CHANGED' &&
+      episode?.outcome === 'session_error' &&
+      episode.error?.errorCode === 'PROTECTED_PATH_CHANGED'
+    );
+  });
+  if (candidates.length !== 1) return null;
+
+  return {
+    fromStatus: 'running',
+    taskId: candidates[0]!.taskId,
+    sessionId: null,
+    sessionType: null,
+  };
 }
 
 /** 返回父目录；到达盘符根目录后返回 null。 */
@@ -124,6 +164,15 @@ export function classifyResumeRun(
   liveness: OwnerLiveness,
 ): ResumeClassification {
   if (isTerminalRunStatus(run.status)) {
+    const protectedSpecPoint = legacyProtectedSpecRecoveryPoint(run);
+    if (protectedSpecPoint !== null) {
+      return {
+        point: protectedSpecPoint,
+        requiresOrphanReconciliation: false,
+        liveness: null,
+        protectedSpecRecovery: true,
+      };
+    }
     if (run.status !== 'failed' || run.resumePoint === null) {
       throw new ApexError({
         code: 'RUN_NOT_RESUMABLE',

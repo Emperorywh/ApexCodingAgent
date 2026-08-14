@@ -331,6 +331,39 @@ describe('resume position invariants', () => {
     );
   });
 
+  it('历史恢复开关只放行已提交 SPEC，并保留状态目录保护', async () => {
+    const facts = await seedWithRunBranch();
+    await repo.writeFile('src/partial.ts', 'export const partial = true;\n');
+    await repo.writeFile('SPEC.md', '# authorized historical writeback\n');
+    const recoveredHead = await repo.commitAll('legacy task commits code and SPEC');
+
+    /**
+     * 该开关只由 resume 在计划授权与哈希变化都成立后使用；Git 层仍证明
+     * expectedHead..HEAD 单向前进，并且不会把状态目录一并误放行。
+     */
+    await expect(
+      port.assertResumePosition(repo.root, facts, {
+        allowAdvancedHead: true,
+        allowCommittedSpecChange: true,
+      }),
+    ).resolves.toEqual({
+      currentHead: recoveredHead,
+      advancedFromExpectedHead: true,
+    });
+
+    await repo.writeFile('.apex-coding-agent/run.json', '{}\n');
+    await repo.git('add', '--force', '.apex-coding-agent/run.json');
+    await repo.git('commit', '--message', 'state directory must remain protected');
+    await expectApexErrorAsync(
+      () =>
+        port.assertResumePosition(repo.root, facts, {
+          allowAdvancedHead: true,
+          allowCommittedSpecChange: true,
+        }),
+      'PROTECTED_PATH_CHANGED',
+    );
+  });
+
   it('checks the pinned Base Branch before resume can consume state', async () => {
     const facts = await seedWithRunBranch();
     const tree = await repo.git('rev-parse', `${facts.expectedHead}^{tree}`);

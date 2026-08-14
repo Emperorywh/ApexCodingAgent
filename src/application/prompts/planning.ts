@@ -106,6 +106,7 @@ const PLANNING_BASELINE = `你是 ApexCodingAgent 的规划器。ApexCodingAgent
 - command 验证必须填写真实存在或由仓库事实支持的命令与有界 timeoutSeconds；其他验证的 command 和 timeoutSeconds 必须为 null。
 - manual 验证必须写出用户可执行的具体过程与期望证据；仓库代理说明禁止自动界面测试时，不得把开发服务器命令列为 Agent 必跑项。
 - 需要本地服务的自动验证必须规划为单一有界入口，由同一入口负责启动、就绪检查和结束，不能依赖长期后台服务。
+- SPEC_PATH 与 .apex-coding-agent 是协调器保护路径，任何 Task 都不得要求修改、暂存或提交它们，也不得把它们列入 likelyPaths。即使 SPEC 文本要求回写或更新自身，也只能规划实现与验证工作，并在 assumptions 中说明该文档动作须由用户在 Run 外完成；不得制造一个 Execution 无法合法完成的自修改任务。
 - 新增或修改的 Task：budget.hardContextLimit 固定为 600000，targetContextBudget（单位为 token）不得超过 480000，maxAgentTurns 必须在 8..128 内并与范围相称；原样保留的 pending Task 必须保持其既有 budget 数值不变（旧 Revision 的 hardContextLimit 可能是 300000），不得改写为新值。
 - 预算评估必须包含理解仓库、实现、验证与一次返工余量；不能靠填满硬上限容纳本应拆分的多个目标。
 - likelyPaths 只是提示，不是强制文件范围；每项必须是仓库根目录下的 Git 相对路径，使用正斜杠，文件和目录均不得以斜杠结尾，不得包含 . 或 .. 路径段。
@@ -306,7 +307,7 @@ export function buildPlanningPrompt(input: PlanningPromptInput): string {
 export function buildPlanningResumePrompt(): string {
   return withStructuredOutputInstruction(`此前的 Planning 会话被前台中断，本会话从原对话断点继续。
 
-请先核对当前 SPEC 与仓库只读事实是否仍和原规划上下文一致，然后继续完成尚未完成的规划工作。Planning 的只读边界、Task 拆分规则、依赖约束、Checkpoint 接管规则和 TaskPlanDraft 结构化结果契约全部继续有效。Replan 结果继续使用紧凑差量表达：tasks 中以 {id, disposition: "retain"} 引用未改旧 pending Task，修改或新增 Task 才返回完整定义。
+请先核对当前 SPEC 与仓库只读事实是否仍和原规划上下文一致，然后继续完成尚未完成的规划工作。Planning 的只读边界、Task 拆分规则、依赖约束、Checkpoint 接管规则和 TaskPlanDraft 结构化结果契约全部继续有效。SPEC_PATH 与 .apex-coding-agent 仍是协调器保护路径，任何 Task 都不得要求改写或把它们列入 likelyPaths。Replan 结果继续使用紧凑差量表达：tasks 中以 {id, disposition: "retain"} 引用未改旧 pending Task，修改或新增 Task 才返回完整定义。
 
 返回完整 TaskPlanDraft。不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
@@ -323,7 +324,7 @@ export function buildPlanningCorrectionPrompt(error: string): string {
 VALIDATION_ERROR（确定性校验结论）：
 ${error}
 
-请针对该校验结论修正计划，并返回一份完整的修正后 TaskPlanDraft：不是局部补丁，也不要只解释原因。Planning 的只读边界、Task 拆分规则、依赖约束、验收条件必须由 verificationPlan 逐条覆盖等结构化结果契约全部继续有效。
+请针对该校验结论修正计划，并返回一份完整的修正后 TaskPlanDraft：不是局部补丁，也不要只解释原因。Planning 的只读边界、Task 拆分规则、依赖约束、验收条件必须由 verificationPlan 逐条覆盖等结构化结果契约全部继续有效。不得让任何 Task 修改 SPEC_PATH 或 .apex-coding-agent，也不得把协调器保护路径列入 likelyPaths。
 
 不要返回 Markdown，不要在结构化结果之外输出解释。`);
 }
@@ -376,7 +377,8 @@ export function buildPlanningCorrectionSessionPrompt(
       '1. 逐条处理 VALIDATION_ERROR 中列出的全部问题；一条结论可能同时列出多个独立覆盖缺口。',
       '2. 除修复这些错误必需的最小字段外，保持 REJECTED_DRAFT 的任务边界、依赖、预算、Checkpoint disposition 与其他字段不变。',
       '3. 不重新探索仓库，不执行工具，不重新制定方案；被拒草稿是本次修正的权威输入。',
-      '4. 返回一份完整的新 TaskPlanDraft，不是局部补丁；不要返回 Markdown，也不要在结构化结果之外输出解释。',
+      '4. SPEC_PATH 与 .apex-coding-agent 是协调器保护路径；若校验指出 Task 命中保护路径，必须移除对应文档动作和 likelyPaths 条目。',
+      '5. 返回一份完整的新 TaskPlanDraft，不是局部补丁；不要返回 Markdown，也不要在结构化结果之外输出解释。',
       '',
       buildPlanningCorrectionAppendix(rejectedDraft, error),
     ].join('\n'),

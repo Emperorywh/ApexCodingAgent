@@ -251,6 +251,43 @@ export function createResumeRun(deps: RunCommandDeps): {
      * Session 可以保留 expectedHead 之上的安全提交。
      */
     try {
+      let allowCommittedSpecChange = false;
+      if (classification.protectedSpecRecovery === true) {
+        /**
+         * 兼容恢复只信任同一份一致状态快照中的计划定义：历史 Task 必须明确
+         * 把精确 SPEC 路径列为 likelyPaths，且磁盘 SPEC 的哈希确实已变化。
+         * 两个条件共同保证重开后第一步必然进入 Replan，而不会重新执行坏任务。
+         */
+        const snapshot = await bound.stateStore.readConsistentSnapshot();
+        const taskDefinition = snapshot?.tasks?.tasks.find(
+          (task) => task.id === classification.point.taskId,
+        );
+        if (
+          snapshot === null ||
+          snapshot.run.stateRevision !== run.stateRevision ||
+          taskDefinition === undefined ||
+          !taskDefinition.likelyPaths.includes(run.spec.path)
+        ) {
+          throw new ApexError({
+            code: 'RUN_NOT_RESUMABLE',
+            stage: 'resume',
+            message:
+              `run ${run.runId} has no consistent historical task authorization ` +
+              `for committed SPEC path ${run.spec.path}`,
+          });
+        }
+        const currentSpec = await bound.git.readSpecFact(root, run.spec.path);
+        if (currentSpec.sha256 === run.spec.sha256) {
+          throw new ApexError({
+            code: 'RUN_NOT_RESUMABLE',
+            stage: 'resume',
+            message:
+              `run ${run.runId} reported a protected SPEC commit, but the current SPEC ` +
+              'hash still equals the committed run baseline',
+          });
+        }
+        allowCommittedSpecChange = true;
+      }
       if (
         (classification.point.sessionType === 'planning' ||
           classification.point.sessionType === 'plan_review' ||
@@ -264,9 +301,11 @@ export function createResumeRun(deps: RunCommandDeps): {
         sessionGitFacts(run),
         {
           allowAdvancedHead:
-            classification.point.sessionId !== null &&
-            (classification.point.sessionType === 'execution' ||
-              classification.point.sessionType === 'final_review'),
+            allowCommittedSpecChange ||
+            (classification.point.sessionId !== null &&
+              (classification.point.sessionType === 'execution' ||
+                classification.point.sessionType === 'final_review')),
+          allowCommittedSpecChange,
         },
       );
       return {
@@ -333,6 +372,19 @@ export function createResumeRun(deps: RunCommandDeps): {
       } catch (error) {
         return commandError(asApexError(error, 'resume'));
       }
+    }
+
+    if (classification.protectedSpecRecovery === true) {
+      /**
+       * 用户必须能看见这不是在放宽普通 Session 的保护规则：旧会话已经关闭，
+       * resume 只采用通过 Git 预检的提交位置，随后由 SPEC 哈希边界触发重规划。
+       */
+      deps.output.writeLine(
+        deps.redaction.redactText(
+          `警告：检测到历史 Task 已提交受保护 SPEC ${run.spec.path}；` +
+            '本次 resume 不续接该会话，将采用已校验 HEAD 并按新 SPEC 重新规划。',
+        ),
+      );
     }
 
     let reopened: RunJson;

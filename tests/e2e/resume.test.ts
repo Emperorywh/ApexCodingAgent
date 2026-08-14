@@ -4,10 +4,12 @@
  * 覆盖三类 Session 的真实续接、精确的 transcript 缺失回退、可写会话
  * 已产生提交后的 Git 接管，以及前置校验失败不消耗恢复点。
  */
+import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { RunJson } from '../../src/domain/schemas/run-json.js';
+import type { PlannedTask } from '../../src/domain/schemas/task-plan-draft.js';
 import {
   COMPLETE_HELP,
   createE2EHarness,
@@ -84,6 +86,45 @@ async function startAndInterruptDuringExecution(
   expect(result.kind).toBe('failed');
   if (result.kind !== 'failed') throw new Error('expected an interrupted failed run');
   return result.run;
+}
+
+/**
+ * 把新版本生成的普通失败夹具改写为旧版本曾经允许提交的坏计划形状。
+ *
+ * 真实事故中的 tasks.json 与不可变 Snapshot 都明确把 SPEC 列入 likelyPaths；
+ * 测试必须同步两份权威视图并重算原始字节哈希，不能靠损坏状态文件绕过读取
+ * 校验，否则验证不到 resume 的计划授权分支。
+ */
+async function markLegacyTaskAsSpecAuthorized(
+  harness: E2EHarness,
+  taskId: string,
+): Promise<void> {
+  const run = await harness.readRunJson();
+  const tasks = await harness.readTasksJson();
+  const snapshot = await harness.readPlanSnapshot(run.planRevision);
+  const withSpecPath = (task: PlannedTask): PlannedTask =>
+    task.id === taskId
+      ? { ...task, likelyPaths: [...new Set([...task.likelyPaths, run.spec.path])] }
+      : task;
+  const nextTasks = { ...tasks, tasks: tasks.tasks.map(withSpecPath) };
+  const nextSnapshot = { ...snapshot, tasks: snapshot.tasks.map(withSpecPath) };
+  const tasksText = JSON.stringify(nextTasks, null, 2);
+  const nextRun = {
+    ...run,
+    tasksSha256: createHash('sha256').update(tasksText, 'utf8').digest('hex'),
+  };
+
+  await writeFile(
+    join(harness.stateDir, 'plans', `${run.planRevision}.json`),
+    JSON.stringify(nextSnapshot, null, 2),
+    'utf8',
+  );
+  await writeFile(join(harness.stateDir, 'tasks.json'), tasksText, 'utf8');
+  await writeFile(
+    join(harness.stateDir, 'run.json'),
+    JSON.stringify(nextRun, null, 2),
+    'utf8',
+  );
 }
 
 /** 回合预算耗尽的 Execution 终止场景（真实 error_max_turns ResultMessage 形态）。 */
@@ -544,6 +585,94 @@ describe('e2e resume (§17)', () => {
         expect(resumed.run.repository.expectedHead).toBe(await harness.repo.head());
         expect(
           await harness.repo.git('merge-base', '--is-ancestor', inFlightHead, 'HEAD'),
+        ).toBe('');
+      } finally {
+        await harness.cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it(
+    '历史 Task 提交明确授权的 SPEC 后，resume 采用 HEAD 并强制 Replan',
+    async () => {
+      const harness = await createE2EHarness();
+      try {
+        const baseCommit = await seedRepo(harness.repo);
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
+            {
+              writeFiles: [
+                {
+                  path: 'SPEC.md',
+                  content: '# Spec\n\n技术闸门已经验证并回写。\n',
+                },
+              ],
+              commands: [
+                { argv: ['git', 'add', 'SPEC.md'] },
+                { argv: ['git', 'commit', '-m', 'legacy task writes SPEC'] },
+              ],
+              stdoutLines: streamOf(executionCompleted()),
+            },
+          ],
+        });
+
+        const failed = await harness.start();
+        expect(failed.kind).toBe('failed');
+        if (failed.kind !== 'failed') return;
+        expect(failed.run.lastError?.errorCode).toBe('PROTECTED_PATH_CHANGED');
+        expect(failed.run.resumePoint).toBeNull();
+        const protectedHead = await harness.repo.head();
+        expect(protectedHead).not.toBe(baseCommit);
+
+        await markLegacyTaskAsSpecAuthorized(harness, 'TASK-001');
+        const invocationCountBeforeResume = (await harness.readRecords()).length;
+        await harness.writeScenario({
+          version: FAKE_VERSION,
+          help: COMPLETE_HELP,
+          sequence: [
+            {
+              stdoutLines: streamOf(
+                planDraft([
+                  {
+                    id: 'TASK-001',
+                    title: '采用已落盘实现并完成验证',
+                  },
+                ]),
+              ),
+            },
+            { stdoutLines: streamOf(executionCompleted()) },
+            { stdoutLines: streamOf(finalReviewCompleted(['TASK-001'])) },
+          ],
+        });
+
+        const resumed = await harness.resume();
+        expect(
+          resumed.kind,
+          JSON.stringify({
+            error: resumed.kind === 'failed' ? resumed.run.lastError : null,
+            output: harness.outputLines,
+          }),
+        ).toBe('completed');
+        if (resumed.kind !== 'completed') return;
+
+        /**
+         * 恢复过程没有续接已经正常结束的违规 Execution；首个业务会话是
+         * Revision 2 Planner，新计划移除 SPEC 路径后才重新执行并完成 Task。
+         */
+        const resumeInvocations = (await harness.readRecords()).slice(
+          invocationCountBeforeResume,
+        );
+        expect(resumeInvocations.every((record) => !record.argv.includes('--resume'))).toBe(true);
+        expect(resumed.run.planRevision).toBe(2);
+        expect(resumed.run.spec.sha256).not.toBe(failed.run.spec.sha256);
+        expect(resumed.run.tasks['TASK-001']!.status).toBe('completed');
+        expect(harness.outputLines.join('\n')).toContain('按新 SPEC 重新规划');
+        expect(
+          await harness.repo.git('merge-base', '--is-ancestor', protectedHead, 'HEAD'),
         ).toBe('');
       } finally {
         await harness.cleanup();

@@ -58,7 +58,13 @@ export function createGitAdapter(options: GitAdapterOptions): GitPort {
     assertSessionStart: (root, facts, options) =>
       assertSessionStartFacts(git, root, facts, options?.readOnlySessionType ?? null),
     assertResumePosition: (root, facts, options) =>
-      assertResumePositionFacts(git, root, facts, options.allowAdvancedHead),
+      assertResumePositionFacts(
+        git,
+        root,
+        facts,
+        options.allowAdvancedHead,
+        options.allowCommittedSpecChange ?? false,
+      ),
     assertSessionEnd: (root, facts, start) => assertSessionEndFacts(git, root, facts, start),
     createTaskCheckpoint: (root, input) => createTaskCheckpoint(git, root, input),
     createIntermediateCheckpoint: (root, input) => createIntermediateCheckpoint(git, root, input),

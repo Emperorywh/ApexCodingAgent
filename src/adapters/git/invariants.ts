@@ -261,12 +261,19 @@ export async function listSessionCommits(
     .filter((line) => line.length > 0);
 }
 
-/** Session-added commits must not touch SPEC or `.apex-coding-agent/`. */
+/**
+ * Session 新增提交默认不得触碰 SPEC 或 `.apex-coding-agent/`。
+ *
+ * `allowCommittedSpecChange` 只供 resume 修复旧版本已经终结的坏计划：它仅
+ * 忽略精确 SPEC 路径，状态目录始终受保护。普通会话与 Checkpoint 不传该
+ * 开关，因而原有安全边界不变。
+ */
 export async function assertSessionCommitsClean(
   git: GitRunner,
   root: string,
   commitOids: readonly string[],
   specGitPath: string,
+  allowCommittedSpecChange = false,
 ): Promise<void> {
   for (const oid of commitOids) {
     const { stdout } = await git.run(
@@ -276,7 +283,11 @@ export async function assertSessionCommitsClean(
     const offending = stdout
       .split('\0')
       .filter((entry) => entry.length > 0)
-      .filter((path) => path === specGitPath || path.startsWith(STATE_DIR_PREFIX));
+      .filter(
+        (path) =>
+          (path === specGitPath && !allowCommittedSpecChange) ||
+          path.startsWith(STATE_DIR_PREFIX),
+      );
     if (offending.length > 0) {
       throw protectedPathChanged(
         `session commit ${oid} contains protected path(s): ${offending.join(', ')}`,
@@ -386,6 +397,7 @@ export async function assertResumePositionFacts(
   root: string,
   facts: SessionGitFacts,
   allowAdvancedHead: boolean,
+  allowCommittedSpecChange = false,
 ): Promise<ResumePositionFact> {
   const currentHead = await assertHeadOnRunBranch(git, root, facts.runBranch);
   await assertBaseRefPinned(git, root, facts.baseBranchRef, facts.baseCommit);
@@ -403,7 +415,13 @@ export async function assertResumePositionFacts(
   }
 
   const inFlightCommits = await listSessionCommits(git, root, facts.expectedHead);
-  await assertSessionCommitsClean(git, root, inFlightCommits, facts.specGitPath);
+  await assertSessionCommitsClean(
+    git,
+    root,
+    inFlightCommits,
+    facts.specGitPath,
+    allowCommittedSpecChange,
+  );
   return { currentHead, advancedFromExpectedHead: true };
 }
 

@@ -81,7 +81,11 @@ function optionExplicitlyContains(
   return new RegExp(`\\b${value}\\b`).test(option.declarationAndDescription);
 }
 
-/** SPEC §8.1 第 5 项要求的能力（含 resume 续接与 Task 回合预算）。 */
+/**
+ * SPEC §8.1 第 5 项要求的能力（含 resume 续接、Task 回合预算与会话级
+ * 设置覆盖）。设置覆盖用于固定结构化输出的工具加载协议，不能等到正式
+ * Session 启动后才发现当前 Claude CLI 不支持该边界。
+ */
 export const REQUIRED_CAPABILITIES: readonly CapabilityCheck[] = [
   {
     id: 'print-mode',
@@ -102,6 +106,13 @@ export const REQUIRED_CAPABILITIES: readonly CapabilityCheck[] = [
     id: 'max-turns',
     present: (catalog) => {
       const option = catalog.get('--max-turns');
+      return option !== undefined && option !== null;
+    },
+  },
+  {
+    id: 'settings-override',
+    present: (catalog) => {
+      const option = catalog.get('--settings');
       return option !== undefined && option !== null;
     },
   },

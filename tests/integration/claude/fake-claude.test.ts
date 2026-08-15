@@ -91,6 +91,8 @@ describe('argument array contract (SPEC §7.2)', () => {
       '-p',
       '--session-id',
       SESSION_ID,
+      '--settings',
+      JSON.stringify({ env: { ENABLE_TOOL_SEARCH: 'false' } }),
       '--permission-mode',
       'auto',
       '--output-format',
@@ -354,6 +356,8 @@ describe('argument array contract (SPEC §7.2)', () => {
       '--fork-session',
       '--session-id',
       SESSION_ID,
+      '--settings',
+      JSON.stringify({ env: { ENABLE_TOOL_SEARCH: 'false' } }),
       '--permission-mode',
       'auto',
       '--output-format',
@@ -746,6 +750,61 @@ describe('environment inheritance and redaction (SPEC §10.2, §18.4)', () => {
 });
 
 describe('failure handling (SPEC §9.6)', () => {
+  it('连续 StructuredOutput 搜索达到上限时主动终止退化会话', async () => {
+    const stdoutLines: Record<string, unknown>[] = [
+      { type: 'system', subtype: 'init', session_id: '{sessionId}' },
+    ];
+    for (let index = 0; index < 5; index += 1) {
+      stdoutLines.push(
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: `call-${index}`,
+                name: 'ToolSearch',
+                input: { query: 'select:StructuredOutput', max_results: 1 },
+              },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: `call-${index}`,
+                content: { type: 'tool_reference', tool_name: 'StructuredOutput' },
+              },
+            ],
+          },
+        },
+      );
+    }
+    await harness.writeScenario({
+      version: FAKE_VERSION,
+      stdoutLines,
+      sleepMs: 60_000,
+    });
+
+    const started = Date.now();
+    const error = await expectApexErrorAsync(
+      () => runtime.invoke(mkRequest(harness)),
+      'CLAUDE_STREAM_FAILED',
+    );
+
+    /**
+     * Fake Claude 在输出后仍会存活一分钟；十秒内返回只能来自适配器主动
+     * 终止，而不是场景自然结束或测试超时。
+     */
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(error.message).toContain('5 consecutive ToolSearch calls');
+    const log = await harness.readSessionLog(SESSION_ID);
+    expect(log).toContain('select:StructuredOutput');
+  }, TEST_TIMEOUT);
+
   it('abort() kills the in-flight session within the bounded wait', async () => {
     await harness.writeScenario({
       version: FAKE_VERSION,
@@ -810,7 +869,8 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
     const report = await runtime.probeCapabilities();
     expect(report.version).toBe(FAKE_VERSION);
-    expect(report.capabilities).toHaveLength(10);
+    expect(report.capabilities).toHaveLength(11);
+    expect(report.capabilities).toContain('settings-override');
   }, TEST_TIMEOUT);
 
   it('lists missing capabilities with the actual version', async () => {
@@ -854,6 +914,7 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     });
     const report = await shimmedRuntime.probeCapabilities();
     expect(report.version).toBe(FAKE_VERSION);
-    expect(report.capabilities).toHaveLength(10);
+    expect(report.capabilities).toHaveLength(11);
+    expect(report.capabilities).toContain('settings-override');
   }, TEST_TIMEOUT);
 });

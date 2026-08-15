@@ -46,6 +46,15 @@ const DEFAULT_CLAUDE_PATH = 'claude';
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 const STDERR_REDACTED_LIMIT = 4_000;
 const STDERR_DIAGNOSTIC_TAIL_LIMIT = 256;
+/**
+ * StructuredOutput 是每趟 Session 的强制提交边界，不能依赖模型先通过
+ * tool_reference 动态发现。命令级 settings 的优先级高于用户/项目设置，
+ * 只关闭本次 Claude 子进程的工具延迟加载；代理地址、模型和凭据等其他
+ * 用户配置仍由 Claude Code 按原层级继承与合并。
+ */
+const SESSION_SETTINGS_JSON = JSON.stringify({
+  env: { ENABLE_TOOL_SEARCH: 'false' },
+});
 const RESUME_UNAVAILABLE_PATTERNS = [
   /no conversation found(?: (?:with|for))? session id/i,
   /failed to resume the conversation/i,
@@ -271,6 +280,8 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       '-p',
       ...sessionArgs,
       ...budgetArgs,
+      '--settings',
+      SESSION_SETTINGS_JSON,
       '--permission-mode',
       request.permissionMode,
       '--output-format',
@@ -282,6 +293,14 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
 
     const streamCollector = createClaudeStreamCollector({
       sessionId: request.sessionId,
+      /**
+       * 即使受管策略覆盖命令级设置，模型也不得在同一结构化提交搜索上
+       * 无限打转。解析器确认退化循环后立即终止唯一直接子进程；最终错误
+       * 仍由完整流事实统一映射，回调本身不猜测退出码。
+       */
+      onProtocolViolation: () => {
+        activeProcess?.terminate();
+      },
       ...(request.onStreamActivity === undefined
         ? {}
         : {

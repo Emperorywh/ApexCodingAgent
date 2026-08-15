@@ -1171,6 +1171,8 @@ describe('统一结构化结果提交协议', () => {
     ];
 
     expect(STRUCTURED_OUTPUT_INSTRUCTION).toContain('select:StructuredOutput');
+    expect(STRUCTURED_OUTPUT_INSTRUCTION).toContain('最多只允许调用一次 ToolSearch');
+    expect(STRUCTURED_OUTPUT_INSTRUCTION).toContain('不得先用 ToolSearch');
     expect(STRUCTURED_OUTPUT_INSTRUCTION).toContain('不得把最终 JSON 作为普通文本');
     for (const prompt of prompts) {
       expect(prompt.value.endsWith(STRUCTURED_OUTPUT_INSTRUCTION), prompt.name).toBe(true);

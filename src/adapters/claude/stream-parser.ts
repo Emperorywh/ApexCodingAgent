@@ -7,10 +7,11 @@
  *
  * 确定性失败顺序保持 SPEC §7.2 不变：
  * 1. 非空行不是 JSON 对象时返回 CLAUDE_STREAM_FAILED；
- * 2. 唯一 ResultMessage 明确报告 `error_max_turns` 时返回专用预算错误；
- * 3. 其余非零或信号退出时返回 CLAUDE_EXIT_NONZERO；
- * 4. Session ID 冲突、result 缺失或重复时返回结果非法；
- * 5. structured_output 缺失或 Schema 非法时返回结果非法。
+ * 2. 结构化提交工具搜索形成确定性循环时返回 CLAUDE_STREAM_FAILED；
+ * 3. 唯一 ResultMessage 明确报告 `error_max_turns` 时返回专用预算错误；
+ * 4. 其余非零或信号退出时返回 CLAUDE_EXIT_NONZERO；
+ * 5. Session ID 冲突、result 缺失或重复时返回结果非法；
+ * 6. structured_output 缺失或 Schema 非法时返回结果非法。
  */
 
 import type {
@@ -40,14 +41,27 @@ const RESULT_SCHEMA_BY_SESSION_TYPE = {
 } as const;
 const EVENT_SUMMARY_LIMIT = 200;
 const TERMINAL_DIAGNOSTIC_LIMIT = 2_000;
+const STRUCTURED_OUTPUT_SEARCH_QUERY = 'select:StructuredOutput';
+/**
+ * 一次搜索即可加载 StructuredOutput；为兼容偶发的模型自我纠正，前四次
+ * 只记录事实，第五次仍未调用其他工具才判定为确定性退化循环。真实事故
+ * 达到数百次，此上限既保留充足余量，也能在几十秒内有界终止。
+ */
+const STRUCTURED_OUTPUT_SEARCH_REPEAT_LIMIT = 5;
 
 interface StreamParseFailure {
   readonly lineNumber: number;
   readonly kind: 'invalid-json' | 'non-object';
 }
 
+export interface StreamProtocolViolation {
+  readonly kind: 'repeated_structured_output_search';
+  readonly count: number;
+}
+
 export interface CollectedClaudeStream {
   readonly parseFailure: StreamParseFailure | null;
+  readonly protocolViolation: StreamProtocolViolation | null;
   readonly hasContent: boolean;
   readonly sessionIdConflict: boolean;
   readonly terminalEventCount: number;
@@ -103,6 +117,11 @@ export interface ClaudeStreamCollector {
 export interface StreamCollectorOptions {
   readonly sessionId: string;
   readonly onActivity?: (activity: ClaudeStreamActivity) => void;
+  /**
+   * 首次确认确定性协议退化时同步通知进程适配器。回调只负责请求终止，
+   * 错误码、退出事实和持久日志仍由 finish 后的统一求值路径产生。
+   */
+  readonly onProtocolViolation?: (violation: StreamProtocolViolation) => void;
 }
 
 export interface CollectedStreamEvaluationInput<T extends SessionType = SessionType> {
@@ -301,6 +320,8 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   let displaySequence = 0;
   let hasContent = false;
   let parseFailure: StreamParseFailure | null = null;
+  let protocolViolation: StreamProtocolViolation | null = null;
+  let repeatedStructuredOutputSearches = 0;
   let sessionIdConflict = false;
   let terminalEventCount = 0;
   let terminalSubtype: string | null = null;
@@ -312,6 +333,38 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
   let model: string | null = null;
   let provider: string | null = null;
   let finished = false;
+
+  /**
+   * ToolSearch 只搜索延迟工具，不能被用作内置工具可用性的枚举器。这里仅
+   * 识别本产品强制提交协议中的精确查询；其他 ToolSearch、重复读取或测试
+   * 命令不受影响，避免把正常的 Agent 探索误判为循环。
+   */
+  function observeToolProtocol(event: StreamEvent): void {
+    for (const block of readContentBlocks(event)) {
+      if (block['type'] !== 'tool_use') continue;
+      const input = block['input'];
+      const isStructuredOutputSearch =
+        block['name'] === 'ToolSearch' &&
+        typeof input === 'object' &&
+        input !== null &&
+        (input as Record<string, unknown>)['query'] === STRUCTURED_OUTPUT_SEARCH_QUERY;
+      if (!isStructuredOutputSearch) {
+        repeatedStructuredOutputSearches = 0;
+        continue;
+      }
+      repeatedStructuredOutputSearches += 1;
+      if (
+        protocolViolation === null &&
+        repeatedStructuredOutputSearches >= STRUCTURED_OUTPUT_SEARCH_REPEAT_LIMIT
+      ) {
+        protocolViolation = {
+          kind: 'repeated_structured_output_search',
+          count: repeatedStructuredOutputSearches,
+        };
+        options.onProtocolViolation?.(protocolViolation);
+      }
+    }
+  }
 
   /**
    * 每个结构化展示事实立即上报。
@@ -346,6 +399,7 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
         provider = event['provider'];
       }
     }
+    observeToolProtocol(event);
     if (event['type'] === 'result') {
       terminalEventCount += 1;
       if (terminalEventCount === 1) {
@@ -457,6 +511,7 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
       return {
         stream: {
           parseFailure,
+          protocolViolation,
           hasContent,
           sessionIdConflict,
           terminalEventCount,
@@ -497,6 +552,17 @@ export function evaluateCollectedStreamOutcome<T extends SessionType>(
     throw claudeStreamFailed(
       input.sessionType,
       `stdout line ${input.stream.parseFailure.lineNumber} ${detail}`,
+      {
+        sessionId: input.sessionId,
+        facts,
+        toolSummary: stderrSummary,
+      },
+    );
+  }
+  if (input.stream.protocolViolation !== null) {
+    throw claudeStreamFailed(
+      input.sessionType,
+      `StructuredOutput submission loop detected after ${input.stream.protocolViolation.count} consecutive ToolSearch calls`,
       {
         sessionId: input.sessionId,
         facts,

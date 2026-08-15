@@ -169,6 +169,56 @@ describe('stream-json inline edge cases', () => {
     expect((thrown as ClaudeInvocationError).errorCode).toBe('CLAUDE_STREAM_FAILED');
   });
 
+  it('第五次连续搜索 StructuredOutput 时判定为工具协议循环', () => {
+    const stdout = Array.from({ length: 5 }, (_, index) => [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: `call-${index}`,
+              name: 'ToolSearch',
+              input: { query: 'select:StructuredOutput', max_results: 1 },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: `call-${index}`,
+              content: { type: 'tool_reference', tool_name: 'StructuredOutput' },
+            },
+          ],
+        },
+      },
+    ])
+      .flat()
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+
+    let thrown: unknown;
+    try {
+      evaluateStreamOutcome({ ...baseInput, stdout, exitCode: null });
+    } catch (error) {
+      thrown = error;
+    }
+
+    /**
+     * 子进程因熔断终止时通常没有数字退出码；协议事实必须优先于通用信号
+     * 退出映射，否则用户只能看到 CLAUDE_EXIT_NONZERO，无法定位真实循环。
+     */
+    expect(thrown).toBeInstanceOf(ClaudeInvocationError);
+    const invocationError = thrown as ClaudeInvocationError;
+    expect(invocationError.errorCode).toBe('CLAUDE_STREAM_FAILED');
+    expect(invocationError.processExitCode).toBeNull();
+    expect(invocationError.message).toContain('5 consecutive ToolSearch calls');
+  });
+
   it('unknown events cannot supply model or provider metadata', () => {
     const resultEvent = {
       type: 'result',

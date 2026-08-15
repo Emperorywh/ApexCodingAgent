@@ -36,6 +36,14 @@ describe('parseCapabilityHelp fixtures', () => {
     expect(parse.missing).toEqual(['json-schema']);
   });
 
+  it('缺少 --settings 时拒绝无法固定工具加载协议的 Claude CLI', () => {
+    const helpWithoutSettings = helpFixture('complete.help.txt').replace(
+      '  --settings <file-or-json>       load additional settings for this session\n',
+      '',
+    );
+    expect(parseCapabilityHelp(helpWithoutSettings).missing).toEqual(['settings-override']);
+  });
+
   it('help without the auto/bypassPermissions enum values reports them missing', () => {
     const parse = parseCapabilityHelp(helpFixture('missing-permission-values.help.txt'));
     expect(parse.missing).toEqual(['permission-mode auto', 'permission-mode bypassPermissions']);
@@ -58,6 +66,7 @@ describe('parseCapabilityHelp fixtures', () => {
       '  --output-format <format>        output format: text, json',
       '  --input-format <format>         input format: text, stream-json',
       '  --json-schema <schema>          validate structured output',
+      '  --settings <file-or-json>       load additional settings',
       '  --session-id <uuid>             use a specific session',
       '  --permission-mode <mode>        permission mode: plan',
       '  --update-mode <mode>            update mode: auto',

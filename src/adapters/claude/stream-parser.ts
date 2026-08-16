@@ -8,7 +8,7 @@
  * 确定性失败顺序保持 SPEC §7.2 不变：
  * 1. 非空行不是 JSON 对象时返回 CLAUDE_STREAM_FAILED；
  * 2. 结构化提交工具搜索形成确定性循环时返回 CLAUDE_STREAM_FAILED；
- * 3. 唯一 ResultMessage 明确报告 `error_max_turns` 时返回专用预算错误；
+ * 3. 唯一顶层 ResultMessage 明确报告 `error_max_turns` 时返回专用预算错误；
  * 4. 其余非零或信号退出时返回 CLAUDE_EXIT_NONZERO；
  * 5. Session ID 冲突、result 缺失或重复时返回结果非法；
  * 6. structured_output 缺失或 Schema 非法时返回结果非法。
@@ -65,7 +65,7 @@ export interface CollectedClaudeStream {
   readonly hasContent: boolean;
   readonly sessionIdConflict: boolean;
   readonly terminalEventCount: number;
-  /** 唯一终止事件的 subtype；重复事件时仅保留首个值且不得据此特殊分类。 */
+  /** 唯一顶层终止事件的 subtype；重复事件时仅保留首个值且不得据此特殊分类。 */
   readonly terminalSubtype: string | null;
   readonly terminalIsError: boolean;
   readonly terminalReason: string | null;
@@ -149,6 +149,22 @@ export interface StreamEvaluation<T extends SessionType = SessionType> {
 type StreamEvent = Record<string, unknown>;
 type StreamContentBlock = Record<string, unknown>;
 type StreamDisplayEventDraft = Omit<ClaudeStreamDisplayEvent, 'sequence'>;
+
+/**
+ * Claude Code 续接含未收尾后台任务的 transcript 时，会先输出一个
+ * `origin.kind == task-notification` 的派生 result。它只确认后台任务通知
+ * 已投递，不是当前顶层 Session 的终止 ResultMessage，不能占用唯一终止槽。
+ */
+function isTaskNotificationResult(event: StreamEvent): boolean {
+  if (event['type'] !== 'result') return false;
+  const origin = event['origin'];
+  return (
+    typeof origin === 'object' &&
+    origin !== null &&
+    !Array.isArray(origin) &&
+    (origin as Record<string, unknown>)['kind'] === 'task-notification'
+  );
+}
 
 function toSummaryLine(text: string): string {
   /*
@@ -400,7 +416,7 @@ export function createClaudeStreamCollector(options: StreamCollectorOptions): Cl
       }
     }
     observeToolProtocol(event);
-    if (event['type'] === 'result') {
+    if (event['type'] === 'result' && !isTaskNotificationResult(event)) {
       terminalEventCount += 1;
       if (terminalEventCount === 1) {
         terminalSubtype = typeof event['subtype'] === 'string' ? event['subtype'] : null;

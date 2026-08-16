@@ -152,6 +152,55 @@ function turnLimitExhausted(overrides: Partial<ScenarioElement> = {}): ScenarioE
   };
 }
 
+/**
+ * 真实续接事故形态：上一段会话遗留后台任务时，Claude Code 会在正式
+ * ResultMessage 前输出一个 task-notification 派生 result。该事件不能让
+ * 第二段预算耗尽退化为普通非零退出，否则剩余自动续接预算会被提前丢弃。
+ */
+function turnLimitExhaustedAfterTaskNotification(): ScenarioElement {
+  return {
+    stdoutLines: [
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        session_id: '{sessionId}',
+        status: 'stopped',
+      },
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: '{sessionId}',
+        model: 'fake-model',
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: '{sessionId}',
+        num_turns: 0,
+        result: '',
+        origin: { kind: 'task-notification' },
+      },
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: '{sessionId}',
+        model: 'fake-model',
+      },
+      {
+        type: 'result',
+        subtype: 'error_max_turns',
+        is_error: true,
+        session_id: '{sessionId}',
+        num_turns: 97,
+        terminal_reason: 'max_turns',
+        errors: ['Reached maximum number of turns (96)'],
+      },
+    ],
+    exitCode: 1,
+  };
+}
+
 describe('e2e resume (§17)', () => {
   it(
     'resumes an interrupted run: reopens at the recorded point and forks the interrupted Claude session',
@@ -326,7 +375,7 @@ describe('e2e resume (§17)', () => {
           sequence: [
             { stdoutLines: streamOf(planDraft([{ id: 'TASK-001' }])) },
             turnLimitExhausted(),
-            turnLimitExhausted(),
+            turnLimitExhaustedAfterTaskNotification(),
             turnLimitExhausted(),
           ],
         });

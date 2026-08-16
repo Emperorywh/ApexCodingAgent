@@ -1,0 +1,48 @@
+{
+  "description": "A task-notification result emitted before the real error_max_turns ResultMessage does not hide turn-budget exhaustion",
+  "sessionType": "execution",
+  "exitCode": 1,
+  "stderr": "",
+  "stdout": [
+    {
+      "type": "system",
+      "subtype": "task_notification",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "status": "stopped"
+    },
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "fixture-model"
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "is_error": false,
+      "num_turns": 0,
+      "result": "",
+      "origin": { "kind": "task-notification" }
+    },
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "model": "fixture-model"
+    },
+    {
+      "type": "result",
+      "subtype": "error_max_turns",
+      "session_id": "123e4567-e89b-42d3-a456-426614174000",
+      "is_error": true,
+      "num_turns": 97,
+      "terminal_reason": "max_turns",
+      "errors": ["Reached maximum number of turns (96)"]
+    }
+  ],
+  "expect": {
+    "kind": "error",
+    "errorCode": "CLAUDE_TURN_LIMIT_REACHED"
+  }
+}

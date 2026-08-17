@@ -503,11 +503,11 @@ describe('runCli exit codes (§17)', () => {
 });
 
 describe('environment gate (§8.1 items 1/3, mocked facts)', () => {
-  async function expectUnsupported(environment: {
+  async function runStartWithFacts(environment: {
     platform: string;
     release: string;
     nodeVersion: string;
-  }): Promise<string[]> {
+  }): Promise<{ code: number; stderr: string[] }> {
     const stderr: string[] = [];
     const runtime = createCliRuntime({
       cwd: '/nonexistent',
@@ -522,34 +522,55 @@ describe('environment gate (§8.1 items 1/3, mocked facts)', () => {
       clearStatus: () => {},
     });
     const code = await runCli(['start'], runtime);
-    expect(code).toBe(CLI_EXIT.startup);
-    return stderr;
+    return { code, stderr };
   }
 
-  it('rejects non-Windows platforms with ENVIRONMENT_UNSUPPORTED', async () => {
-    const stderr = await expectUnsupported({
-      platform: 'linux',
-      release: '6.5.0',
+  it('rejects unsupported platforms with ENVIRONMENT_UNSUPPORTED', async () => {
+    const { code, stderr } = await runStartWithFacts({
+      platform: 'freebsd',
+      release: '14.0-RELEASE',
       nodeVersion: 'v22.11.0',
     });
+    expect(code).toBe(CLI_EXIT.startup);
     expect(stderr.join('\n')).toContain('ENVIRONMENT_UNSUPPORTED');
   });
 
+  it('accepts macOS and Linux platforms past the platform gate', async () => {
+    for (const platform of ['darwin', 'linux']) {
+      const { code, stderr } = await runStartWithFacts({
+        platform,
+        release: '6.5.0',
+        nodeVersion: 'v22.11.0',
+      });
+      /*
+       * 平台放行后 start 继续走到 Git 仓库解析并以启动失败结束（调用目录
+       * 不存在时，具体错误码取决于平台 spawn 语义，如 GIT_COMMAND_FAILED
+       * 或 GIT_WORKTREE_REQUIRED）；断言只需证明门禁不再拦截。
+       */
+      expect(code).toBe(CLI_EXIT.startup);
+      const text = stderr.join('\n');
+      expect(text).not.toContain('ENVIRONMENT_UNSUPPORTED');
+      expect(text.length).toBeGreaterThan(0);
+    }
+  });
+
   it('rejects Windows versions below 10', async () => {
-    const stderr = await expectUnsupported({
+    const { code, stderr } = await runStartWithFacts({
       platform: 'win32',
       release: '6.3.9600',
       nodeVersion: 'v22.11.0',
     });
+    expect(code).toBe(CLI_EXIT.startup);
     expect(stderr.join('\n')).toContain('ENVIRONMENT_UNSUPPORTED');
   });
 
   it('rejects Node major versions other than 22/24', async () => {
-    const stderr = await expectUnsupported({
+    const { code, stderr } = await runStartWithFacts({
       platform: 'win32',
       release: '10.0.22631',
       nodeVersion: 'v20.18.0',
     });
+    expect(code).toBe(CLI_EXIT.startup);
     expect(stderr.join('\n')).toContain('ENVIRONMENT_UNSUPPORTED');
   });
 });

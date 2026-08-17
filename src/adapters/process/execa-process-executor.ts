@@ -218,6 +218,11 @@ export function createExecaProcessExecutor(
         });
         const active: ActiveProcess = {
           terminate: () => {
+            /*
+             * Execa 默认 forceKillAfterDelay=5000：Unix 上 SIGTERM 若 5 秒内
+             * 未生效会自动升级 SIGKILL；Windows 上 kill 直接 TerminateProcess
+             * 硬杀，升级定时器天然无事可做。两平台的直接子进程终止都有界。
+             */
             try {
               return subprocess.kill();
             } catch {

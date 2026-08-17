@@ -1,6 +1,6 @@
 # ApexCodingAgent
 
-ApexCodingAgent 是一款运行在 Windows 终端中的 Claude Code 长任务助手。
+ApexCodingAgent 是一款运行在终端中的 Claude Code 长任务助手，支持 Windows、macOS 与 Linux。
 
 ## 它能解决什么问题
 
@@ -22,15 +22,15 @@ ApexCodingAgent 是一款运行在 Windows 终端中的 Claude Code 长任务助
 
 使用前请准备：
 
-- Windows 10 或 Windows 11
+- Windows 10 或更高版本、macOS 或 Linux
 - Node.js 22.x 或 24.x
 - Git
 - 已完成登录或服务商配置的 Claude Code CLI
 - 一个配置了可写 Git 远程的项目仓库
 
-在 PowerShell 中安装：
+在 PowerShell、bash 或 zsh 中安装：
 
-```powershell
+```text
 npm install -g apex-coding-agent@latest
 ApexCodingAgent --help
 ```
@@ -65,20 +65,21 @@ ApexCodingAgent --help
 
 进入项目目录并运行：
 
-```powershell
-cd C:\你的项目目录
+```text
+# PowerShell：cd C:\你的项目目录
+# bash/zsh：  cd /你的项目目录
 ApexCodingAgent start
 ```
 
-也可以显式指定需求文档：
+也可以显式指定需求文档（正斜杠路径在所有平台都可用）：
 
-```powershell
-ApexCodingAgent start .\docs\my-spec.md
+```text
+ApexCodingAgent start docs/my-spec.md
 ```
 
 程序会创建独立的 Git 运行分支，并将检查点自动推送到 `origin`，不会修改你原来的分支。如果使用其他远程名称：
 
-```powershell
+```text
 ApexCodingAgent start --push-remote upstream
 ```
 
@@ -101,22 +102,22 @@ ApexCodingAgent start --push-remote upstream
 
 只有在程序要求强制接管，并且你已确认旧的 ApexCodingAgent 和 Claude 进程不再运行时，才使用：
 
-```powershell
+```text
 ApexCodingAgent resume --force
 ```
 
 最终报告和调试日志分别位于：
 
 ```text
-.apex-coding-agent\report.md
-.apex-coding-agent\logs\apex-debug.log
+.apex-coding-agent/report.md
+.apex-coding-agent/logs/apex-debug.log
 ```
 
 如需在终端同步查看调试日志，可为 `start` 或 `resume` 添加 `--verbose`。
 
 默认情况下 Claude Code 使用自动权限模式。只有在任务确实需要更高权限，并且你完全信任 `SPEC.md` 时，才使用 `--full-access`：
 
-```powershell
+```text
 ApexCodingAgent start --full-access
 ```
 

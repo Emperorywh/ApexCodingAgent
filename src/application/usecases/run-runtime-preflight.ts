@@ -20,9 +20,9 @@ import {
 
 /** 前台 Run 命令的环境事实，由 Composition Root 采集并显式注入。 */
 export interface EnvironmentFacts {
-  /** Node `process.platform`，Windows 为 `win32`。 */
+  /** Node `process.platform`：Windows 为 `win32`，macOS 为 `darwin`，Linux 为 `linux`。 */
   readonly platform: string;
-  /** Node `os.release()`，如 `10.0.22631`。 */
+  /** Node `os.release()`，Windows 如 `10.0.22631`，Unix 为内核/Darwin 版本。 */
   readonly release: string;
   /** Node `process.version`，如 `v22.11.0`。 */
   readonly nodeVersion: string;
@@ -30,22 +30,34 @@ export interface EnvironmentFacts {
   readonly agentVersion: string;
 }
 
-/** §8.1 第 1、3 项：Windows 版本与 Node Runtime 受支持。 */
+/**
+ * 受支持平台白名单，与 package.json 的 `os` 字段保持一致。
+ *
+ * Windows 外的平台不按 `os.release()` 做版本门禁：Unix 的 release 是内核
+ * 版本而非产品版本，且 Node 自身的 engines 约束已经覆盖运行环境要求。
+ */
+const SUPPORTED_PLATFORMS: readonly string[] = ['win32', 'darwin', 'linux'];
+
+/** §8.1 第 1、3 项：操作系统平台（Windows 版本）与 Node Runtime 受支持。 */
 export function assertEnvironmentSupported(environment: EnvironmentFacts): void {
-  if (environment.platform !== 'win32') {
+  if (!SUPPORTED_PLATFORMS.includes(environment.platform)) {
     throw new ApexError({
       code: 'ENVIRONMENT_UNSUPPORTED',
       stage: 'startup',
-      message: `unsupported platform ${environment.platform}; only Windows is supported`,
+      message:
+        `unsupported platform ${environment.platform}; ` +
+        'supported platforms are Windows, macOS and Linux',
     });
   }
-  const releaseMajor = Number.parseInt(environment.release.split('.')[0] ?? '', 10);
-  if (!Number.isInteger(releaseMajor) || releaseMajor < 10) {
-    throw new ApexError({
-      code: 'ENVIRONMENT_UNSUPPORTED',
-      stage: 'startup',
-      message: `unsupported Windows release ${environment.release}; Windows 10 or later is required`,
-    });
+  if (environment.platform === 'win32') {
+    const releaseMajor = Number.parseInt(environment.release.split('.')[0] ?? '', 10);
+    if (!Number.isInteger(releaseMajor) || releaseMajor < 10) {
+      throw new ApexError({
+        code: 'ENVIRONMENT_UNSUPPORTED',
+        stage: 'startup',
+        message: `unsupported Windows release ${environment.release}; Windows 10 or later is required`,
+      });
+    }
   }
   const nodeMajor = Number.parseInt(
     environment.nodeVersion.replace(/^v/, '').split('.')[0] ?? '',

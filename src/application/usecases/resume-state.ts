@@ -12,9 +12,9 @@ import { assertTaskTransition } from '../../domain/task-state.js';
 import type { FileSystemPort } from '../ports/file-system.js';
 import type { StateStorePort } from '../ports/state-store.js';
 import {
-  normalizeAbsoluteWindowsPath,
-  sameWindowsPath,
-} from '../windows-path.js';
+  normalizeAbsolutePath,
+  sameAbsolutePath,
+} from '../absolute-path.js';
 import type { OwnerLiveness } from './run-heartbeat.js';
 
 const STATE_DIR_NAME = '.apex-coding-agent';
@@ -73,13 +73,19 @@ function legacyProtectedSpecRecoveryPoint(run: RunJson): ResumePoint | null {
   };
 }
 
-/** 返回父目录；到达盘符根目录后返回 null。 */
-function parentPath(path: string): string | null {
-  if (/^[A-Za-z]:\/$/.test(path)) return null;
+/** 返回父目录；win32 到达盘符根、其他平台到达文件系统根 `/` 后返回 null。 */
+function parentPath(path: string, platform: string): string | null {
+  if (platform === 'win32') {
+    if (/^[A-Za-z]:\/$/.test(path)) return null;
+    const index = path.lastIndexOf('/');
+    if (index === 2 && /^[A-Za-z]:/.test(path)) return `${path.slice(0, 2)}/`;
+    if (index <= 0) return null;
+    return path.slice(0, index);
+  }
+  if (path === '/') return null;
   const index = path.lastIndexOf('/');
-  if (index === 2 && /^[A-Za-z]:/.test(path)) return `${path.slice(0, 2)}/`;
-  if (index <= 0) return null;
-  return path.slice(0, index);
+  if (index < 0) return null;
+  return index === 0 ? '/' : path.slice(0, index);
 }
 
 function childPath(parent: string, child: string): string {
@@ -92,13 +98,17 @@ function childPath(parent: string, child: string): string {
  * 该过程不依赖 PATH 中的 Git，因此即使原 Run 只能通过持久化的自定义
  * Git 路径运行，也可以先恢复配置快照。找到状态后再由 Git 端口确认真实
  * repositoryRoot，状态目录本身不能替代 Git 的仓库边界校验。
+ *
+ * `platform` 决定路径规范化与比较规则（见 absolute-path.ts），由调用方
+ * 注入当前环境事实。
  */
 export async function discoverResumeState(
   fileSystem: FileSystemPort,
   makeStateStore: (stateDir: string) => StateStorePort,
   cwd: string,
+  platform: string,
 ): Promise<DiscoveredResumeState> {
-  let cursor = normalizeAbsoluteWindowsPath(await fileSystem.realpath(cwd));
+  let cursor = normalizeAbsolutePath(await fileSystem.realpath(cwd), platform);
   for (;;) {
     const stateDir = childPath(cursor, STATE_DIR_NAME);
     const runPath = childPath(stateDir, 'run.json');
@@ -126,7 +136,7 @@ export async function discoverResumeState(
           message: 'run.json disappeared while preparing resume',
         });
       }
-      if (!sameWindowsPath(run.repository.root, cursor)) {
+      if (!sameAbsolutePath(run.repository.root, cursor, platform)) {
         throw new ApexError({
           code: 'COMMAND_STATE_INVALID',
           stage: 'resume',
@@ -138,7 +148,7 @@ export async function discoverResumeState(
       return { root: cursor, stateDir, stateStore, run };
     }
 
-    const parent = parentPath(cursor);
+    const parent = parentPath(cursor, platform);
     if (parent === null) {
       throw new ApexError({
         code: 'RUN_NOT_FOUND',

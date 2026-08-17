@@ -34,7 +34,13 @@ const SPEC_STAGE = 'spec-discovery';
 const SPEC_FILE_NAME = 'SPEC.md';
 const STATE_DIR_PREFIX = '.apex-coding-agent/';
 const GIT_DIR_PREFIX = '.git/';
-const IS_WINDOWS = process.platform === 'win32';
+// Case-insensitive containment on Windows and on macOS, whose default
+// filesystems (NTFS; HFS+/APFS) fold case. Linux filesystems compare
+// case-sensitively. On a case-sensitive macOS volume this is a conservative
+// relaxation whose worst failure mode is treating two casings of a path as the
+// same lexical entry; such a path would not exist on that volume anyway and
+// still fails realpath validation below.
+const FOLDS_CASE = process.platform === 'win32' || process.platform === 'darwin';
 
 function specError(code: 'SPEC_NOT_FOUND' | 'SPEC_AMBIGUOUS' | 'SPEC_EMPTY' | 'SPEC_NOT_REGULAR_FILE' | 'SPEC_NOT_READABLE' | 'SPEC_INVALID_UTF8' | 'SPEC_OUTSIDE_REPOSITORY' | 'SPEC_STAGED', message: string, cause?: unknown): ApexError {
   return new ApexError({
@@ -49,7 +55,7 @@ function specError(code: 'SPEC_NOT_FOUND' | 'SPEC_AMBIGUOUS' | 'SPEC_EMPTY' | 'S
 // Path normalization helpers (pure; unit-tested directly)
 
 function foldCase(value: string): string {
-  return IS_WINDOWS ? value.toLowerCase() : value;
+  return FOLDS_CASE ? value.toLowerCase() : value;
 }
 
 function splitAbsolute(absolutePath: string): string[] {
@@ -59,8 +65,9 @@ function splitAbsolute(absolutePath: string): string[] {
 }
 
 /**
- * Case-insensitive-on-Windows containment of `childPath` inside `rootPath`.
- * Both are resolved lexically first; segment comparison folds case on Win32.
+ * Containment of `childPath` inside `rootPath`.
+ * Both are resolved lexically first; segment comparison folds case on Windows
+ * and macOS (default case-insensitive filesystems).
  */
 export function isPathInside(childPath: string, rootPath: string): boolean {
   const child = splitAbsolute(childPath).map(foldCase);

@@ -549,7 +549,9 @@ function machineSummary() {
     nodeVersion: process.version,
     platform: process.platform,
     osRelease: os.release(),
-    windowsBuild: releaseParts.length >= 3 ? releaseParts[2] : os.release(),
+    // Windows release 三元组（如 10.0.22631）中的 build 号；Unix 的内核版本不适用。
+    windowsBuild:
+      process.platform === 'win32' && releaseParts.length >= 3 ? releaseParts[2] : null,
     cpu: cpus.length > 0 ? cpus[0].model : 'unknown',
     logicalCpus: cpus.length,
     totalMemBytes: os.totalmem(),
@@ -567,9 +569,13 @@ async function main() {
     `NFR-007 performance harness — warmup ${options.warmup}, samples ${options.samples} per metric` +
       `${options.quick ? ' (--quick self-test profile)' : ' (official protocol)'}`,
   );
+  const osDetail =
+    machine.platform === 'win32' && machine.windowsBuild !== null
+      ? ` (Windows build ${machine.windowsBuild})`
+      : '';
   console.log(
-    `machine: node ${machine.nodeVersion} | ${machine.platform} ${machine.osRelease} ` +
-      `(Windows build ${machine.windowsBuild}) | ${machine.cpu} | ${machine.logicalCpus} logical CPUs | ` +
+    `machine: node ${machine.nodeVersion} | ${machine.platform} ${machine.osRelease}` +
+      `${osDetail} | ${machine.cpu} | ${machine.logicalCpus} logical CPUs | ` +
       `${(machine.totalMemBytes / 1024 ** 3).toFixed(1)} GB RAM`,
   );
 

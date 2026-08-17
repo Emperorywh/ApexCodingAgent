@@ -25,6 +25,8 @@ import {
 import { createTestProcessExecutor } from '../../process-executor.js';
 
 const IS_WINDOWS = process.platform === 'win32';
+// 与 spec-discovery.ts 的 FOLDS_CASE 保持一致：Windows 与 macOS 默认文件系统不区分大小写。
+const FOLDS_CASE = process.platform === 'win32' || process.platform === 'darwin';
 const sha256 = (bytes: Uint8Array | string): string =>
   createHash('sha256').update(bytes).digest('hex');
 
@@ -50,8 +52,8 @@ describe('path normalization helpers', () => {
     expect(isPathInside('/repo', '/repo')).toBe(true);
   });
 
-  it('folds case only on Windows', () => {
-    expect(isPathInside('C:/REPO/docs', 'C:/repo')).toBe(IS_WINDOWS);
+  it('folds case on the default case-insensitive filesystems only', () => {
+    expect(isPathInside('C:/REPO/docs', 'C:/repo')).toBe(FOLDS_CASE);
   });
 
   it('normalizes mixed separators to `/`-joined relative paths', () => {

@@ -4,10 +4,10 @@
 
 ## 项目概览
 
-- **ApexCodingAgent**（npm 包 `apex-coding-agent`，CLI 命令 `ApexCodingAgent`）：运行在 Windows 终端中的 Claude Code 长任务编排器。用户准备一份 `SPEC.md` 需求文档后，本工具驱动 Claude Code 先制定计划，再逐项执行任务，每一步保存 Git 检查点，最后做整体检查并生成报告。
+- **ApexCodingAgent**（npm 包 `apex-coding-agent`，CLI 命令 `ApexCodingAgent`）：运行在终端中的 Claude Code 长任务编排器，支持 Windows、macOS 与 Linux。用户准备一份 `SPEC.md` 需求文档后，本工具驱动 Claude Code 先制定计划，再逐项执行任务，每一步保存 Git 检查点，最后做整体检查并生成报告。
 - 产品形态：全局安装的 CLI，`bin` 指向 `dist/interfaces/cli/main.js`，发布内容仅 `dist/`（package.json `files: ["dist"]`）。
 - 权威规格：源码注释以 `SPEC §x.y` 引用外部权威规格文档（该文档不随仓库分发）。当前实现对应 SPEC v4.1.1（见 package.json description），Session Resume 自 SPEC v4.2 起为受支持特性（见 `scripts/scan-forbidden.mjs` 头部注释）。
-- 平台约束：**仅支持 Windows**（package.json `os: ["win32"]`），Node.js 22.x 或 24.x（`engines: ">=22 <23 || >=24 <25"`）。
+- 平台约束：支持 **Windows 10+、macOS 与 Linux**（package.json `os: ["win32", "darwin", "linux"]`，与 `run-runtime-preflight.ts` 的启动门禁白名单一致），Node.js 22.x 或 24.x（`engines: ">=22 <23 || >=24 <25"`）。仅 Windows 按 `os.release()` 做 OS 版本门禁（≥10）；Unix 的 release 是内核版本，不参与产品版本判定。路径比较语义按平台分支（`src/application/absolute-path.ts`）：win32 与 darwin 折叠大小写（默认文件系统不区分大小写），linux 区分大小写。
 - 文档与注释主要使用**中文**（domain 层部分文件使用英文注释）；仓库制品（代码注释、文档）沿用这一习惯。
 
 ## 技术栈
@@ -37,8 +37,8 @@
 
 - `src/domain/` — 纯领域层。Run 六态状态机（`planning / running / final_review / completed / failed / abandoned`，见 `run-state.ts`）、Task 五态状态机（`pending / running / completed / failed / skipped`，每次迁移携带合法原因集合，`failed → pending` 与 `failed → running` 仅 resume 可触发，见 `task-state.ts`）、17 个内置 JSON Schema（`schemas/`，统一 `schemaVersion: 1`，经 ajv 校验；`index.ts` 为校验入口，`formats.ts` 为共享格式）、跨字段不变式（`invariants.ts`、`plan.ts`、`plan-documents.ts`、`results.ts`、`episodes.ts`）、稳定错误模型（`errors.ts`：`ApexError` + `errorCode → errorClass` 确定映射，镜像 SPEC §15.3 注册表）。
 - `src/application/` — 用例层。`ports/` 定义全部端口接口（`ClaudeRuntimePort`、`GitPort`、`StateStorePort`、`FileSystemPort`、`RedactionPort`、`ClockPort`、`LoggerPort`、`ReporterPort`、`OutputPort`、`RunArchivePort`）；`usecases/` 为业务用例（`start-run`、`resume-run`、`execute-next-task`、`review-task`、`generate-plan-revision`、`apply-plan-revision`、`run-final-review`、`generate-report`、`abandon-run`、`run-heartbeat`、`run-runtime-preflight`、`run-transitions`、`settings`、`claude-session`、`resumable-session`、`orphaned-session-reconciler`、`plan-revision-history`、`plan-revision-trigger`、`resume-state`、`error-record` 等）；`run-driver.ts` 是前台串行调度循环：planning → 每个 Task 的 execution → 独立 task_review → final_review → 终态；`prompts/` 为发给 Claude 的提示词模板（planning / execution / task-review / final-review / verification-policy）；`presentation/progress.ts` 输出单行进度摘要；`interrupt.ts` 为中断控制器；`run-command-deps.ts` / `usecase-deps.ts` 为依赖装配类型。
-- `src/adapters/` — 端口实现。`process/`（适配器内部统一的 `ProcessExecutor` 契约：execa 实现，**参数数组、无 Shell**，stdin 经管道写入；`windows-command.ts` 把 PATH 中的 .cmd/.bat shim 解析为真实 .exe 或 Node 脚本，无法证明可直接执行时拒绝隐式降级）、`claude/`（经 ProcessExecutor 启动 Claude CLI；解析 stream-json；`--resume --fork-session` 续接会话；`capability.ts` 能力探测；`session-log.ts` 完整流日志）、`git/`（检查点、仓库状态、SPEC 发现、`exclude.ts` 经 `git rev-parse --git-path info/exclude` 幂等排除状态目录）、`state/`（JSON 状态存储，临时文件替换原子写；`run-archiver.ts` 运行归档）、`reporter/`（Markdown 报告）、`redaction/`（秘密脱敏）、`logging/`（debug 文件日志）、`filesystem/`、`clock/`。
-- `src/bootstrap/` — `composition-root.ts` 创建全部适配器并注入用例（不含业务规则）；`environment.ts` 收集环境事实；`signals.ts` 处理中断信号（第一次 Ctrl+C 安全收尾，第二次立即退出）。
+- `src/adapters/` — 端口实现。`process/`（适配器内部统一的 `ProcessExecutor` 契约：execa 实现，**参数数组、无 Shell**，stdin 经管道写入；`windows-command.ts` 仅在 win32 生效，把 PATH 中的 .cmd/.bat shim 解析为真实 .exe 或 Node 脚本，无法证明可直接执行时拒绝隐式降级；其他平台由操作系统原生解析命令，该模块原样直通）、`claude/`（经 ProcessExecutor 启动 Claude CLI；解析 stream-json；`--resume --fork-session` 续接会话；`capability.ts` 能力探测；`session-log.ts` 完整流日志）、`git/`（检查点、仓库状态、SPEC 发现、`exclude.ts` 经 `git rev-parse --git-path info/exclude` 幂等排除状态目录）、`state/`（JSON 状态存储，临时文件替换原子写；`run-archiver.ts` 运行归档）、`reporter/`（Markdown 报告）、`redaction/`（秘密脱敏）、`logging/`（debug 文件日志）、`filesystem/`、`clock/`。
+- `src/bootstrap/` — `composition-root.ts` 创建全部适配器并注入用例（不含业务规则）；`environment.ts` 收集环境事实；`signals.ts` 处理中断信号（第一次安全收尾，第二次立即退出；Windows 只监听 SIGINT，Unix 追加 SIGTERM/SIGHUP 共用同一两次语义）。
 - `src/interfaces/cli/` — `main.ts` 入口（只做进程级接线）、`args.ts`（`node:util` parseArgs 严格解析）、`run.ts`（命令分发与退出码映射）、`runtime.ts`（CLI 运行时门面类型）、`status-render.ts`、`console-output.ts`（语义颜色，重定向时自动纯文本，支持 `NO_COLOR`）、`help.ts`。
 - `tests/` — 见下文「测试策略」。
 - `scripts/` — 三个 `.mjs` 守护/验收脚本（见命令表）。
@@ -84,10 +84,10 @@
 ## 测试策略
 
 - 框架：vitest 2，环境 `node`，`globals: false`。`testTimeout: 15s`、`hookTimeout: 30s`——Windows 上 git 子进程开销大，集成/端到端测试的 `beforeEach` 会建真实临时 Git 仓库，余量是刻意留的，不要调小。
-- 分层组织（共 56 个测试文件）：
-  - `tests/domain/`（10）、`tests/application/`（8）、`tests/adapters/`（14）、`tests/bootstrap/`（1）、`tests/interfaces/`（7，含 CLI 快照 `__snapshots__/`）：单元测试；
+- 分层组织（共 65 个测试文件）：
+  - `tests/domain/`（10）、`tests/application/`（13）、`tests/adapters/`（14）、`tests/bootstrap/`（1）、`tests/interfaces/`（8，含 CLI 快照 `__snapshots__/`）：单元测试；
   - `tests/integration/`（7；`git/`、`claude/`）：真实临时 Git 仓库与 fake claude 进程边界的端口契约测试；
-  - `tests/e2e/`（9）：真实临时仓库 + 序列化 Fake Claude + 真实 State Store/Reporter/Archiver，经 `StartRun` 用例驱动完整业务闭环（happy-path、中断、恢复、归档、失败、replan/SPEC 变更、心跳、调试日志、abandon/report 等场景），不替换任何内部模块。
+  - `tests/e2e/`（12）：真实临时仓库 + 序列化 Fake Claude + 真实 State Store/Reporter/Archiver，经 `StartRun` 用例驱动完整业务闭环（happy-path、中断、恢复、归档、失败、replan/SPEC 变更、心跳、调试日志、abandon/report 等场景），不替换任何内部模块。
 - `tests/process-executor.ts`：测试装配共享的进程执行器工厂，让每个 Adapter 夹具显式获得独立执行器，与生产组合根保持相同的依赖方向。
 - `tests/fake-claude/claude.mjs`：可编程 Fake Claude CLI。行为由环境变量 `APEX_FAKE_CLAUDE_SCENARIO` 指向的场景 JSON 控制（支持单场景与按调用顺序消费的 `sequence` 序列场景，可模拟写文件、执行命令、stdout 行、stderr、退出码、睡眠等；`APEX_FAKE_CLAUDE_RECORD` 记录每次调用的 argv/stdin/cwd/env 供断言）。测试**不联网、不调用真实 Claude**。
 - `tests/fixtures/`：`claude-help`、`claude-streams`（stream-json 样本）、`process`（进程执行器夹具）、`redaction-corpus`（脱敏语料）。
@@ -101,4 +101,4 @@
 - 状态契约不做读取迁移：缺字段或旧结构的持久化文件读取时必须直接校验失败（STATE_VALIDATION_FAILED），不在读取层回填或静默改写；格式演进靠一次性破坏性变更并显式告知用户，不积累兼容路径。
 - `--full-access`（bypassPermissions）只能由用户显式启用，且必须显示风险提示；默认使用 Claude Code 自动权限模式。
 - 凭据处理：子进程原样继承用户环境，但代码不读取、不缓存凭据，不创建隔离配置目录。
-- 中断语义（SPEC §2.4）：第一次 Ctrl+C 停止启动新 Session、经执行器终止直接子进程并有界等待（10 秒）收尾，当前 Run 持久化为 `failed`（`RUN_INTERRUPTED`，退出码 130）；第二次立即退出进程。
+- 中断语义（SPEC §2.4）：第一次中断信号停止启动新 Session、经执行器终止直接子进程并有界等待（10 秒；execa 的 forceKillAfterDelay 默认 5 秒，SIGTERM 未生效会自动升级 SIGKILL）收尾，当前 Run 持久化为 `failed`（`RUN_INTERRUPTED`，退出码 130）；第二次立即退出进程。Windows 只投递 SIGINT（Ctrl+C）；Unix 上 SIGINT/SIGTERM/SIGHUP 共用同一两次语义。

@@ -3,7 +3,7 @@
  * 环境继承、Session 日志脱敏、Session 类型与结果矩阵、中断、启动失败
  * 以及能力探测。
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createClaudeRuntime } from '../../../src/adapters/claude/client.js';
@@ -894,27 +894,67 @@ describe('capability probing through the CLI (SPEC §8.1)', () => {
     );
   }, TEST_TIMEOUT);
 
-  it('resolves the bare default command through a Windows shim on PATH', async () => {
-    await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
-    await writeFile(join(harness.root, 'claude.cmd'), `"${FAKE_CLAUDE_PATH}"   %*\r\n`, 'utf8');
-    const pathKey =
-      Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
-    /**
-     * PATH 与 Fake CLI 场景使用同一个执行器级环境快照。
-     * 这同时验证 Windows 命令解析和实际子进程观察到完全一致的覆盖值。
-     */
-    const shimmedRuntime = createClaudeRuntime({
-      processExecutor: createTestProcessExecutor({
-        ...fakeClaudeEnvironment(harness),
-        [pathKey]: `${harness.root};${process.env[pathKey] ?? ''}`,
-      }),
-      fileSystem: createNodeFileSystem(),
-      redaction: createRedactor(),
-      probeTimeoutMs: 15_000,
-    });
-    const report = await shimmedRuntime.probeCapabilities();
-    expect(report.version).toBe(FAKE_VERSION);
-    expect(report.capabilities).toHaveLength(11);
-    expect(report.capabilities).toContain('settings-override');
-  }, TEST_TIMEOUT);
+  // .cmd shim 是 Windows 专属形态；POSIX 对应用例见下一处 skipIf。
+  it.skipIf(process.platform !== 'win32')(
+    'resolves the bare default command through a Windows shim on PATH',
+    async () => {
+      await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
+      await writeFile(join(harness.root, 'claude.cmd'), `"${FAKE_CLAUDE_PATH}"   %*\r\n`, 'utf8');
+      const pathKey =
+        Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+      /**
+       * PATH 与 Fake CLI 场景使用同一个执行器级环境快照。
+       * 这同时验证 Windows 命令解析和实际子进程观察到完全一致的覆盖值。
+       */
+      const shimmedRuntime = createClaudeRuntime({
+        processExecutor: createTestProcessExecutor({
+          ...fakeClaudeEnvironment(harness),
+          [pathKey]: `${harness.root};${process.env[pathKey] ?? ''}`,
+        }),
+        fileSystem: createNodeFileSystem(),
+        redaction: createRedactor(),
+        probeTimeoutMs: 15_000,
+      });
+      const report = await shimmedRuntime.probeCapabilities();
+      expect(report.version).toBe(FAKE_VERSION);
+      expect(report.capabilities).toHaveLength(11);
+      expect(report.capabilities).toContain('settings-override');
+    },
+    TEST_TIMEOUT,
+  );
+
+  // POSIX 专属：npm 全局 bin 是带 shebang 的可执行脚本。
+  it.skipIf(process.platform === 'win32')(
+    'resolves the bare default command through a POSIX PATH entry',
+    async () => {
+      await harness.writeScenario({ version: FAKE_VERSION, help: COMPLETE_HELP });
+      /*
+       * 模拟 Unix 上 npm 全局安装的 bin 形态：无扩展名、shebang 入口、执行位。
+       * 操作系统的 PATH 解析（`:` 分隔）接管命令发现，Apex 侧不做任何改写。
+       */
+      const shim = join(harness.root, 'claude');
+      await writeFile(
+        shim,
+        `#!/bin/sh\nexec "${process.execPath}" "${FAKE_CLAUDE_PATH}" "$@"\n`,
+        'utf8',
+      );
+      await chmod(shim, 0o755);
+      const pathKey =
+        Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+      const shimmedRuntime = createClaudeRuntime({
+        processExecutor: createTestProcessExecutor({
+          ...fakeClaudeEnvironment(harness),
+          [pathKey]: `${harness.root}:${process.env[pathKey] ?? ''}`,
+        }),
+        fileSystem: createNodeFileSystem(),
+        redaction: createRedactor(),
+        probeTimeoutMs: 15_000,
+      });
+      const report = await shimmedRuntime.probeCapabilities();
+      expect(report.version).toBe(FAKE_VERSION);
+      expect(report.capabilities).toHaveLength(11);
+      expect(report.capabilities).toContain('settings-override');
+    },
+    TEST_TIMEOUT,
+  );
 });

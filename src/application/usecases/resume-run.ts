@@ -17,7 +17,7 @@ import { createRunDriver } from '../run-driver.js';
 import { createNullLogger, type LoggerPort } from '../ports/logger.js';
 import type { RunCommandDeps } from '../run-command-deps.js';
 import type { UseCaseDeps } from '../usecase-deps.js';
-import { sameWindowsPath } from '../windows-path.js';
+import { sameAbsolutePath } from '../absolute-path.js';
 import { sessionGitFacts } from './claude-session.js';
 import { reconcileOrphanedSessionFacts } from './orphaned-session-reconciler.js';
 import {
@@ -155,6 +155,7 @@ export function createResumeRun(deps: RunCommandDeps): {
         deps.fileSystem,
         deps.makeStateStore,
         input.cwd,
+        input.environment.platform,
       );
     } catch (error) {
       const apex = asApexError(error, 'resume');
@@ -206,7 +207,7 @@ export function createResumeRun(deps: RunCommandDeps): {
       const git = deps.makeGitPort(gitCliPath);
       await git.assertAvailable();
       const resolvedRoot = await git.resolveRepositoryRoot(input.cwd);
-      if (!sameWindowsPath(resolvedRoot, root)) {
+      if (!sameAbsolutePath(resolvedRoot, root, input.environment.platform)) {
         throw new ApexError({
           code: 'COMMAND_STATE_INVALID',
           stage: 'resume',
